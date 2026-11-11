@@ -1,0 +1,127 @@
+diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
+index fce5fb7..6f54e44 100644
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -722,10 +722,24 @@ static uint32_t fbcon_width, fbcon_height, fbcon_stride, fbcon_bypp = 4;
+ /* Command-mode panels (Pixel 1) only refresh when this register gets a 1. */
+ static volatile uint32_t *fbcon_kickoff;
+ 
++/*
++ * wp210 (MediaTek MT6895): the bootloader leaves up to three boot-logo buffers
++ * ("mtk,buffer-stride" apart) and the panel may be showing any of them, so the
++ * console draws into all of them.
++ */
++static uint32_t fbcon_nbuf = 1;
++static uint64_t fbcon_buf_stride;
++
+ static inline void
+ fbcon_px(uint32_t x, uint32_t y, uint32_t c)
+ {
+ 	volatile uint8_t *p = fbcon_base + y * fbcon_stride + x * fbcon_bypp;
++	if (fbcon_nbuf > 1) {
++		for (uint32_t b = 0; b < fbcon_nbuf; b++) {
++			*(volatile uint32_t *)(p + b * fbcon_buf_stride) = c;
++		}
++		return;
++	}
+ 	if (fbcon_bypp == 4) {
+ 		*(volatile uint32_t *)p = c;
+ 	} else {        /* 24 bpp: bytes B, G, R */
+@@ -936,9 +950,54 @@ sweet_fbcon_blank(bool blank)
+ 	sweet_fbcon_kick(true);
+ }
+ 
++/*
++ * wp210: NT37705 command-mode panel behind MT6895's dual display pipe. The
++ * shim found that a frame goes out after pulsing both pipes' mutex EN 0 -> 1
++ * and then DSI_START 0 -> 1 (the MMSYS clocks are ungated once in fbcon_probe).
++ * Frames are spaced >= 1/60 s; a non-forced kick inside that window is dropped.
++ */
++static volatile uint32_t *fbcon_mtk_mutex[2];
++static volatile uint32_t *fbcon_mtk_dsi;
++static uint64_t fbcon_mtk_last;
++
++static void
++fbcon_mtk_kick(bool force)
++{
++	uint64_t gap = gPEClockFrequencyInfo.timebase_frequency_hz / 60;
++	for (;;) {
++		if (os_atomic_cmpxchg(&fbcon_kick_lock, 0u, 1u, acquire)) {
++			uint64_t now = mach_absolute_time();
++			if (now - fbcon_mtk_last >= gap) {
++				__builtin_arm_dsb(DSB_SY);      /* console pixels out of the WC buffer */
++				for (int i = 0; i < 2; i++) {
++					if (fbcon_mtk_mutex[i] != NULL) {
++						*fbcon_mtk_mutex[i] = 0;
++						*fbcon_mtk_mutex[i] = 1;
++					}
++				}
++				*fbcon_mtk_dsi = 0;
++				*fbcon_mtk_dsi = 1;
++				fbcon_mtk_last = now;
++				sweet_fbcon_stat_kicks++;
++				os_atomic_store(&fbcon_kick_lock, 0u, release);
++				return;
++			}
++			os_atomic_store(&fbcon_kick_lock, 0u, release);
++		}
++		if (!force) {
++			return;
++		}
++		delay(1000);
++	}
++}
++
+ void
+ sweet_fbcon_kick(bool force)
+ {
++	if (fbcon_mtk_dsi != NULL) {
++		fbcon_mtk_kick(force);
++		return;
++	}
+ 	if (fbcon_kickoff == NULL) {
+ 		return;
+ 	}
+@@ -1075,6 +1134,42 @@ fbcon_probe(void)
+ 			fbcon_dsi = (volatile uint32_t *)(page + (dsi & PAGE_MASK));
+ 		}
+ 	}
++	uint64_t const *mtk;
++	if (SecureDTGetProperty(entry, "mtk,dsi-start", (void const **)&mtk, &size) == kSuccess && size == 8) {
++		vm_offset_t page = ml_io_map(trunc_page_64(mtk[0]), PAGE_SIZE);
++		if (page != 0) {
++			fbcon_mtk_dsi = (volatile uint32_t *)(page + (mtk[0] & PAGE_MASK));
++		}
++		/* MMSYS clock gates: CG_CLR0/1/2 at +0x108/+0x118/+0x1a8, all on */
++		if (SecureDTGetProperty(entry, "mtk,mmsys", (void const **)&mtk, &size) == kSuccess) {
++			for (unsigned int i = 0; i < size / 8; i++) {
++				volatile uint32_t *mm = (volatile uint32_t *)ml_io_map(trunc_page_64(mtk[i]), PAGE_SIZE);
++				if (mm != NULL) {
++					mm[0x108 / 4] = ~0u;
++					mm[0x118 / 4] = ~0u;
++					mm[0x1a8 / 4] = ~0u;
++				}
++			}
++		}
++		if (SecureDTGetProperty(entry, "mtk,mutex-en", (void const **)&mtk, &size) == kSuccess) {
++			for (unsigned int i = 0; i < size / 8 && i < 2; i++) {
++				vm_offset_t mp = ml_io_map(trunc_page_64(mtk[i]), PAGE_SIZE);
++				if (mp != 0) {
++					fbcon_mtk_mutex[i] = (volatile uint32_t *)(mp + (mtk[i] & PAGE_MASK));
++				}
++			}
++		}
++		if (SecureDTGetProperty(entry, "mtk,buffer-stride", (void const **)&val, &size) == kSuccess &&
++		    *val != 0 && fbcon_bypp == 4) {
++			fbcon_buf_stride = *val;
++			fbcon_nbuf = (uint32_t)(reg[1] / fbcon_buf_stride);
++			if (fbcon_nbuf < 1) {
++				fbcon_nbuf = 1;
++			} else if (fbcon_nbuf > 3) {
++				fbcon_nbuf = 3;
++			}
++		}
++	}
+ 	fbcon_base = (volatile uint8_t *)ml_io_map_wcomb(reg[0], reg[1]);
+ 	sweet_early_mark(18, "fbcon mapping returned");
+ 	if (fbcon_base != NULL) {
