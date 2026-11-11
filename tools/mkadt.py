@@ -2,8 +2,9 @@
 """Build the minimal Apple Device Tree that the SWEET xnu needs to boot.
 
 Only what the early boot path actually reads (see NOTES.md); every MMIO
-address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--pixel1]
+address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--pixel1] [--wp210]
 --pixel1: Google Pixel 1 (sailfish, MSM8996) presented as an iPhone 8 instead.
+--wp210:  Oukitel WP210 Pro (MT6895 / Dimensity 8200) presented as an iPhone 8.
 """
 import hashlib, os, struct, sys
 
@@ -47,6 +48,28 @@ PIXEL1 = dict(
           (0x100, 1, 2150400000), (0x101, 1, 2150400000)],
 )
 
+# Oukitel WP210 Pro (MT6895), from its vendor_boot FDT, the live /chosen and
+# the bare-metal shim's probes (wp210/README.md in this repo).
+WP210 = dict(
+    # 12 GB phone. /proc/iomem "System RAM" has one clean block with no
+    # carve-outs: 0x1c0000000-0x33fdfffff (6 GB). Use 4 GB of it for now.
+    phys_base=0x1c0000000, mem_size=0x100000000,
+    gicd=0x0c000000, gicr=0x0c040000, gicr_stride=0x20000,  # GICv3, standard stride
+    vtimer=27,              # FDT timer: virtual timer is PPI 11 -> INTID 27
+    timebase=13000000,      # CNTFRQ read by the shim on the phone
+    # Boot-logo framebuffer from /chosen atag,videolfb-*: 3 buffers of
+    # 1088x2432 (LK alignment), but the panel scans rows of 1080 pixels.
+    fb=0xfe1af000, fb_size=0x1e50000, fb_w=1080, fb_h=2412, fb_bpp=32,
+    fb_stride=1080 * 4, fb_buf_stride=1088 * 2432 * 4,
+    # NT37705 command-mode panel behind a dual display pipe. A frame is sent by:
+    # ungating every MMSYS clock (CG_CLR at +0x108/+0x118/+0x1a8 of both MMSYS),
+    # pulsing both mutex EN registers 0 -> 1, then DSI_START 0 -> 1.
+    mmsys=(0x14000000, 0x14400000), mutex_en=(0x14001020, 0x14401020), dsi_start=0x14017000,
+    # MPIDR, cluster, clock (FDT values): 4 x Cortex-A55, 4 x Cortex-A78
+    cpus=[(0x000, 0, 1700000000), (0x100, 0, 1700000000), (0x200, 0, 1700000000), (0x300, 0, 1700000000),
+          (0x400, 1, 2171000000), (0x500, 1, 2171000000), (0x600, 1, 2171000000), (0x700, 2, 2171000000)],
+)
+
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
 
 # The iOS userland is the iPhone X (iPhone10,3 / D22AP) IPSW. MobileGestalt
@@ -85,7 +108,7 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False, pixel1=False):
+def build(seed=None, qemu=False, highmem=False, pixel1=False, wp210=False):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
     phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
     gicd, gicr, timebase = (QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE) if qemu else (GICD, GICR, TIMEBASE)
@@ -93,6 +116,12 @@ def build(seed=None, qemu=False, highmem=False, pixel1=False):
     if pixel1:
         P = PIXEL1
         phys_base, mem_size, gicd, gicr, vtimer = P['phys_base'], P['mem_size'], P['gicd'], P['gicr'], P['vtimer']
+    if wp210:
+        W = WP210
+        phys_base, mem_size, gicd, gicr, vtimer = W['phys_base'], W['mem_size'], W['gicd'], W['gicr'], W['vtimer']
+        timebase = W['timebase']
+    # the WP210 presents the same iPhone 8 userland identity as the Pixel 1
+    iphone8 = pixel1 or wp210
     seed = seed if seed is not None else os.urandom(64)
     phandle = iter(range(1, 1000))
     ph = lambda: ('AAPL,phandle', u32(next(phandle)))
@@ -116,7 +145,7 @@ def build(seed=None, qemu=False, highmem=False, pixel1=False):
         # from /chosen, the pixel size from IOMobileFramebuffer. Scale 0 makes
         # SpringBoard's FBSDisplayMode "infxinf@0x" invalid. 1080x2400 @3x =
         # 360x800 points (like iPhone X class devices); iPhone 8: 750x1334 @2x.
-        ('display-scale', u32(2 if pixel1 else 3)),
+        ('display-scale', u32(2 if iphone8 else 3)),
         # XNU derives IOPlatformUUID (gethostuuid) from these on arm; without
         # them CFPreferences cannot use kCFPreferencesCurrentHost (no ByHost
         # files), so e.g. DataMigration never records LastSystemVersion and
@@ -152,7 +181,7 @@ def build(seed=None, qemu=False, highmem=False, pixel1=False):
     # QEMU retains its original single-CPU tree: its MPIDRs differ from sweet.
     cpu_nodes = []
     for core in range(1 if qemu else 8):
-        if pixel1:
+        if pixel1 or wp210:
             break
         cpu_nodes.append(node(f'cpu{core}', [
             ph(),
@@ -195,6 +224,28 @@ def build(seed=None, qemu=False, highmem=False, pixel1=False):
             ('peripheral-frequency', u32(timebase)),
             ('fixed-frequency', u32(timebase)),
         ]))
+    # WP210: A55 + A78 (same ISA, ARMv8.2) presented as one SMP cluster as well.
+    for core, (mpidr, cluster, hz) in enumerate(WP210['cpus'] if wp210 else []):
+        cpu_nodes.append(node(f'cpu{core}', [
+            ph(),
+            ('device_type', cstr('cpu')),
+            ('compatible', cstr('arm,cortex-a78' if core >= 4 else 'arm,cortex-a55') + cstr('ARM,v8')),
+            ('reg', u32(mpidr)),
+            ('cpu-id', u32(core)),
+            ('cluster-id', u32(0)),
+            ('cluster-type', u32(0)),
+            ('die-cluster-id', u32(0)),
+            ('cluster-core-id', u32(core)),
+            ('l2-cache-id', u32(core)),  # private L2 per core (DynamIQ)
+            ('l3-cache-id', u32(0)),     # shared L3
+            ('state', cstr('running' if core == 0 else 'stopped')),
+            ('timebase-frequency', u32(timebase)),
+            ('clock-frequency', u32(hz)),
+            ('bus-frequency', u32(100000000)),
+            ('memory-frequency', u32(1866000000)),
+            ('peripheral-frequency', u32(timebase)),
+            ('fixed-frequency', u32(timebase)),
+        ]))
     cpus = node('cpus', [ph(), ('#address-cells', u32(1)),
                          ('#size-cells', u32(0))], cpu_nodes)
 
@@ -204,7 +255,8 @@ def build(seed=None, qemu=False, highmem=False, pixel1=False):
         ('interrupt-controller', b''),
         ('virtual-timer-intid', u32(vtimer)),
         ('reg', u64(gicd - SOC_BASE, GICD_SIZE, gicr - SOC_BASE, GICR_SIZE)),
-    ] + ([('redistributor-stride', u32(PIXEL1['gicr_stride']))] if pixel1 else []))
+    ] + ([('redistributor-stride', u32(PIXEL1['gicr_stride']))] if pixel1 else [])
+      + ([('redistributor-stride', u32(WP210['gicr_stride']))] if wp210 else []))
     arm_io = node('arm-io', [
         ph(),
         ('device_type', cstr('sweet-io')),
@@ -225,8 +277,8 @@ def build(seed=None, qemu=False, highmem=False, pixel1=False):
             ph(),
             ('device_type', cstr('display-subsystem')),
             ('compatible', cstr('sweet,display')),
-            ('canvas-width', u32(750 if pixel1 else 1125)),
-            ('canvas-height', u32(1334 if pixel1 else 2436)),
+            ('canvas-width', u32(750 if iphone8 else 1125)),
+            ('canvas-height', u32(1334 if iphone8 else 2436)),
         ])] + ([
         # Wi-Fi (bsd/dev/sailfish_wlan.c, QCA6174 on PCIe): launchd starts
         # wifid only if the tree has a node named wlan; SailfishWLAN (the
@@ -257,6 +309,23 @@ def build(seed=None, qemu=False, highmem=False, pixel1=False):
             ('kickoff-reg', u64(P['fb_kickoff'])),
         ])
 
+    if wp210:
+        W = WP210
+        fbcon = node('sweet-fbcon', [
+            ph(),
+            ('reg', u64(W['fb'], W['fb_size'])),
+            ('width', u32(W['fb_w'])),
+            ('height', u32(W['fb_h'])),
+            ('stride', u32(W['fb_stride'])),
+            ('bits-per-pixel', u32(W['fb_bpp'])),
+            # Not read by any kernel code yet: the wp210 fbcon patch will use
+            # these to push a frame to the command-mode panel (see WP210 above).
+            ('mtk,buffer-stride', u32(W['fb_buf_stride'])),
+            ('mtk,mmsys', u64(*W['mmsys'])),
+            ('mtk,mutex-en', u64(*W['mutex_en'])),
+            ('mtk,dsi-start', u64(W['dsi_start'])),
+        ])
+
     # bsd/dev/sweet_ufs.c: the UFS host ABL leaves running (absolute physical reg).
     ufs = node('sweet-ufs', [
         ph(),
@@ -275,12 +344,12 @@ def build(seed=None, qemu=False, highmem=False, pixel1=False):
     buttons = node('buttons', [
         ph(),
         ('button-names', cstr('volup') + cstr('voldown') + cstr('hold')),
-        ('home-button-type', u32(1 if pixel1 else 2)),  # iPhone 8: Home button
+        ('home-button-type', u32(1 if iphone8 else 2)),  # iPhone 8: Home button
         ('opposed-power-vol-buttons', u32(1)),
     ])
 
-    product_props = d22ap_product(D20AP_ADT if pixel1 else D22AP_ADT)
-    if pixel1 and product_props:
+    product_props = d22ap_product(D20AP_ADT if iphone8 else D22AP_ADT)
+    if iphone8 and product_props:
         # The Pixel panel is sRGB, and with "P3" iOS picks deep-color snapshot
         # surfaces (MaterialKit b3a8, CA w30r) that CoreAnimation's CPU renderer
         # cannot draw into: the dock / App Library backgrounds stayed white.
@@ -293,9 +362,10 @@ def build(seed=None, qemu=False, highmem=False, pixel1=False):
     # (iPhone10,3). 'xiaomi,sweet' stays for SweetPlatformExpert matching.
     # Pixel 1 keeps 'xiaomi,sweet' for the same kernel matching (one platform expert).
     ident = (('D20AP', 'iPhone10,1', 'D20', 'google,sailfish', 'qcom,msm8996') if pixel1 else
+             ('D20AP', 'iPhone10,1', 'D20', 'oukitel,wp210', 'mediatek,mt6895') if wp210 else
              ('D22AP', 'iPhone10,3', 'D22', 'xiaomi,sweet', 'qcom,sm7150'))
     compat = cstr(ident[0]) + cstr(ident[1]) + cstr('xiaomi,sweet')
-    if pixel1:
+    if pixel1 or wp210:
         compat += cstr(ident[3])
     return node('device-tree', [
         ph(),
@@ -306,11 +376,12 @@ def build(seed=None, qemu=False, highmem=False, pixel1=False):
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([] if qemu else [ufs]))
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([] if (qemu or wp210) else [ufs]))
 
 
 if __name__ == '__main__':
-    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv, pixel1='--pixel1' in sys.argv)
+    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv, pixel1='--pixel1' in sys.argv,
+                 wp210='--wp210' in sys.argv)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:
