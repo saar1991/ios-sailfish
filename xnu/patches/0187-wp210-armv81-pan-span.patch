@@ -1,0 +1,54 @@
+diff --git a/osfmk/arm64/proc_reg.h b/osfmk/arm64/proc_reg.h
+index e01c124..e99af5a 100644
+--- a/osfmk/arm64/proc_reg.h
++++ b/osfmk/arm64/proc_reg.h
+@@ -651,8 +651,23 @@
+ #define SCTLR_JOP_KEYS_DEFAULT  0
+ #endif
+ 
++/*
++ * SWEET builds have no PAN support (no __ARM_PAN_AVAILABLE__: the Pixel 1 Kryo
++ * is ARMv8.0), so copyin/copyout never clear PSTATE.PAN. On ARMv8.1+ cores
++ * (wp210: Cortex-A55/A78) SPAN = 0 makes every exception to EL1 set PAN, and
++ * each kernel access to user memory then takes a permission fault that
++ * arm_fast_fault cannot resolve: copyinstr() loops forever (PID 1 never got
++ * past open("/dev/console")). SPAN = 1 leaves PAN alone; bit 23 is RES1 on
++ * ARMv8.0, so this is a no-op on the Pixel 1.
++ */
++#if defined(SWEET)
++#define SCTLR_SWEET_SPAN        SCTLR_PAN_UNCHANGED
++#else
++#define SCTLR_SWEET_SPAN        0
++#endif
++
+ #define SCTLR_EL1_DEFAULT \
+-	(SCTLR_RESERVED | SCTLR_UCI_ENABLED | SCTLR_nTWE_WFE_ENABLED | SCTLR_DZE_ENABLED | \
++	(SCTLR_RESERVED | SCTLR_UCI_ENABLED | SCTLR_nTWE_WFE_ENABLED | SCTLR_DZE_ENABLED | SCTLR_SWEET_SPAN | \
+ 	 SCTLR_I_ENABLED | SCTLR_SED_DISABLED | SCTLR_CP15BEN_ENABLED |                    \
+ 	 SCTLR_SA0_ENABLED | SCTLR_SA_ENABLED | SCTLR_C_ENABLED | SCTLR_M_ENABLED |        \
+ 	 SCTLR_CSEH_DEFAULT | SCTLR_DSSBS_DEFAULT |                                        \
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+index 5ea69e3..5754066 100644
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -845,6 +845,20 @@ common_start:
+ 	MSR_SCTLR_EL1_X0
+ 	isb		sy
+ 
++#if defined(SWEET)
++	/*
++	 * ARMv8.1+ cores: start with PSTATE.PAN = 0 (see SCTLR_SWEET_SPAN). The
++	 * bootloader may leave it set. "msr PAN, #0" is encoded by hand: the
++	 * kernel is built for ARMv8.0, and the Pixel 1 Kryo would trap on it,
++	 * so it only runs when ID_AA64MMFR1_EL1.PAN != 0.
++	 */
++	mrs		x0, ID_AA64MMFR1_EL1
++	ubfx	x0, x0, #20, #4
++	cbz		x0, 2f
++	.long	0xd500409f
++2:
++#endif
++
+ #if !VMAPPLE && !defined(SWEET)
+ 	MOV64   x1, SCTLR_EL1_DEFAULT
+ 	cmp		x0, x1
