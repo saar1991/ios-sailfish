@@ -1,0 +1,85 @@
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index bb2a2bf..741d881 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -223,6 +223,26 @@ static struct pstats pstats0;
+ SECURITY_READ_ONLY_LATE(proc_t) kernproc;
+ proc_t XNU_PTRAUTH_SIGNED_PTR("initproc") initproc;
+ 
++#if defined(__arm64__)
++extern void wp210_dump_task(task_t task);
++static int wp210_hb_chan;
++
++/* wp210 bring-up heartbeat: proves the kernel is alive and shows where PID 1 is. */
++static void
++wp210_heartbeat(void *arg __unused, wait_result_t wr __unused)
++{
++	for (unsigned int n = 1;; n++) {
++		(void)tsleep(&wp210_hb_chan, PZERO, "wp210hb", 5 * hz);
++		printf("WP210 HB %u:", n);
++		if (initproc == PROC_NULL) {
++			printf(" no initproc\n");
++			continue;
++		}
++		wp210_dump_task(proc_task(initproc));
++	}
++}
++#endif
++
+ long tk_cancc;
+ long tk_nin;
+ long tk_nout;
+@@ -1098,6 +1118,17 @@ bsdinit_task(void)
+ 
+ 	bsd_init_kprintf("bsd_do_post - done");
+ 
++#if defined(__arm64__)
++	/* wp210 bring-up: wp210hb=1 starts a 5 s heartbeat that prints PID 1's threads */
++	{
++		int hb = 0;
++		thread_t hb_thread;
++		if (PE_parse_boot_argn("wp210hb", &hb, sizeof(hb)) && hb &&
++		    kernel_thread_start(wp210_heartbeat, NULL, &hb_thread) == KERN_SUCCESS) {
++			thread_deallocate(hb_thread);
++		}
++	}
++#endif
+ 	load_init_program(p);
+ 	lock_trace = 1;
+ }
+diff --git a/osfmk/kern/bsd_kern.c b/osfmk/kern/bsd_kern.c
+index 8d6fc13..ea61b4b 100644
+--- a/osfmk/kern/bsd_kern.c
++++ b/osfmk/kern/bsd_kern.c
+@@ -1514,3 +1514,31 @@ bsd_to_mach_failure(int bsd_err)
+ 		return KERN_FAILURE;
+ 	}
+ }
++
++#if defined(__arm64__)
++/* wp210 bring-up: called from the bsd_init heartbeat (wp210hb=1). */
++void wp210_dump_task(task_t task);
++void
++wp210_dump_task(task_t task)
++{
++	thread_t thread;
++
++	if (task == TASK_NULL) {
++		printf(" no task\n");
++		return;
++	}
++	printf(" pid1 task threads=%d\n", task->thread_count);
++	queue_iterate(&task->threads, thread, thread_t, task_threads) {
++		arm_saved_state_t *ss = thread->machine.upcb;
++		if (ss != NULL) {
++			printf("  thr %llu state 0x%x pc 0x%llx esr 0x%x far 0x%llx\n",
++			    thread->thread_id, thread->state,
++			    (unsigned long long)get_saved_state_pc(ss),
++			    get_saved_state_esr(ss),
++			    (unsigned long long)get_saved_state_far(ss));
++		} else {
++			printf("  thr %llu state 0x%x (no user state)\n", thread->thread_id, thread->state);
++		}
++	}
++}
++#endif
