@@ -1,0 +1,51 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 6540470..40f1692 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -330,10 +330,46 @@ ufs_find_partition(const char *want)
+ 		printf("SWEET UFS: unsupported GPT entries %u x %u\n", nent, esz);
+ 		return ENXIO;
+ 	}
++	/*
++	 * wp210: the GPT on LUN 2 has exactly 71 entries, all used, so the iOS
++	 * root lives in unpartitioned space after a shrunk userdata instead:
++	 * ufsfirst=/ufscount= (4 KiB blocks). The range is refused if it touches
++	 * any GPT partition or runs past the last usable block.
++	 */
++	uint64_t raw_first = 0, raw_count = 0, last_usable;
++	PE_parse_boot_argn("ufsfirst", &raw_first, sizeof(raw_first));
++	PE_parse_boot_argn("ufscount", &raw_count, sizeof(raw_count));
++	memcpy(&last_usable, (const uint8_t *)(su.dma + DMA_BOUNCE) + 48, 8);
++	if (raw_count) {
++		if (raw_first == 0 || raw_first + raw_count - 1 > last_usable) {
++			printf("SWEET UFS: raw range 0x%llx+0x%llx outside the disk\n", raw_first, raw_count);
++			return ERANGE;
++		}
++	}
+ 	error = ufs_read_blocks(entry_lba, (nent * esz + UFS_BLOCK - 1) / UFS_BLOCK);
+ 	if (error) {
+ 		return error;
+ 	}
++	if (raw_count) {
++		for (uint32_t i = 0; i < nent; i++) {
++			const uint8_t *e = b + i * esz;
++			uint64_t first, last, type0;
++			memcpy(&type0, e, 8);
++			memcpy(&first, e + 32, 8);
++			memcpy(&last, e + 40, 8);
++			if (type0 == 0 && memcmp(e, e + 8, 8) == 0) {
++				continue;               /* unused entry */
++			}
++			if (first <= raw_first + raw_count - 1 && raw_first <= last) {
++				printf("SWEET UFS: raw range overlaps GPT entry %u (0x%llx-0x%llx)\n",
++				    i + 1, first, last);
++				return EPERM;
++			}
++		}
++		su.first_block = raw_first;
++		su.nblocks = raw_count;
++		return 0;
++	}
+ 	for (uint32_t i = 0; i < nent; i++) {
+ 		const uint8_t *e = b + i * esz;
+ 		char name[37];
