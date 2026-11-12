@@ -1,0 +1,223 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 7e9f4f0..bc99db7 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -480,6 +480,187 @@ mtk_wake(void)
+ 	ufs_wr(REG_IS, IS_UCCS | IS_UHXS);
+ }
+ 
++/*
++ * wp210: LK hands over with the UFS link shut down (MediaTek link state 0,
++ * OCS 5 on the first command). ufsreinit=1 brings it up again following
++ * Linux ufs-mediatek.c / ufshcd.c: host re-enable, device reset, MediaTek
++ * pre-link settings, DME_LINKSTARTUP, then NOP OUT and fDeviceInit. The link
++ * stays in its default (slow PWM) power mode.
++ */
++#define REG_UFS_XOUFS_CTRL      0x140
++#define MTK_SIP_DEVICE_RESET    (1ull << 1)
++#define UIC_DME_GET             0x01
++#define UIC_DME_SET             0x02
++#define UIC_DME_LINKSTARTUP     0x16
++#define VS_SAVEPOWERCONTROL     0xd0a6
++#define VS_UNIPROPOWERDOWNCTRL  0xd0a8
++#define PA_LOCAL_TX_LCC_ENABLE  0x155e
++
++static bool su_reinit;
++
++static int
++mtk_uic(uint32_t cmd, uint32_t arg1, uint32_t arg3, uint32_t *out3)
++{
++	for (int i = 0; i < 10000 && !(ufs_rd(REG_HCS) & HCS_UCRDY); i++) {
++		mtk_spin_us(10);
++	}
++	ufs_wr(REG_IS, IS_UCCS);
++	ufs_wr(REG_UCMDARG1, arg1);
++	ufs_wr(REG_UCMDARG2, 0);
++	ufs_wr(REG_UCMDARG3, arg3);
++	ufs_wr(REG_UICCMD, cmd);
++	int i;
++	for (i = 0; i < 50000 && !(ufs_rd(REG_IS) & IS_UCCS); i++) {
++		mtk_spin_us(10);
++	}
++	if (i == 50000) {
++		return -1;
++	}
++	ufs_wr(REG_IS, IS_UCCS);
++	if (out3 != NULL) {
++		*out3 = ufs_rd(REG_UCMDARG3);
++	}
++	return (int)(ufs_rd(REG_UCMDARG2) & 0xff);
++}
++
++static int
++mtk_dme_set(uint32_t attr, uint32_t val)
++{
++	return mtk_uic(UIC_DME_SET, attr << 16, val, NULL);
++}
++
++static int
++mtk_dme_get(uint32_t attr, uint32_t *val)
++{
++	return mtk_uic(UIC_DME_GET, attr << 16, 0, val);
++}
++
++static int
++mtk_reinit_link(void)
++{
++	mtk_diag("reinit start");
++
++	/* host controller disable / enable (ufshcd_hba_enable) */
++	ufs_wr(REG_HCE, 0);
++	for (int i = 0; i < 1000 && (ufs_rd(REG_HCE) & 1); i++) {
++		mtk_spin_us(10);
++	}
++	ufs_wr(REG_UFS_XOUFS_CTRL, ufs_rd(REG_UFS_XOUFS_CTRL) | 0x80);
++	mtk_spin_us(600);
++	ufs_wr(REG_HCE, 1);
++	int i;
++	for (i = 0; i < 100000 && !(ufs_rd(REG_HCE) & 1); i++) {
++		mtk_spin_us(10);
++	}
++	printf("SWEET UFS reinit: hce 0x%x hcs 0x%x after enable\n", ufs_rd(REG_HCE), ufs_rd(REG_HCS));
++
++	/* device reset through the RST_n pin (ufs_mtk_device_reset) */
++	mtk_sip(MTK_SIP_DEVICE_RESET, 0, 0);
++	mtk_spin_us(15);
++	mtk_sip(MTK_SIP_DEVICE_RESET, 1, 0);
++	mtk_spin_us(15000);
++
++	/* ufs_mtk_pre_link */
++	uint32_t v = 0;
++	int r1 = mtk_dme_set(VS_UNIPROPOWERDOWNCTRL, 0);
++	int r2 = mtk_dme_set(PA_LOCAL_TX_LCC_ENABLE, 0);
++	int r3 = mtk_dme_get(VS_SAVEPOWERCONTROL, &v);
++	int r4 = mtk_dme_set(VS_SAVEPOWERCONTROL, v & ~(1u << 6));
++	printf("SWEET UFS reinit: pre-link dme %d %d %d %d savepower 0x%x\n", r1, r2, r3, r4, v);
++
++	for (int attempt = 1; attempt <= 3; attempt++) {
++		ufs_wr(REG_IS, ufs_rd(REG_IS));
++		int r = mtk_uic(UIC_DME_LINKSTARTUP, 0, 0, NULL);
++		for (i = 0; i < 10000 && !(ufs_rd(REG_HCS) & HCS_DP); i++) {
++			mtk_spin_us(10);
++		}
++		printf("SWEET UFS reinit: link startup %d result %d hcs 0x%x is 0x%x link %u\n",
++		    attempt, r, ufs_rd(REG_HCS), ufs_rd(REG_IS), mtk_link_state());
++		if (r == 0 && (ufs_rd(REG_HCS) & HCS_DP)) {
++			ufs_wr(REG_IS, ufs_rd(REG_IS));
++			return 0;
++		}
++	}
++	return EIO;
++}
++
++/* One UPIU without data in slot 0 (NOP OUT, QUERY REQUEST); response in ucd->resp. */
++static int
++mtk_upiu(const uint8_t *req, unsigned len)
++{
++	struct utrd *utrd = (struct utrd *)(su.dma + DMA_UTRL);
++	struct ucd *ucd = (struct ucd *)(su.dma + DMA_UCD);
++	uint64_t ucd_pa = su.dma_pa + DMA_UCD;
++
++	bzero(utrd, sizeof(*utrd));
++	bzero(ucd, sizeof(*ucd));
++	memcpy(ucd->cmd, req, len);
++	ucd->cmd[3] = ++su.tag;
++	utrd->dw0 = (1u << 28) | (1u << 24);
++	utrd->dw2 = 0x0f;
++	utrd->ucdba = (uint32_t)ucd_pa;
++	utrd->ucdbau = (uint32_t)(ucd_pa >> 32);
++	utrd->resp = (512u / 4) << 16 | (512u / 4);
++	dma_sync(DMA_UTRL, sizeof(*utrd));
++	dma_sync(DMA_UCD, sizeof(*ucd));
++	__builtin_arm_dsb(0xf);
++	ufs_wr(REG_UTRLDBR, 1);
++	int i;
++	for (i = 0; i < 100000 && (ufs_rd(REG_UTRLDBR) & 1); i++) {
++		mtk_spin_us(10);
++	}
++	if (i == 100000) {
++		ufs_wr(REG_UTRLCLR, ~1u);
++		return -1;
++	}
++	dma_sync(DMA_UTRL, sizeof(*utrd));
++	dma_sync(DMA_UCD + offsetof(struct ucd, resp), sizeof(ucd->resp));
++	return (int)(utrd->dw2 & 0xff);
++}
++
++static int
++mtk_device_init(void)
++{
++	struct ucd *ucd = (struct ucd *)(su.dma + DMA_UCD);
++	uint8_t nop[32] = { 0x00 };                     /* NOP OUT */
++	int ocs = -1;
++	for (int i = 0; i < 10; i++) {
++		ocs = mtk_upiu(nop, sizeof(nop));
++		if (ocs == 0 && ucd->resp[0] == 0x20) {         /* NOP IN */
++			break;
++		}
++		mtk_spin_us(1000);
++	}
++	printf("SWEET UFS reinit: NOP OUT ocs %d resp 0x%x\n", ocs, ucd->resp[0]);
++	if (ocs != 0) {
++		return EIO;
++	}
++
++	/* QUERY REQUEST: SET FLAG fDeviceInit, then READ FLAG until it clears */
++	uint8_t q[32] = { 0x16 };
++	q[5] = 0x81;                                    /* standard write request */
++	q[12] = 0x06;                                   /* SET FLAG */
++	q[13] = 0x01;                                   /* fDeviceInit */
++	ocs = mtk_upiu(q, sizeof(q));
++	printf("SWEET UFS reinit: set fDeviceInit ocs %d resp 0x%x code 0x%x\n",
++	    ocs, ucd->resp[0], ucd->resp[6]);
++	if (ocs != 0 || ucd->resp[6] != 0) {
++		return EIO;
++	}
++	q[5] = 0x01;                                    /* standard read request */
++	q[12] = 0x05;                                   /* READ FLAG */
++	for (int i = 0; i < 300; i++) {
++		ocs = mtk_upiu(q, sizeof(q));
++		if (ocs == 0 && ucd->resp[6] == 0 && !(ucd->resp[23] & 1)) {
++			printf("SWEET UFS reinit: device ready after %d ms\n", i * 5);
++			return 0;
++		}
++		mtk_spin_us(5000);
++	}
++	printf("SWEET UFS reinit: fDeviceInit still set (ocs %d code 0x%x)\n", ocs, ucd->resp[6]);
++	return ETIMEDOUT;
++}
++
+ static int
+ ufs_take_over_host(void)
+ {
+@@ -488,6 +669,10 @@ ufs_take_over_host(void)
+ 		mtk_wake();
+ 		mtk_diag("after");
+ 	}
++	if (su_reinit && mtk_reinit_link() != 0) {
++		printf("SWEET UFS reinit: link startup failed\n");
++		return EIO;
++	}
+ 	uint32_t hce = ufs_rd(REG_HCE), hcs = ufs_rd(REG_HCS);
+ 	if (!(hce & 1) || !(hcs & HCS_DP) || !(hcs & HCS_UTRLRDY)) {
+ 		printf("SWEET UFS: host not ready (hce 0x%x hcs 0x%x)\n", hce, hcs);
+@@ -516,6 +701,9 @@ ufs_take_over_host(void)
+ 		printf("SWEET UFS: host did not take our request list\n");
+ 		return EIO;
+ 	}
++	if (su_reinit) {
++		return mtk_device_init();
++	}
+ 	return 0;
+ }
+ 
+@@ -757,6 +945,9 @@ sweet_ufs_init(void)
+ 	uint32_t mtk = 0;
+ 	PE_parse_boot_argn("ufsmtk", &mtk, sizeof(mtk));
+ 	su_mtk = (mtk == 1);
++	uint32_t reinit = 0;
++	PE_parse_boot_argn("ufsreinit", &reinit, sizeof(reinit));
++	su_reinit = (reinit == 1);
+ 	su.secsize = DEV_BSIZE;
+ 
+ 	lck_mtx_lock(&sweet_ufs_lock);
