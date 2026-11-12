@@ -40,7 +40,7 @@ jobs:
           cat mesa/VERSION
 
       - name: Build
-        run: MESA_SRC=$PWD/mesa MESA_BUILD=$PWD/mesa-ios-sw tools/sweetgl/build-sw.sh
+        run: MESA_SRC=$PWD/mesa MESA_BUILD=$PWD/mesa-ios-sw bash tools/sweetgl/build-sw.sh
 
       - uses: actions/upload-artifact@v4
         if: always()
