@@ -1,0 +1,39 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index e35aa61..7178739 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -190,6 +190,19 @@ class IOAcceleratorES : public IOService {
+ 
+ OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
+ 
++/*
++ * wp210: backboardd looks up the M2 scaler (AppleM2ScalerCSCDriver, the
++ * scaler/colour converter behind IOSurfaceAccelerator) over and over and
++ * never presents a frame while it is missing. With sweetm2=1 an empty
++ * service of that class is published: matching succeeds; it has no user
++ * client, so opening it fails cleanly.
++ */
++class AppleM2ScalerCSCDriver : public IOService {
++	OSDeclareDefaultStructors(AppleM2ScalerCSCDriver);
++};
++
++OSDefineMetaClassAndStructors(AppleM2ScalerCSCDriver, IOService);
++
+ /*
+  * Panel brightness for CoreBrightness (backboardd): it takes the service
+  * with backlight-control = true that conforms to AppleARMBacklight, and sets
+@@ -426,6 +439,14 @@ AppleCLCD::start(IOService *provider)
+ 		es->registerService();
+ 	}
+ 	OSSafeReleaseNULL(es);
++	int m2 = 0;
++	PE_parse_boot_argn("sweetm2", &m2, sizeof(m2));
++	AppleM2ScalerCSCDriver *scaler = m2 ? OSTypeAlloc(AppleM2ScalerCSCDriver) : NULL;
++	if (scaler != NULL && scaler->init() && scaler->attach(this)) {
++		scaler->registerService();
++		IOLog("SWEET FB: empty AppleM2ScalerCSCDriver published (sweetm2=1)\n");
++	}
++	OSSafeReleaseNULL(scaler);
+ 	int bl_on = 1;
+ 	PE_parse_boot_argn("sweetbl", &bl_on, sizeof(bl_on));
+ 	AppleARMBacklight *bl = bl_on ? OSTypeAlloc(AppleARMBacklight) : NULL;
