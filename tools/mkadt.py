@@ -147,7 +147,7 @@ def build(seed=None, qemu=False, highmem=False, pixel1=False, wp210=False):
         # from /chosen, the pixel size from IOMobileFramebuffer. Scale 0 makes
         # SpringBoard's FBSDisplayMode "infxinf@0x" invalid. 1080x2400 @3x =
         # 360x800 points (like iPhone X class devices); iPhone 8: 750x1334 @2x.
-        ('display-scale', u32(2 if iphone8 else 3)),
+        ('display-scale', u32(3 if wp210 else 2 if iphone8 else 3)),
         # XNU derives IOPlatformUUID (gethostuuid) from these on arm; without
         # them CFPreferences cannot use kCFPreferencesCurrentHost (no ByHost
         # files), so e.g. DataMigration never records LastSystemVersion and
@@ -282,8 +282,8 @@ def build(seed=None, qemu=False, highmem=False, pixel1=False, wp210=False):
             ph(),
             ('device_type', cstr('display-subsystem')),
             ('compatible', cstr('sweet,display')),
-            ('canvas-width', u32(750 if iphone8 else 1125)),
-            ('canvas-height', u32(1334 if iphone8 else 2436)),
+            ('canvas-width', u32(1080 if wp210 else 750 if iphone8 else 1125)),
+            ('canvas-height', u32(2412 if wp210 else 1334 if iphone8 else 2436)),
         ])] + ([
         # Wi-Fi (bsd/dev/sailfish_wlan.c, QCA6174 on PCIe): launchd starts
         # wifid only if the tree has a node named wlan; SailfishWLAN (the
