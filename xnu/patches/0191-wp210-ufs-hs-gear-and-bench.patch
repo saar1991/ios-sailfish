@@ -1,0 +1,137 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index bc99db7..6540470 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -661,6 +661,83 @@ mtk_device_init(void)
+ 	return ETIMEDOUT;
+ }
+ 
++/*
++ * wp210: power mode change out of the slow PWM default (ufsgear=1..4, HS
++ * series B, all connected lanes), after ufshcd_change_power_mode() and
++ * ufs_mtk_pre_pwr_change(). ufsgear=0 (default) keeps PWM.
++ */
++#define UIC_DME_PEER_GET        0x03
++#define PA_ACTIVETXDATALANES    0x1560
++#define PA_CONNECTEDTXDATALANES 0x1561
++#define PA_TXGEAR               0x1568
++#define PA_TXTERMINATION        0x1569
++#define PA_HSSERIES             0x156a
++#define PA_PWRMODE              0x1571
++#define PA_ACTIVERXDATALANES    0x1580
++#define PA_CONNECTEDRXDATALANES 0x1581
++#define PA_RXGEAR               0x1583
++#define PA_RXTERMINATION        0x1584
++#define PA_MAXRXHSGEAR          0x1587
++#define PA_PWRMODEUSERDATA0     0x15b0
++#define PA_TXHSADAPTTYPE        0x15d4
++#define DME_FC0PROTTIMEOUT      0xd041
++#define DME_TC0REPLAYTIMEOUT    0xd042
++#define DME_AFC0REQTIMEOUT      0xd043
++#define IS_UPMS                 (1u << 4)
++
++static uint32_t su_gear;
++
++static int
++mtk_dme_peer_get(uint32_t attr, uint32_t *val)
++{
++	return mtk_uic(UIC_DME_PEER_GET, attr << 16, 0, val);
++}
++
++static void
++mtk_power_mode(void)
++{
++	uint32_t txl = 0, rxl = 0, hmax = 0, dmax = 0;
++	mtk_dme_get(PA_CONNECTEDTXDATALANES, &txl);
++	mtk_dme_get(PA_CONNECTEDRXDATALANES, &rxl);
++	mtk_dme_get(PA_MAXRXHSGEAR, &hmax);
++	mtk_dme_peer_get(PA_MAXRXHSGEAR, &dmax);
++	uint32_t gear = MIN(su_gear, MIN(hmax, dmax));
++	printf("SWEET UFS power: lanes tx %u rx %u, max gear host %u device %u, using HS-G%u\n",
++	    txl, rxl, hmax, dmax, gear);
++	if (gear == 0 || txl == 0 || rxl == 0) {
++		return;
++	}
++	mtk_dme_set(PA_TXGEAR, gear);
++	mtk_dme_set(PA_RXGEAR, gear);
++	mtk_dme_set(PA_ACTIVETXDATALANES, txl);
++	mtk_dme_set(PA_ACTIVERXDATALANES, rxl);
++	mtk_dme_set(PA_TXTERMINATION, 1);
++	mtk_dme_set(PA_RXTERMINATION, 1);
++	mtk_dme_set(PA_HSSERIES, 2);                    /* rate B */
++	if (gear >= 4) {
++		mtk_dme_set(PA_TXHSADAPTTYPE, 1);       /* PA_INITIAL_ADAPT */
++	}
++	static const uint32_t ud[6] = { 8191, 65535, 32767, 8191, 65535, 32767 };
++	for (int i = 0; i < 6; i++) {
++		mtk_dme_set(PA_PWRMODEUSERDATA0 + i, ud[i]);
++	}
++	mtk_dme_set(DME_FC0PROTTIMEOUT, 8191);
++	mtk_dme_set(DME_TC0REPLAYTIMEOUT, 65535);
++	mtk_dme_set(DME_AFC0REQTIMEOUT, 32767);
++
++	ufs_wr(REG_IS, IS_UPMS);
++	int r = mtk_dme_set(PA_PWRMODE, 0x11);          /* FAST_MODE rx and tx */
++	int i;
++	for (i = 0; i < 100000 && !(ufs_rd(REG_IS) & IS_UPMS); i++) {
++		mtk_spin_us(10);
++	}
++	uint32_t upmcrs = (ufs_rd(REG_HCS) >> 8) & 7;   /* 1 = PWR_LOCAL: success */
++	ufs_wr(REG_IS, IS_UPMS);
++	uint32_t g = 0;
++	mtk_dme_get(PA_TXGEAR, &g);
++	printf("SWEET UFS power: set result %d, upmcrs %u, tx gear now %u\n", r, upmcrs, g);
++}
++
+ static int
+ ufs_take_over_host(void)
+ {
+@@ -702,7 +779,11 @@ ufs_take_over_host(void)
+ 		return EIO;
+ 	}
+ 	if (su_reinit) {
+-		return mtk_device_init();
++		int e = mtk_device_init();
++		if (e == 0 && su_gear) {
++			mtk_power_mode();
++		}
++		return e;
+ 	}
+ 	return 0;
+ }
+@@ -948,6 +1029,7 @@ sweet_ufs_init(void)
+ 	uint32_t reinit = 0;
+ 	PE_parse_boot_argn("ufsreinit", &reinit, sizeof(reinit));
+ 	su_reinit = (reinit == 1);
++	PE_parse_boot_argn("ufsgear", &su_gear, sizeof(su_gear));
+ 	su.secsize = DEV_BSIZE;
+ 
+ 	lck_mtx_lock(&sweet_ufs_lock);
+@@ -983,6 +1065,27 @@ sweet_ufs_init(void)
+ 	printf("SWEET UFS: \"%s\" on LUN %u: first block 0x%llx, %llu MiB, %s, DMA at 0x%llx\n",
+ 	    want, su.lun, su.first_block, su.nblocks * UFS_BLOCK >> 20,
+ 	    su.writable ? "read-write" : "read-only", su.dma_pa);
++	uint32_t bench = 0;
++	PE_parse_boot_argn("ufsbench", &bench, sizeof(bench));
++	if (bench) {
++		/* wp210: show the partition's first bytes and time a sequential read */
++		lck_mtx_lock(&sweet_ufs_lock);
++		const uint8_t *b = (const uint8_t *)(su.dma + DMA_BOUNCE);
++		if (ufs_read_blocks(su.first_block, 1) == 0) {
++			printf("SWEET UFS data: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
++			    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
++		}
++		uint64_t per = BOUNCE_SIZE / UFS_BLOCK, total = MIN(su.nblocks, 64 * per), done = 0;
++		uint64_t t0 = mach_absolute_time();
++		while (done < total && ufs_read_blocks(su.first_block + done, (uint32_t)MIN(per, total - done)) == 0) {
++			done += MIN(per, total - done);
++		}
++		uint64_t ns;
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++		lck_mtx_unlock(&sweet_ufs_lock);
++		printf("SWEET UFS bench: read %llu KiB in %llu ms (%llu KiB/s)\n",
++		    done * UFS_BLOCK / 1024, ns / 1000000, ns ? done * UFS_BLOCK * 976563ull / ns : 0);
++	}
+ 	sweet_log_start();
+ 	sweet_sample_start();
+ 	/* Input drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp). */
