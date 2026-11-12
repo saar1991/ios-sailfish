@@ -1,0 +1,167 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 249674b..7e9f4f0 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -132,6 +132,10 @@ ufs_wr(uint32_t off, uint32_t v)
+ 	*(volatile uint32_t *)(su.regs + off) = v;
+ }
+ 
++/* wp210 MediaTek bring-up helpers, defined before ufs_take_over_host */
++static bool su_mtk;
++static void mtk_diag(const char *tag);
++
+ static void
+ dma_sync(uint32_t off, uint32_t len)
+ {
+@@ -224,6 +228,9 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+ 		if (now > deadline) {
+ 			ufs_wr(REG_UTRLCLR, ~1u);
+ 			printf("SWEET UFS: command 0x%02x timed out\n", cdb[0]);
++			if (su_mtk) {
++				mtk_diag("timeout");
++			}
+ 			return ETIMEDOUT;
+ 		}
+ 		if (sleepable && now >= spin_until) {
+@@ -356,9 +363,131 @@ ufs_find_partition(const char *want)
+ 	return ENOENT;
+ }
+ 
++/*
++ * wp210 (MT6895) bring-up: MediaTek UFS vendor state. The register offsets
++ * and SiP call follow Linux drivers/ufs/host/ufs-mediatek.[ch].
++ */
++#define MTK_REFCLK_CTRL         0x144
++#define MTK_OTSD_CTRL           0x14c
++#define MTK_IP_VER              0x2240
++#define MTK_DEBUG_SEL           0x22c0
++#define MTK_PROBE               0x22c8
++#define MTK_SIP_UFS_CONTROL     0xc2000276ull
++#define MTK_SIP_REF_CLK_NOTIFY  (1ull << 3)
++#define REG_UECPA               0x38
++#define REG_UECDL               0x3c
++#define REG_UECN                0x40
++#define REG_UECT                0x44
++#define REG_UECDME              0x48
++#define REG_UICCMD              0x90
++#define REG_UCMDARG1            0x94
++#define REG_UCMDARG2            0x98
++#define REG_UCMDARG3            0x9c
++#define HCS_UCRDY               (1u << 3)
++#define IS_UHXS                 (1u << 5)
++#define IS_UCCS                 (1u << 10)
++#define UIC_DME_HIBER_EXIT      0x18
++
++static void
++mtk_spin_us(uint64_t us)
++{
++	uint64_t t;
++	nanoseconds_to_absolutetime(us * NSEC_PER_USEC, &t);
++	t += mach_absolute_time();
++	while (mach_absolute_time() < t) {
++	}
++}
++
++static uint32_t
++mtk_link_state(void)
++{
++	uint32_t ver = ufs_rd(MTK_IP_VER);
++	if (ver >= 0x10450100) {                /* MT6899 and later */
++		return ufs_rd(MTK_OTSD_CTRL) >> 24;
++	}
++	if (ver >= 0x10360000) {                /* MT6983 and later */
++		ufs_wr(MTK_DEBUG_SEL, 0x820820);
++		ufs_wr(0x22d0, 0x0);
++		ufs_wr(0x22d4, 0x55555555);
++		ufs_wr(0x22d8, 0xaaaaaaaa);
++		ufs_wr(0x22dc, 0xffffffff);
++	} else {
++		ufs_wr(MTK_DEBUG_SEL, 0x20);
++	}
++	return ufs_rd(MTK_PROBE) >> 28;
++}
++
++static void
++mtk_diag(const char *tag)
++{
++	printf("SWEET UFS %s: ipver 0x%x refclk 0x%x link %u cap 0x%x hcs 0x%x is 0x%x "
++	    "dbr 0x%x rsr 0x%x uec %x %x %x %x %x\n", tag,
++	    ufs_rd(MTK_IP_VER), ufs_rd(MTK_REFCLK_CTRL), mtk_link_state(), ufs_rd(REG_CAP),
++	    ufs_rd(REG_HCS), ufs_rd(REG_IS), ufs_rd(REG_UTRLDBR), ufs_rd(REG_UTRLRSR),
++	    ufs_rd(REG_UECPA), ufs_rd(REG_UECDL), ufs_rd(REG_UECN), ufs_rd(REG_UECT), ufs_rd(REG_UECDME));
++}
++
++static void
++mtk_sip(uint64_t cmd, uint64_t a1, uint64_t a2)
++{
++	register uint64_t x0 __asm__("x0") = MTK_SIP_UFS_CONTROL;
++	register uint64_t x1 __asm__("x1") = cmd;
++	register uint64_t x2 __asm__("x2") = a1;
++	register uint64_t x3 __asm__("x3") = a2;
++	__asm__ volatile ("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3) : :
++	    "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14",
++	    "x15", "x16", "x17", "memory");
++}
++
++/* Ask for the UFS reference clock (LK may have released it) and leave Hibern8. */
++static void
++mtk_wake(void)
++{
++	mtk_sip(MTK_SIP_REF_CLK_NOTIFY, 1, 0);          /* on, PRE_CHANGE */
++	ufs_wr(MTK_REFCLK_CTRL, 1);
++	for (int i = 0; i < 300; i++) {
++		uint32_t v = ufs_rd(MTK_REFCLK_CTRL);
++		if (((v >> 1) & 1) == (v & 1)) {
++			break;
++		}
++		mtk_spin_us(10);
++	}
++	mtk_sip(MTK_SIP_REF_CLK_NOTIFY, 1, 1);          /* on, POST_CHANGE */
++
++	uint32_t link = mtk_link_state();
++	if (link != 3) {                                /* VS_LINK_HIBERN8 */
++		printf("SWEET UFS: link state %u, no Hibern8 exit\n", link);
++		return;
++	}
++	for (int i = 0; i < 1000 && !(ufs_rd(REG_HCS) & HCS_UCRDY); i++) {
++		mtk_spin_us(10);
++	}
++	ufs_wr(REG_IS, IS_UCCS | IS_UHXS);
++	ufs_wr(REG_UCMDARG1, 0);
++	ufs_wr(REG_UCMDARG2, 0);
++	ufs_wr(REG_UCMDARG3, 0);
++	ufs_wr(REG_UICCMD, UIC_DME_HIBER_EXIT);
++	int i;
++	for (i = 0; i < 10000 && !(ufs_rd(REG_IS) & IS_UCCS); i++) {
++		mtk_spin_us(10);
++	}
++	uint32_t result = ufs_rd(REG_UCMDARG2) & 0xff;
++	for (i = 0; i < 10000 && !(ufs_rd(REG_IS) & IS_UHXS); i++) {
++		mtk_spin_us(10);
++	}
++	printf("SWEET UFS: Hibern8 exit result %u, is 0x%x, link now %u\n",
++	    result, ufs_rd(REG_IS), mtk_link_state());
++	ufs_wr(REG_IS, IS_UCCS | IS_UHXS);
++}
++
+ static int
+ ufs_take_over_host(void)
+ {
++	if (su_mtk) {
++		mtk_diag("before");
++		mtk_wake();
++		mtk_diag("after");
++	}
+ 	uint32_t hce = ufs_rd(REG_HCE), hcs = ufs_rd(REG_HCS);
+ 	if (!(hce & 1) || !(hcs & HCS_DP) || !(hcs & HCS_UTRLRDY)) {
+ 		printf("SWEET UFS: host not ready (hce 0x%x hcs 0x%x)\n", hce, hcs);
+@@ -625,6 +754,9 @@ sweet_ufs_init(void)
+ 	uint32_t lun = 0;
+ 	PE_parse_boot_argn("ufslun", &lun, sizeof(lun));
+ 	su.lun = (uint8_t)lun;
++	uint32_t mtk = 0;
++	PE_parse_boot_argn("ufsmtk", &mtk, sizeof(mtk));
++	su_mtk = (mtk == 1);
+ 	su.secsize = DEV_BSIZE;
+ 
+ 	lck_mtx_lock(&sweet_ufs_lock);
