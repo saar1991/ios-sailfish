@@ -1,0 +1,42 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 8b52190..249674b 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -621,7 +621,10 @@ sweet_ufs_init(void)
+ 		return ENOMEM;
+ 	}
+ 	su.dma_pa = ptoa_64(pn);
+-	su.lun = 0;
++	/* wp210 (MT6895): the GPT with every partition is on LUN 2 (ufslun=2) */
++	uint32_t lun = 0;
++	PE_parse_boot_argn("ufslun", &lun, sizeof(lun));
++	su.lun = (uint8_t)lun;
+ 	su.secsize = DEV_BSIZE;
+ 
+ 	lck_mtx_lock(&sweet_ufs_lock);
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index 741d881..657aa9b 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -225,6 +225,7 @@ proc_t XNU_PTRAUTH_SIGNED_PTR("initproc") initproc;
+ 
+ #if defined(__arm64__)
+ extern void wp210_dump_task(task_t task);
++extern int sweet_ufs_rootdev(dev_t *dev) __attribute__((weak));
+ static int wp210_hb_chan;
+ 
+ /* wp210 bring-up heartbeat: proves the kernel is alive and shows where PID 1 is. */
+@@ -1127,6 +1128,13 @@ bsdinit_task(void)
+ 		    kernel_thread_start(wp210_heartbeat, NULL, &hb_thread) == KERN_SUCCESS) {
+ 			thread_deallocate(hb_thread);
+ 		}
++		/* ufsprobe=1: bring up the UFS driver (read-only) without rooting on it */
++		int probe = 0;
++		if (PE_parse_boot_argn("ufsprobe", &probe, sizeof(probe)) && probe &&
++		    sweet_ufs_rootdev != NULL) {
++			dev_t udev;
++			printf("WP210 UFS probe: %d\n", sweet_ufs_rootdev(&udev));
++		}
+ 	}
+ #endif
+ 	load_init_program(p);
