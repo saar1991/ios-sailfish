@@ -1,0 +1,69 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 7178739..1b9bdde 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -977,8 +977,12 @@ AppleCLCD::present(const uint8_t *rec)
+ 		sweet_fbcon_kick(true);
+ 		fGpuBack ^= fGpuTest;
+ 	} else {
+-		/* wp210: command-mode panel at native size (a no-op for video-mode panels) */
+-		sweet_fbcon_kick(true);
++		/*
++		 * wp210: command-mode panel at native size (a no-op for video-mode
++		 * panels). Not forced: a frame that arrives inside the 1/60 s window
++		 * of the last one is dropped instead of spinning the swap thread.
++		 */
++		sweet_fbcon_kick(false);
+ 	}
+ }
+ 
+diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
+index 7e22624..475ce1b 100644
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -729,12 +729,23 @@ static volatile uint32_t *fbcon_kickoff;
+  */
+ static uint32_t fbcon_nbuf = 1;
+ static uint64_t fbcon_buf_stride;
++/*
++ * wp210: which LK boot buffer the panel actually scans. -1 (the default)
++ * writes every buffer, which is safe but costs 3x the memory traffic of a
++ * frame (about 30 MB per swap at 1080x2412). Boot-arg wp210fbbuf=N writes
++ * only buffer N: the bring-up shim showed the panel scanning buffer 1.
++ */
++static int fbcon_only_buf = -1;
+ 
+ static inline void
+ fbcon_px(uint32_t x, uint32_t y, uint32_t c)
+ {
+ 	volatile uint8_t *p = fbcon_base + y * fbcon_stride + x * fbcon_bypp;
+ 	if (fbcon_nbuf > 1) {
++		if (fbcon_only_buf >= 0) {
++			*(volatile uint32_t *)(p + (uint32_t)fbcon_only_buf * fbcon_buf_stride) = c;
++			return;
++		}
+ 		for (uint32_t b = 0; b < fbcon_nbuf; b++) {
+ 			*(volatile uint32_t *)(p + b * fbcon_buf_stride) = c;
+ 		}
+@@ -1000,7 +1011,12 @@ void sweet_fbcon_mirror_row(uint32_t x, uint32_t y, const void *src, size_t len)
+ void
+ sweet_fbcon_mirror_row(uint32_t x, uint32_t y, const void *src, size_t len)
+ {
+-	if (fbcon_nbuf <= 1 || fbcon_base == NULL) {
++	if (fbcon_nbuf <= 1 || fbcon_base == NULL || fbcon_only_buf == 0) {
++		return;         /* AppleCLCD already composed into buffer 0 */
++	}
++	if (fbcon_only_buf > 0) {
++		memcpy((void *)(fbcon_base + (uint32_t)fbcon_only_buf * fbcon_buf_stride +
++		    (uint64_t)y * fbcon_stride + (uint64_t)x * 4), src, len);
+ 		return;
+ 	}
+ 	for (uint32_t b = 1; b < fbcon_nbuf; b++) {
+@@ -1179,6 +1195,7 @@ fbcon_probe(void)
+ 		if (SecureDTGetProperty(entry, "mtk,buffer-stride", (void const **)&val, &size) == kSuccess &&
+ 		    *val != 0 && fbcon_bypp == 4) {
+ 			fbcon_buf_stride = *val;
++			PE_parse_boot_argn("wp210fbbuf", &fbcon_only_buf, sizeof(fbcon_only_buf));
+ 			fbcon_nbuf = (uint32_t)(reg[1] / fbcon_buf_stride);
+ 			if (fbcon_nbuf < 1) {
+ 				fbcon_nbuf = 1;

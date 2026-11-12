@@ -1,0 +1,71 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 40f1692..fa4e532 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -74,6 +74,9 @@ extern void sweet_usb_probe(void);
+ 
+ #define UFS_BLOCK       4096u
+ #define BOUNCE_SIZE     (1u << 20)
++/* persistent console log at the end of the partition (sweetlog, below) */
++#define SWEET_LOG_SIZE          (4u << 20)
++#define SWEET_LOG_BLOCKS        (1 + SWEET_LOG_SIZE / UFS_BLOCK)
+ #define PRDT_CHUNK      (256u << 10)            /* PRDT byte count field: 18 bits */
+ #define PRDT_MAX        (BOUNCE_SIZE / PRDT_CHUNK)
+ #define CMD_TIMEOUT_NS  (5ull * NSEC_PER_SEC)
+@@ -1101,6 +1104,47 @@ sweet_ufs_init(void)
+ 	printf("SWEET UFS: \"%s\" on LUN %u: first block 0x%llx, %llu MiB, %s, DMA at 0x%llx\n",
+ 	    want, su.lun, su.first_block, su.nblocks * UFS_BLOCK >> 20,
+ 	    su.writable ? "read-write" : "read-only", su.dma_pa);
++	uint32_t wbench = 0;
++	PE_parse_boot_argn("ufswbench", &wbench, sizeof(wbench));
++	if (wbench && su.writable && su.nblocks > SWEET_LOG_BLOCKS) {
++		/*
++		 * wp210: time reads and writes of the log area at the end of the
++		 * partition (outside the filesystem), to tell a slow write path from
++		 * slow work in iOS. Sizes in blocks per command, as the filesystem
++		 * issues them.
++		 */
++		uint64_t base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS + 1;
++		static const uint32_t sizes[] = { 1, 8, 64, 256 };
++		lck_mtx_lock(&sweet_ufs_lock);
++		for (unsigned i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
++			uint32_t n = sizes[i], rounds = 64, ok = 0;
++			uint64_t ns, t0 = mach_absolute_time();
++			for (uint32_t r = 0; r < rounds; r++) {
++				if (ufs_write_blocks(base + (uint64_t)((r * n) % 128), n) == 0) {
++					ok++;
++				}
++			}
++			absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++			printf("SWEET UFS wbench: %u x %u blocks write: %llu us total, %llu us each, %llu KiB/s\n",
++			    ok, n, ns / 1000, ok ? ns / 1000 / ok : 0,
++			    ns ? (uint64_t)ok * n * UFS_BLOCK * 976563ull / ns : 0);
++			t0 = mach_absolute_time();
++			for (uint32_t r = 0; r < rounds; r++) {
++				(void)ufs_read_blocks(base + (uint64_t)((r * n) % 128), n);
++			}
++			absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++			printf("SWEET UFS wbench: %u x %u blocks read:  %llu us total, %llu us each\n",
++			    rounds, n, ns / 1000, ns / 1000 / rounds);
++		}
++		uint64_t ns, t0 = mach_absolute_time();
++		for (int r = 0; r < 16; r++) {
++			(void)ufs_sync_cache();
++		}
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++		printf("SWEET UFS wbench: 16 x sync cache: %llu us total, %llu us each\n",
++		    ns / 1000, ns / 1000 / 16);
++		lck_mtx_unlock(&sweet_ufs_lock);
++	}
+ 	uint32_t bench = 0;
+ 	PE_parse_boot_argn("ufsbench", &bench, sizeof(bench));
+ 	if (bench) {
+@@ -1147,8 +1191,6 @@ sweet_ufs_init(void)
+  * ring offset of byte n = n % ring size. Read it from a recovery with
+  * tools/sweet-log-pull.sh. Disabled with boot-arg sweetlog=0.
+  */
+-#define SWEET_LOG_SIZE          (4u << 20)
+-#define SWEET_LOG_BLOCKS        (1 + SWEET_LOG_SIZE / UFS_BLOCK)
+ #define SWEET_LOG_SECS          10u
+ 
+ static char sweet_log_ring[SWEET_LOG_SIZE];
