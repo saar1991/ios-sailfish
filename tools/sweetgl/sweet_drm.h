@@ -16,4 +16,8 @@ int sweet_drm_import_iosurface(uint32_t surface_id, uint64_t map, uint32_t *hand
 /* printf-style line to the kernel log (writes to /dev/null are teed there). */
 void sweet_drm_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
+/* softpipe build (sweet_sw.c): a sw_winsys whose display targets wrap IOSurface memory */
+struct sw_winsys;
+struct sw_winsys *sweet_sw_winsys_create(void);
+
 #endif

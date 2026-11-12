@@ -25,8 +25,12 @@
 #include "state_tracker/st_context.h"
 #include "util/driconf.h"
 #include "util/xmlconfig.h"
+#ifdef SWEETGL_SOFTPIPE
+#include "softpipe/sp_public.h"
+#else
 #include "freedreno/drm/freedreno_drm_public.h"
 #include "renderonly/renderonly.h"
+#endif
 #include <GLES3/gl3.h>
 
 #include "sweet_drm.h"
@@ -34,9 +38,12 @@
 
 static const driOptionDescription sweetgl_driconf[] = {
 #include "pipe-loader/driinfo_gallium.h"
+#ifndef SWEETGL_SOFTPIPE
 #include "freedreno/driinfo_freedreno.h"
+#endif
 };
 
+#ifndef SWEETGL_SOFTPIPE
 /* freedreno calls these only with a renderonly device (KMS scanout); we pass none */
 void
 renderonly_scanout_destroy(struct renderonly_scanout *scanout, struct renderonly *ro)
@@ -54,6 +61,7 @@ renderonly_create_gpu_import_for_resource(struct pipe_resource *rsc, struct rend
 	(void)out_handle;
 	return NULL;
 }
+#endif /* !SWEETGL_SOFTPIPE */
 
 struct sweetgl_ctx {
 	struct st_context *st;
@@ -91,6 +99,24 @@ sweetgl_init(void)
 {
 	pthread_mutex_lock(&init_lock);
 	if (fscreen == NULL) {
+#ifdef SWEETGL_SOFTPIPE
+		/*
+		 * wp210 (MT6895, Mali-G610, no GPU driver): Mesa softpipe on the CPU.
+		 * IOSurfaces become softpipe display targets over their own memory
+		 * (sweet_sw.c), so CoreAnimation renders straight into them.
+		 */
+		driParseOptionInfo(&opt_info, sweetgl_driconf, ARRAY_SIZE(sweetgl_driconf));
+		struct pipe_screen *sscreen = softpipe_create_screen(sweet_sw_winsys_create());
+		if (sscreen == NULL) {
+			sweet_drm_log("sweetgl: softpipe screen creation failed");
+		} else {
+			fscreen = calloc(1, sizeof(*fscreen));
+			fscreen->screen = sscreen;
+			sweetgl_image_hooks(fscreen);
+			sweet_drm_log("sweetgl: screen %s (%s)", sscreen->get_name(sscreen),
+			    sscreen->get_vendor(sscreen));
+		}
+#else
 		int fd = sweet_drm_open();
 		if (fd >= 0) {
 			/*
@@ -120,6 +146,7 @@ sweetgl_init(void)
 				    screen->get_vendor(screen));
 			}
 		}
+#endif /* SWEETGL_SOFTPIPE */
 	}
 	bool ok = fscreen != NULL;
 	pthread_mutex_unlock(&init_lock);

@@ -1,5 +1,7 @@
 # ios-sailfish
 
+> **Oukitel WP210 Pro (MediaTek MT6895) port:** XNU with all 8 cores, the display, an own MediaTek UFS driver and the iOS 16 userland booting from storage. See [`wp210/README.md`](wp210/README.md).
+
 **Apple's iOS 16.7.16 running on a Google Pixel 1 (`sailfish`, Snapdragon 821), with GPU-accelerated graphics.**
 
 This project ports Apple's open-source XNU kernel (xnu-8796, the iOS 16 generation) to the first Google Pixel and runs the **unmodified iOS 16.7.16 (20H392) userland of the iPhone 8** on it: launchd, the system daemons, backboardd, SpringBoard and the stock apps. It is a fork of [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet), which brought the same kernel up on a Redmi Note 10 Pro; that history is kept, and the Pixel work starts at the commit "tools: granule-probe, 16K page check for other phones".

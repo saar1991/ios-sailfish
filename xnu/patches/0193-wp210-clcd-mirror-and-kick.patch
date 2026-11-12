@@ -1,0 +1,63 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 1ebf60c..e35aa61 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -94,6 +94,7 @@ static uint32_t sweet_fb_vsync_us = 16667;
+ 
+ extern "C" void sweet_fbcon_kick(bool force);           /* pexpert/arm/pe_serial.c */
+ extern "C" void sweet_fbcon_flip(uint64_t pa, uint32_t stride);
++extern "C" void sweet_fbcon_mirror_row(uint32_t x, uint32_t y, const void *src, size_t len);  /* wp210 */
+ extern "C" void sweet_fbcon_blank(bool blank);
+ extern "C" bool sweet_fbcon_dcs(uint8_t cmd, uint8_t param);
+ #include "../../../bsd/dev/sweet_gpu.h"
+@@ -937,9 +938,9 @@ AppleCLCD::present(const uint8_t *rec)
+ 			blitScaled(src + s->offset, s->bytesPerRow, sx, sy, dx, dy, w, h);
+ 		} else if (src != 0 && bpe == 4) {
+ 			for (int32_t y = 0; y < h; y++) {
+-				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
+-				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
+-				    (size_t)w * 4);
++				const void *row = (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4);
++				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4), row, (size_t)w * 4);
++				sweet_fbcon_mirror_row((uint32_t)dx, (uint32_t)(dy + y), row, (size_t)w * 4);
+ 			}
+ 		}
+ 		s->release();
+@@ -954,6 +955,9 @@ AppleCLCD::present(const uint8_t *rec)
+ 	} else if (fScaled) {
+ 		sweet_fbcon_kick(true);
+ 		fGpuBack ^= fGpuTest;
++	} else {
++		/* wp210: command-mode panel at native size (a no-op for video-mode panels) */
++		sweet_fbcon_kick(true);
+ 	}
+ }
+ 
+diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
+index 6f54e44..7e22624 100644
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -991,6 +991,23 @@ fbcon_mtk_kick(bool force)
+ 	}
+ }
+ 
++/*
++ * wp210: the panel may scan any of LK's boot buffers. SweetFramebuffer
++ * (AppleCLCD) composes into buffer 0 (the boot_args video base) and copies
++ * each row into the other buffers through this.
++ */
++void sweet_fbcon_mirror_row(uint32_t x, uint32_t y, const void *src, size_t len);
++void
++sweet_fbcon_mirror_row(uint32_t x, uint32_t y, const void *src, size_t len)
++{
++	if (fbcon_nbuf <= 1 || fbcon_base == NULL) {
++		return;
++	}
++	for (uint32_t b = 1; b < fbcon_nbuf; b++) {
++		memcpy((void *)(fbcon_base + b * fbcon_buf_stride + (uint64_t)y * fbcon_stride + (uint64_t)x * 4), src, len);
++	}
++}
++
+ void
+ sweet_fbcon_kick(bool force)
+ {
