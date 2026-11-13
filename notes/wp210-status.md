@@ -1,4 +1,4 @@
-# WP210 iOS port: status notes (2026-11-14)
+# WP210 iOS port: status notes (2026-11-14, updated 00:52)
 
 Working notes so the state survives session resets. Times are the phone's
 local time (Asia/Jerusalem) unless stated.
@@ -11,7 +11,7 @@ local time (Asia/Jerusalem) unless stated.
   - 71ca6c4 trimmed flush timing and log strings (too large)
   - c3cc1e7 validation-only diagnostic (too large by 64 bytes)
   - 471a76c validation-only diagnostic, no validate-status query (too large by 32 bytes)
-  - 22ec055 old window-trace code removed (NOT YET BUILT; latest)
+  - 22ec055 old window-trace code removed; built and installed on the phone (latest)
 - Build artifacts come from the `sweetgl-sw` workflow (run by hand on the branch).
 
 ## Build artifact sizes (sweetgl.dylib)
@@ -22,19 +22,28 @@ local time (Asia/Jerusalem) unless stated.
 | 71ca6c4 | 17208768 | 60c6886c… | no (+64) |
 | c3cc1e7 | 17208736 | 71205f7a… | no (+32) |
 | 471a76c | 17208736 | 08df3a47… | no (+32) |
-| 22ec055 | not yet built | | |
+| 22ec055 | 17208160 | (pad 552d50d6…) | yes (-544) |
 
 The installed file's catalog size is 17208704 bytes. The build is ad-hoc
 signed and its signature grows 32 bytes per 4 KiB page, so small trims often
 don't change the size.
 
+## Install status (2026-11-14 00:51)
+
+- Build 22ec055 installed on the iOS volume with `install-sweetgl-diag-22ec055.sh`.
+  - Payload: `sweetgl-diag-22ec055-allocation.bin`, 17211392 bytes, SHA-256 `552d50d6…`.
+  - `--check` passed, then `--install` reported `INSTALL VERIFIED`. No reboot performed.
+  - The phone's current shim (before the install) was the BGRA build, SHA-256 `309a61d7…`. It's backed up in `before-bgra.bin` on the PC (hash verified) and on the phone.
+- Catalog metadata expected hashes were refreshed for the four blocks changed by the iOS boot (see below). Those four current values were cross-checked against the phone's reads and the catalog dump.
+- Next: reboot to iOS, run the usual test, then pull the sweetgl log and video.
+
 ## Phone state
 
 - Trace boot image (`wp210-boot-trace.img`) flashed to boot_a; set_active a.
   The phone reaches the iOS home screen.
-- Shim on the iOS volume is still the BGRA build (1465988). Nothing new has been installed.
-- Backup of the installed shim allocation: `2db9d1eb…` (PC copy in
-  `C:\Users\artzi123\Downloads`, and on the phone in `/data/local/tmp/sweetgl-check.*`).
+- Shim on the iOS volume: build 22ec055 (installed 2026-11-14 00:51), replacing the BGRA build.
+- Backups: original pre-BGRA shim `2db9d1eb…` (PC copy in `C:\Users\artzi123\Downloads`);
+  BGRA shim `309a61d7…` (`before-bgra.bin` on the PC and on the phone).
 
 ## Trace results (log a9b74635, video 5d43f78e)
 
@@ -75,14 +84,14 @@ The changes come from the iOS boot in the trace image, not from our install.
 
 ## Open items
 
-1. Build 22ec055 on the GitHub `sweetgl-sw` workflow, upload the artifact, and check size ≤ 17208704 with the signature ending at the last byte.
-2. If it fits: pad to 17211392 bytes, update the script's NEW hash and INPUT path, run `--check`, then `--install` only after review.
-3. The expected catalog hashes must be refreshed from the current state before `--check` passes. Review first.
-4. Swipe latency still needs a sync marker. The shim has no touch timestamps yet.
-5. Three remaining 0x502 draw errors (fbfetch). Diagnostic is in 22ec055.
+1. Reboot to iOS with build 22ec055 installed; confirm the phone reaches the home screen.
+2. Check the new sweetgl log: `GL error 0x502` lines and the `sweetgl: diag` validation messages.
+3. Swipe latency still needs a sync marker. The shim has no touch timestamps yet.
+4. Three remaining 0x502 draw errors (fbfetch); the diagnostic in 22ec055 should show the cause.
 
 ## Rules followed so far
 
 - No writes to the phone without `--check` output reviewed first.
 - The metadata check is not bypassed by editing its hashes.
 - Keep backups (PC and `/data/local/tmp/sweetgl-check.*`) until a new install is verified working.
+- The install script copy in `scripts/install-sweetgl-diag-22ec055.sh` is the one that ran (SHA-256 `e0c8df12…`).
