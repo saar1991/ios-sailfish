@@ -116,7 +116,7 @@
 +#endif /* _SWEET_SURFACE_H */
 --- /dev/null
 +++ b/iokit/Kernel/arm/SweetSurface.cpp
-@@ -0,0 +1,880 @@
+@@ -0,0 +1,882 @@
 +/*
 + * Built-in IOSurface for SWEET.
 + *
@@ -411,8 +411,10 @@
 +		static int fmt_logged;
 +		if (fmt_logged++ < 8) {
 +			OSObject *pf = props->getObject("IOSurfacePixelFormat");
-+			IOLog("SWEET SURF: layout keys %u, IOSurfacePixelFormat %s %s\n", props->getCount(),
-+			    pf ? "present" : "missing", pf ? pf->getMetaClass()->getClassName() : "-");
++			OSNumber *pn = OSDynamicCast(OSNumber, pf);
++			IOLog("SWEET SURF: layout keys %u, IOSurfacePixelFormat %s %s value %#x\n", props->getCount(),
++			    pf ? "present" : "missing", pf ? pf->getMetaClass()->getClassName() : "-",
++			    pn ? pn->unsigned32BitValue() : 0xffffffffu);
 +		}
 +	}
 +	s->cacheMode = sweet_dict_u32(props, "IOSurfaceCacheMode", 0);
