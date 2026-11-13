@@ -1,0 +1,125 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 1b9bdde..75bb038 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -143,6 +143,12 @@ public:
+ 	bool          fScaled;
+ 	uintptr_t     fPanel;
+ 	uint32_t      fPanelW, fPanelH, fPanelStride;
++	/*
++	 * wp210 (sweetfb_scaled=1): the same 750x1334 surface on a 32 bpp panel.
++	 * The picture keeps its aspect: fPanelH is the scaled height, fPanelY0 its
++	 * first row on the panel (fPanelRealH rows), the rest stays black.
++	 */
++	uint32_t      fPanelBpp, fPanelY0, fPanelRealH, fBarsCleared;
+ 	IOBufferMemoryDescriptor *fShadow;
+ 	uint8_t      *fRow, *fOut;     /* one source row, one panel row */
+ 	uint32_t     *fXmap;           /* panel column -> byte offset in fRow */
+@@ -373,11 +379,22 @@ AppleCLCD::start(IOService *provider)
+ 	fWidth = (uint32_t)video.v_width;
+ 	fHeight = (uint32_t)video.v_height;
+ 	fRowBytes = (uint32_t)video.v_rowBytes;
++	fPanelBpp = 3;
+ 	if (video.v_depth == 24 && fPhys != 0 && fWidth != 0 && fHeight != 0 &&
+ 	    fRowBytes >= fWidth * 3 && !startScaled()) {
+ 		IOLog("SWEET FB: 24 bpp setup failed\n");
+ 		return false;
+ 	}
++	int scaled32 = 0;
++	PE_parse_boot_argn("sweetfb_scaled", &scaled32, sizeof(scaled32));
++	if (scaled32 && !fScaled && video.v_depth == 32 && fPhys != 0 && fWidth >= SWEET_FB_P1_W &&
++	    fHeight != 0 && fRowBytes >= fWidth * 4) {
++		fPanelBpp = 4;
++		if (!startScaled()) {
++			IOLog("SWEET FB: scaled 32 bpp setup failed\n");
++			return false;
++		}
++	}
+ 	if (fPhys == 0 || fWidth == 0 || fHeight == 0 || fRowBytes < fWidth * 4) {
+ 		IOLog("SWEET FB: no boot framebuffer\n");
+ 		return false;
+@@ -456,7 +473,7 @@ AppleCLCD::start(IOService *provider)
+ 	OSSafeReleaseNULL(bl);
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u%s\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH,
+-	    fScaled ? ", scaled to the 24 bpp panel" : "");
++	    !fScaled ? "" : fPanelBpp == 4 ? ", scaled to the 32 bpp panel" : ", scaled to the 24 bpp panel");
+ 	return true;
+ }
+ 
+@@ -469,13 +486,23 @@ AppleCLCD::startScaled(void)
+ {
+ 	fPanelW = fWidth;
+ 	fPanelH = fHeight;
++	fPanelRealH = fHeight;
++	fPanelY0 = 0;
+ 	fPanelStride = fRowBytes;
++	if (fPanelBpp == 4) {
++		/* keep 750:1334: full width, centred vertically */
++		uint32_t hh = (uint32_t)((uint64_t)fPanelW * SWEET_FB_P1_H / SWEET_FB_P1_W);
++		if (hh < fPanelH) {
++			fPanelY0 = (fPanelH - hh) / 2;
++			fPanelH = hh;
++		}
++	}
+ 	fPanel = ml_io_map_wcomb((vm_offset_t)fPhys, (vm_size_t)fRowBytes * fHeight);
+ 	fShadow = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+ 	    kIODirectionInOut | kIOMemoryPhysicallyContiguous,
+ 	    round_page(SWEET_FB_P1_STRIDE * SWEET_FB_P1_H), 0xFFFFFFFFFULL & ~(uint64_t)PAGE_MASK);
+ 	fRow = (uint8_t *)IOMallocData(SWEET_FB_P1_W * 4);
+-	fOut = (uint8_t *)IOMallocData(fPanelW * 3);
++	fOut = (uint8_t *)IOMallocData(fPanelW * 4);    /* 3 or 4 bytes a pixel */
+ 	fXmap = (uint32_t *)IOMallocData(fPanelW * sizeof(uint32_t));
+ 	if (fPanel == 0 || fShadow == NULL || fRow == NULL || fOut == NULL || fXmap == NULL) {
+ 		return false;
+@@ -509,6 +536,24 @@ AppleCLCD::blitScaled(uintptr_t src, uint32_t bpr, int32_t sx, int32_t sy,
+ 		return;
+ 	}
+ 	uint32_t n = x1 - x0;
++	if (fPanelBpp == 4 && fPanelY0 != 0 && fBarsCleared < 4) {
++		/* black above and below the picture (the boot console drew there) */
++		fBarsCleared++;
++		uint32_t *o = (uint32_t *)fOut;
++		for (uint32_t i = 0; i < fPanelW; i++) {
++			o[i] = 0xff000000u;
++		}
++		for (uint32_t y = 0; y < fPanelRealH; y++) {
++			if (y == fPanelY0) {
++				y += fPanelH;
++				if (y >= fPanelRealH) {
++					break;
++				}
++			}
++			memcpy((void *)(fPanel + (uint64_t)y * fPanelStride), fOut, (size_t)fPanelW * 4);
++			sweet_fbcon_mirror_row(0, y, fOut, (size_t)fPanelW * 4);
++		}
++	}
+ 	for (uint32_t i = 0; i < n; i++) {
+ 		fXmap[i] = ((x0 + i) * lw / fPanelW - (uint32_t)dx) * 4;
+ 	}
+@@ -520,6 +565,12 @@ AppleCLCD::blitScaled(uintptr_t src, uint32_t bpr, int32_t sx, int32_t sy,
+ 			/* 4 BGRA pixels -> 3 words of BGR (the byte loop took ~48 ms a frame). */
+ 			uint32_t i = 0;
+ 			uint32_t *o = (uint32_t *)fOut;
++			if (fPanelBpp == 4) {
++				/* 32 bpp panel: the pixels as they are, opaque */
++				for (; i < n; i++) {
++					o[i] = *(const uint32_t *)(fRow + fXmap[i]) | 0xff000000u;
++				}
++			}
+ 			for (; i + 4 <= n; i += 4) {
+ 				uint32_t p0 = *(const uint32_t *)(fRow + fXmap[i]);
+ 				uint32_t p1 = *(const uint32_t *)(fRow + fXmap[i + 1]);
+@@ -537,6 +588,12 @@ AppleCLCD::blitScaled(uintptr_t src, uint32_t bpr, int32_t sx, int32_t sy,
+ 			}
+ 			last = ly;
+ 		}
++		if (fPanelBpp == 4) {
++			uint32_t py = y + fPanelY0;
++			memcpy((void *)(fPanel + (uint64_t)py * fPanelStride + (uint64_t)x0 * 4), fOut, (size_t)n * 4);
++			sweet_fbcon_mirror_row(x0, py, fOut, (size_t)n * 4);    /* LK's other buffers */
++			continue;
++		}
+ 		memcpy((void *)(fPanel + (uint64_t)y * fPanelStride + (uint64_t)x0 * 3), fOut, (size_t)n * 3);
+ 	}
+ }
