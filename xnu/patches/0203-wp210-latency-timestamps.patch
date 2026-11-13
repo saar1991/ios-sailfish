@@ -1,20 +1,7 @@
 --- a/bsd/dev/sweet_keys.c
 +++ b/bsd/dev/sweet_keys.c
-@@ -295,14 +295,30 @@
- 			int now = !wp210_pin(pin[k]);
- 			if (now != state[k]) {
- 				state[k] = now;
-+				uint64_t t0 = wp210_lat_us();
- 				printf("SWEET KEYS: wp210 key=%d down=%d\n", code[k], now);
- 				sweet_hid_key(code[k], now);
-+				if (wp210_lat_on) {
-+					printf("WP210 LAT key=%d down=%d t=%llu sent_us=%llu\n", code[k], now,
-+					    (unsigned long long)t0, (unsigned long long)(wp210_lat_us() - t0));
-+				}
- 			}
- 		}
- 		keys_wait();
- 	}
+@@ -282,6 +282,17 @@
+ 	return (keys_rd(wp210_gpio, 0x200u + 0x10u * (pin / 32u)) >> (pin % 32u)) & 1u;
  }
  
 +/* Latency probe (boot-arg wp210lat, default on): timestamps in microseconds
@@ -29,8 +16,22 @@
 +}
 +
  static void
- wp210_keys_init(void)
+ wp210_keys_thread(void *arg, wait_result_t result)
  {
+@@ -295,8 +306,13 @@
+ 			int now = !wp210_pin(pin[k]);
+ 			if (now != state[k]) {
+ 				state[k] = now;
++				uint64_t t0 = wp210_lat_us();
+ 				printf("SWEET KEYS: wp210 key=%d down=%d\n", code[k], now);
+ 				sweet_hid_key(code[k], now);
++				if (wp210_lat_on) {
++					printf("WP210 LAT key=%d down=%d t=%llu sent_us=%llu\n", code[k], now,
++					    (unsigned long long)t0, (unsigned long long)(wp210_lat_us() - t0));
++				}
+ 			}
+ 		}
+ 		keys_wait();
 @@ -875,12 +891,15 @@
  			continue;
  		}
