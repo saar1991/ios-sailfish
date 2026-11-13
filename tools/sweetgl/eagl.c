@@ -123,17 +123,14 @@ sgl_unsupported(int slot, const char *name)
 static void
 diag_invalid_op(int slot)
 {
-	GLint prog = 0, vs = 0, len = 0;
+	GLint prog = 0, len = 0;
 	char log[512] = "";
 	glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
 	if (prog > 0) {
 		glValidateProgram((GLuint)prog);
-		glGetProgramiv((GLuint)prog, GL_VALIDATE_STATUS, &vs);
 		glGetProgramInfoLog((GLuint)prog, sizeof log, &len, log);
 	}
-	sweet_drm_log("sweetgl: diag %d p%d v%d %.300s", slot, prog, vs, log);
-	for (int i = 0; i < 8 && glGetError() != GL_NO_ERROR; i++) {
-	}
+	sweet_drm_log("sweetgl: diag %d p%d %.300s", slot, prog, log);
 }
 
 void
