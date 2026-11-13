@@ -130,20 +130,20 @@ diag_invalid_op(int slot)
 	glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
 	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
 	glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
-	sweet_drm_log("sweetgl: diag slot %d prog %d fb %d fb_status %#x", slot, prog, fb,
+	sweet_drm_log("sweetgl: diag %d p%d fb%d st%#x", slot, prog, fb,
 	    (unsigned)glCheckFramebufferStatus(GL_FRAMEBUFFER));
 	for (int u = 0; u < 4; u++) {
 		GLint t = 0;
 		glActiveTexture(GL_TEXTURE0 + u);
 		glGetIntegerv(GL_TEXTURE_BINDING_2D, &t);
-		sweet_drm_log("sweetgl: diag   unit %d tex %d", u, t);
+		sweet_drm_log("sweetgl: diag u%d tex %d", u, t);
 	}
 	glActiveTexture((GLenum)active);
 	if (prog > 0) {
 		glValidateProgram((GLuint)prog);
 		glGetProgramiv((GLuint)prog, GL_VALIDATE_STATUS, &vs);
 		glGetProgramInfoLog((GLuint)prog, sizeof log, &len, log);
-		sweet_drm_log("sweetgl: diag   validate %d: %.300s", vs, log);
+		sweet_drm_log("sweetgl: diag v%d %.300s", vs, log);
 	}
 	for (int i = 0; i < 8 && glGetError() != GL_NO_ERROR; i++) {
 	}
@@ -1369,22 +1369,10 @@ flush_stats(uint64_t t0, uint64_t t1)
 void
 sgl_Flush(void *rctx)
 {
-	static int flush_traced;
 	SGL_CUR(rctx);
 	uint64_t t0 = mach_absolute_time();
 	glFinish();
-	uint64_t t1 = mach_absolute_time();
-	/* SWEETGL_TRACE: each flush's start (us since boot, same clock as the kernel) and its glFinish time */
-	if (trace_left > 0 && flush_traced < 400) {
-		static mach_timebase_info_data_t tb;
-		if (tb.denom == 0) {
-			mach_timebase_info(&tb);
-		}
-		flush_traced++;
-		TRACE("flush at %llu us, finish %llu us", t0 * tb.numer / tb.denom / 1000,
-		    (t1 - t0) * tb.numer / tb.denom / 1000);
-	}
-	flush_stats(t0, t1);
+	flush_stats(t0, mach_absolute_time());
 }
 
 void
