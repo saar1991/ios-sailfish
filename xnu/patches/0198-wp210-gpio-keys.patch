@@ -1,0 +1,100 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+index 0c548d1..e6c134c 100644
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -258,15 +258,95 @@ keys_thread(void *arg, wait_result_t result)
+ 	}
+ }
+ 
++/*
++ * Oukitel WP210 Pro (MT6895), boot-arg wp210keys=1. The Qualcomm code below
++ * must not run there (sweetkeys=0). Two keys have their own SoC pin, both
++ * active low with an external pull-up (Android: yft_customkey_f2 / _f1):
++ *   volume down       GPIO 107 -> Home (the iPhone 8 userland needs one)
++ *   red side key      GPIO 108 -> Power
++ * pinctrl "gpio" block at 0x10005000: DIR 0x000, DIN 0x200, MODE 0x300, one
++ * bit a pin in DIR/DIN (0x10 per 32 pins), 4 bits a pin in MODE (0x10 per 8).
++ * READ ONLY: nothing is written to the pin controller; LK leaves both pins
++ * as GPIO inputs. Volume up and Power sit behind the MT6368 PMIC (SPMI) and
++ * are not read here.
++ */
++#define WP210_GPIO_PA    0x10005000u
++#define WP210_GPIO_HOME  107u
++#define WP210_GPIO_SIDE  108u
++
++static vm_offset_t wp210_gpio;
++
++static int
++wp210_pin(uint32_t pin)
++{
++	return (keys_rd(wp210_gpio, 0x200u + 0x10u * (pin / 32u)) >> (pin % 32u)) & 1u;
++}
++
++static void
++wp210_keys_thread(void *arg, wait_result_t result)
++{
++	static const uint32_t pin[2] = {WP210_GPIO_HOME, WP210_GPIO_SIDE};
++	static const int code[2] = {KEY_HOME, KEY_POWER};
++	int state[2] = {0, 0};
++	(void)arg;
++	(void)result;
++	for (;;) {
++		for (int k = 0; k < 2; ++k) {
++			int now = !wp210_pin(pin[k]);
++			if (now != state[k]) {
++				state[k] = now;
++				printf("SWEET KEYS: wp210 key=%d down=%d\n", code[k], now);
++				sweet_hid_key(code[k], now);
++			}
++		}
++		keys_wait();
++	}
++}
++
++static void
++wp210_keys_init(void)
++{
++	static const uint32_t pin[2] = {WP210_GPIO_HOME, WP210_GPIO_SIDE};
++	thread_t thread;
++	wp210_gpio = ml_io_map(WP210_GPIO_PA, 0x1000);
++	if (wp210_gpio == 0) {
++		printf("SWEET KEYS: wp210 GPIO mapping failed\n");
++		return;
++	}
++	for (int k = 0; k < 2; ++k) {
++		uint32_t p = pin[k];
++		uint32_t dir = (keys_rd(wp210_gpio, 0x10u * (p / 32u)) >> (p % 32u)) & 1u;
++		uint32_t mode = (keys_rd(wp210_gpio, 0x300u + 0x10u * (p / 8u)) >> (4u * (p % 8u))) & 0xfu;
++		printf("SWEET KEYS: wp210 gpio%u mode=%u dir=%u in=%d\n", p, mode, dir, wp210_pin(p));
++		if (mode != 0 || dir != 0) {
++			printf("SWEET KEYS: wp210 gpio%u is not a GPIO input; keys not started\n", p);
++			return;
++		}
++	}
++	kern_return_t kr = kernel_thread_start(wp210_keys_thread, NULL, &thread);
++	if (kr == KERN_SUCCESS) {
++		thread_deallocate(thread);
++		printf("SWEET KEYS: wp210 keys polling (Home = volume down, Power = side key)\n");
++	} else {
++		printf("SWEET KEYS: kernel_thread_start failed %d\n", kr);
++	}
++}
++
+ void
+ sweet_keys_init(void)
+ {
+ 	int enabled = 1;
++	int wp210 = 0;
+ 	thread_t thread;
+ 	if (keys_started) {
+ 		return;
+ 	}
+ 	keys_started = true;
++	(void)PE_parse_boot_argn("wp210keys", &wp210, sizeof(wp210));
++	if (wp210) {
++		wp210_keys_init();
++		return;
++	}
+ 	(void)PE_parse_boot_argn("sweetkeys", &enabled, sizeof(enabled));
+ 	if (!enabled) {
+ 		printf("SWEET KEYS: disabled (sweetkeys=0)\n");
