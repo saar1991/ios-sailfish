@@ -116,6 +116,39 @@ sgl_unsupported(int slot, const char *name)
 	}
 }
 
+/*
+ * SWEETGL_GLERR: what the GL state looks like when a call failed with
+ * GL_INVALID_OPERATION: the program's validation message, the framebuffer
+ * status and the texture bound on each of the first units. Read-only apart
+ * from glValidateProgram, which sets only the program's validate status.
+ */
+static void
+diag_invalid_op(int slot)
+{
+	GLint prog = 0, fb = 0, active = GL_TEXTURE0, vs = 0, len = 0;
+	char log[512] = "";
+	glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
+	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
+	glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+	sweet_drm_log("sweetgl: diag slot %d prog %d fb %d fb_status %#x", slot, prog, fb,
+	    (unsigned)glCheckFramebufferStatus(GL_FRAMEBUFFER));
+	for (int u = 0; u < 4; u++) {
+		GLint t = 0;
+		glActiveTexture(GL_TEXTURE0 + u);
+		glGetIntegerv(GL_TEXTURE_BINDING_2D, &t);
+		sweet_drm_log("sweetgl: diag   unit %d tex %d", u, t);
+	}
+	glActiveTexture((GLenum)active);
+	if (prog > 0) {
+		glValidateProgram((GLuint)prog);
+		glGetProgramiv((GLuint)prog, GL_VALIDATE_STATUS, &vs);
+		glGetProgramInfoLog((GLuint)prog, sizeof log, &len, log);
+		sweet_drm_log("sweetgl: diag   validate %d: %.300s", vs, log);
+	}
+	for (int i = 0; i < 8 && glGetError() != GL_NO_ERROR; i++) {
+	}
+}
+
 void
 sgl_post(int slot)
 {
@@ -132,6 +165,9 @@ sgl_post(int slot)
 			logged[slot][k]++;
 		}
 		sweet_drm_log("sweetgl: GL error %#x after slot %d %s", e, slot, sgl_slot_names[slot]);
+		if (sgl_check_errors && e == GL_INVALID_OPERATION && k < 8 && logged[slot][k] <= 3) {
+			diag_invalid_op(slot);
+		}
 	}
 }
 
@@ -1333,10 +1369,22 @@ flush_stats(uint64_t t0, uint64_t t1)
 void
 sgl_Flush(void *rctx)
 {
+	static int flush_traced;
 	SGL_CUR(rctx);
 	uint64_t t0 = mach_absolute_time();
 	glFinish();
-	flush_stats(t0, mach_absolute_time());
+	uint64_t t1 = mach_absolute_time();
+	/* SWEETGL_TRACE: each flush's start (us since boot, same clock as the kernel) and its glFinish time */
+	if (trace_left > 0 && flush_traced < 400) {
+		static mach_timebase_info_data_t tb;
+		if (tb.denom == 0) {
+			mach_timebase_info(&tb);
+		}
+		flush_traced++;
+		TRACE("flush at %llu us, finish %llu us", t0 * tb.numer / tb.denom / 1000,
+		    (t1 - t0) * tb.numer / tb.denom / 1000);
+	}
+	flush_stats(t0, t1);
 }
 
 void
