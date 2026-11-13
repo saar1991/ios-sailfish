@@ -1,0 +1,141 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+index 692c95b..135b90f 100644
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -435,10 +435,14 @@ wp210_gpio_out(uint32_t pin, uint32_t level)
+ }
+ 
+ /* One full-duplex FIFO transfer, len 1..32. */
++static uint32_t wp210_spi_cmd_extra;       /* e.g. bit 18 = internal loopback */
++static unsigned wp210_spi_polls;
++static bool wp210_spi_busy_seen;
++
+ static bool
+ wp210_spi_xfer(const uint8_t *tx, uint8_t *rx, uint32_t len)
+ {
+-	uint32_t cmd = (1u << 11) | (1u << 12);        /* TX/RX MSB first */
++	uint32_t cmd = (1u << 11) | (1u << 12) | wp210_spi_cmd_extra;  /* TX/RX MSB first */
+ 	wp210_wr(wp210_spi, 0x18, cmd | (1u << 2));    /* reset */
+ 	wp210_wr(wp210_spi, 0x18, cmd);
+ 	wp210_wr(wp210_spi, 0x24, 0);                  /* pad select 0 */
+@@ -453,11 +457,14 @@ wp210_spi_xfer(const uint8_t *tx, uint8_t *rx, uint32_t len)
+ 		wp210_wr(wp210_spi, 0x10, w);
+ 	}
+ 	wp210_wr(wp210_spi, 0x18, cmd | 1u);           /* activate */
++	wp210_spi_busy_seen = !(keys_rd(wp210_spi, 0x20) & 1u);
+ 	delay(20);
+ 	unsigned t;
+ 	for (t = 0; t < 20000 && !(keys_rd(wp210_spi, 0x20) & 1u); ++t) {
++		wp210_spi_busy_seen = true;
+ 		delay(10);
+ 	}
++	wp210_spi_polls = t;
+ 	if (t == 20000) {
+ 		printf("WP210 TP: spi timeout status0=%#x status1=%#x cmd=%#x\n",
+ 		    keys_rd(wp210_spi, 0x1c), keys_rd(wp210_spi, 0x20), keys_rd(wp210_spi, 0x18));
+@@ -503,6 +510,89 @@ wp210_tp_hex(const char *what, uint32_t addr, const uint8_t *b, uint32_t n)
+ 	printf("WP210 TP: %s %#x: %s\n", what, addr, line);
+ }
+ 
++/*
++ * Round 3 diagnostics. The controller transfer of round 2 returned at once
++ * with all-zero data. Two independent checks:
++ *  - controller: register read-back, whether it ever reported busy, and an
++ *    internal loopback transfer (CMD bit 18) that needs no pins at all;
++ *  - bit-banged SPI on the same four pads as plain GPIOs (no controller, no
++ *    clock): MISO is GPIO 109 (the one input pad); clock, MOSI and chip
++ *    select are tried in all six orders over GPIO 110..112.
++ */
++static void
++wp210_bb_xfer(uint32_t cs, uint32_t clk, uint32_t mosi, const uint8_t *tx, uint8_t *rx, uint32_t len)
++{
++	wp210_gpio_out(cs, 0);
++	delay(20);
++	for (uint32_t i = 0; i < len; ++i) {
++		uint8_t in = 0;
++		for (int bit = 7; bit >= 0; --bit) {
++			wp210_gpio_out(mosi, (tx[i] >> bit) & 1u);
++			delay(2);
++			wp210_gpio_out(clk, 1);
++			in = (uint8_t)((in << 1) | (uint8_t)wp210_pin(109));
++			delay(2);
++			wp210_gpio_out(clk, 0);
++		}
++		rx[i] = in;
++	}
++	delay(20);
++	wp210_gpio_out(cs, 1);
++}
++
++static void
++wp210_tp_diag(void)
++{
++	static const uint8_t perm[6][3] = {      /* cs, clk, mosi */
++		{110, 111, 112}, {110, 112, 111}, {111, 110, 112},
++		{111, 112, 110}, {112, 110, 111}, {112, 111, 110},
++	};
++	uint8_t tx[32], rx[32];
++
++	/* Controller: loopback. */
++	for (uint32_t i = 0; i < 8; ++i) {
++		tx[i] = (uint8_t)(0xa1u + 0x11u * i);
++	}
++	memset(rx, 0, sizeof(rx));
++	wp210_spi_cmd_extra = 1u << 18;
++	bool ok = wp210_spi_xfer(tx, rx, 8);
++	wp210_spi_cmd_extra = 0;
++	printf("WP210 TP: ctl regs cfg0=%08x cfg1=%08x cmd=%08x cfg2=%08x st1=%08x\n",
++	    keys_rd(wp210_spi, 0x00), keys_rd(wp210_spi, 0x04), keys_rd(wp210_spi, 0x18),
++	    keys_rd(wp210_spi, 0x28), keys_rd(wp210_spi, 0x20));
++	printf("WP210 TP: ctl loopback ok=%d busy-seen=%d polls=%u\n", ok, wp210_spi_busy_seen, wp210_spi_polls);
++	wp210_tp_hex("ctl loopback rx", 0, rx, 8);
++
++	/* Bit-bang on the pads as GPIOs. */
++	memset(tx, 0xff, sizeof(tx));
++	tx[0] = 0xf1;
++	tx[1] = 0x00;
++	tx[2] = 0x01;
++	tx[3] = 0x00;
++	tx[4] = 0x14;
++	wp210_gpio_mode(109, 0);
++	wp210_gpio_field(0x10u * (109u / 32u), 109u % 32u, 1u, 0u);
++	for (uint32_t p = 110; p <= 112; ++p) {
++		wp210_gpio_mode(p, 0);
++	}
++	for (int k = 0; k < 6; ++k) {
++		/* idle: all three high-impedance-safe levels: cs high, others low */
++		wp210_gpio_out(perm[k][0], 1);
++		wp210_gpio_out(perm[k][1], 0);
++		wp210_gpio_out(perm[k][2], 0);
++		delay(200);
++		memset(rx, 0, sizeof(rx));
++		wp210_bb_xfer(perm[k][0], perm[k][1], perm[k][2], tx, rx, 31);
++		printf("WP210 TP: bitbang cs=%u clk=%u mosi=%u\n", perm[k][0], perm[k][1], perm[k][2]);
++		wp210_tp_hex("bitbang rx", 0, rx, 16);
++		wp210_tp_hex("bitbang rx", 16, rx + 16, 15);
++	}
++	for (uint32_t p = 109; p <= 112; ++p) {
++		wp210_gpio_field(0x10u * (p / 32u), p % 32u, 1u, 0u);
++		wp210_gpio_mode(p, 1);
++	}
++}
++
+ static void
+ wp210_tp_thread(void *arg, wait_result_t result)
+ {
+@@ -550,6 +640,7 @@ wp210_tp_thread(void *arg, wait_result_t result)
+ 		memset(id, 0, sizeof(id));
+ 		if (wp210_tp_read(0x10014u, id, sizeof(id))) {
+ 			wp210_tp_hex("version", 0x10014u, id, sizeof(id));
++			printf("WP210 TP: ctl read busy-seen=%d polls=%u\n", wp210_spi_busy_seen, wp210_spi_polls);
+ 			if (memcmp(id, "BERLIN", 6) == 0) {
+ 				printf("WP210 TP: Goodix answered: rom %.6s patch %.8s vid %02x%02x%02x%02x (Android: 9916P 0c800306)\n",
+ 				    (const char *)id, (const char *)id + 10, id[18], id[19], id[20], id[21]);
+@@ -562,6 +653,7 @@ wp210_tp_thread(void *arg, wait_result_t result)
+ 	}
+ 	if (memcmp(id, "BERLIN", 6) != 0) {
+ 		printf("WP210 TP: no valid answer from the touch controller\n");
++		wp210_tp_diag();
+ 	} else {
+ 		/* IC info block: 16-bit length, then the layout (touch data address etc). */
+ 		uint8_t len2[2] = {0, 0};
