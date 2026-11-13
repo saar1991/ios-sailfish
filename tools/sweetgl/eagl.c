@@ -1624,6 +1624,18 @@ bind_surface(IOSurfaceRef s, GLenum target, GLenum format, GLenum type, uint32_t
 	size_t pitch = IOSurfaceGetBytesPerRowOfPlane(s, plane);
 	struct sgl_image img = {0};
 	bool multi = IOSurfaceGetPlaneCount(s) > 1 || plane != 0;   /* ponytail: YUV surfaces not yet */
+	/*
+	 * Format-0 IOSurfaces with 4 bytes per pixel (backboardd's own surfaces)
+	 * are B,G,R,A in memory, as upload_format() says. The app's texImage
+	 * asks for GL_RGBA/UNSIGNED_BYTE, and those copies fail with 0x502
+	 * (log: "fmt 0x1908/0x1401: copy error 0x502"). Upload them as BGRA
+	 * instead; copy_surface() then passes GL_BGRA_EXT as both format and
+	 * internal format. Untested until the shim runs on the device.
+	 */
+	if (format == GL_RGBA && type == GL_UNSIGNED_BYTE && fourcc == 0 && !multi &&
+	    IOSurfaceGetBytesPerElementOfPlane(s, plane) == 4) {
+		format = GL_BGRA_EXT;
+	}
 	img.format = format && !multi ? gl_format(format, type, &img.internalformat) : PIPE_FORMAT_NONE;
 	if (img.format == PIPE_FORMAT_NONE && !multi) {
 		img.format = surface_format(fourcc, IOSurfaceGetBytesPerElementOfPlane(s, plane), &img.internalformat);
