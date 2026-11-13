@@ -116,7 +116,7 @@
 +#endif /* _SWEET_SURFACE_H */
 --- /dev/null
 +++ b/iokit/Kernel/arm/SweetSurface.cpp
-@@ -0,0 +1,872 @@
+@@ -0,0 +1,880 @@
 +/*
 + * Built-in IOSurface for SWEET.
 + *
@@ -407,6 +407,14 @@
 +	s->elementWidth = (uint8_t)sweet_dict_u32(props, "IOSurfaceElementWidth", 1);
 +	s->elementHeight = (uint8_t)sweet_dict_u32(props, "IOSurfaceElementHeight", 1);
 +	s->pixelFormat = sweet_dict_u32(props, "IOSurfacePixelFormat", 0);
++	{
++		static int fmt_logged;
++		if (fmt_logged++ < 8) {
++			OSObject *pf = props->getObject("IOSurfacePixelFormat");
++			IOLog("SWEET SURF: layout keys %u, IOSurfacePixelFormat %s %s\n", props->getCount(),
++			    pf ? "present" : "missing", pf ? pf->getMetaClass()->getClassName() : "-");
++		}
++	}
 +	s->cacheMode = sweet_dict_u32(props, "IOSurfaceCacheMode", 0);
 +	s->offset = sweet_dict_u32(props, "IOSurfaceOffset", 0);
 +	if (s->width > SWEET_SURFACE_MAX_DIM || s->height > SWEET_SURFACE_MAX_DIM ||
