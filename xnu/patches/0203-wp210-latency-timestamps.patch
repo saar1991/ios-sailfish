@@ -1,0 +1,61 @@
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -295,14 +295,30 @@
+ 			int now = !wp210_pin(pin[k]);
+ 			if (now != state[k]) {
+ 				state[k] = now;
++				uint64_t t0 = wp210_lat_us();
+ 				printf("SWEET KEYS: wp210 key=%d down=%d\n", code[k], now);
+ 				sweet_hid_key(code[k], now);
++				if (wp210_lat_on) {
++					printf("WP210 LAT key=%d down=%d t=%llu sent_us=%llu\n", code[k], now,
++					    (unsigned long long)t0, (unsigned long long)(wp210_lat_us() - t0));
++				}
+ 			}
+ 		}
+ 		keys_wait();
+ 	}
+ }
+ 
++/* Latency probe (boot-arg wp210lat, default on): timestamps in microseconds
++ * so the log shows where the time goes between the driver and iOS. */
++static int wp210_lat_on = 1;
++static uint64_t
++wp210_lat_us(void)
++{
++	uint32_t s = 0, us = 0;
++	absolutetime_to_microtime(mach_absolute_time(), &s, &us);
++	return (uint64_t)s * 1000000u + us;
++}
++
+ static void
+ wp210_keys_init(void)
+ {
+@@ -875,12 +891,15 @@
+ 			continue;
+ 		}
+ 		idle = 0;
++		uint64_t tread = wp210_lat_us();
+ 		wp210_gt_read(addr, buf, 18);
++		uint64_t tread_done = wp210_lat_us();
+ 		uint8_t status = buf[0];
+ 		if (status == 0) {
+ 			continue;
+ 		}
+ 		uint32_t n = 0, seen = 0;
++		uint32_t prevdown = down;
+ 		if (status & 0x80u) {
+ 			n = buf[2] & 0x0fu;
+ 			if (n > 10) {
+@@ -917,6 +936,11 @@
+ 			}
+ 			down = seen;
+ 		}
++		if (wp210_lat_on && seen != prevdown) {
++			printf("WP210 LAT touch t=%llu read_us=%llu handled_us=%llu fingers=%#x\n",
++			    (unsigned long long)tread, (unsigned long long)(tread_done - tread),
++			    (unsigned long long)(wp210_lat_us() - tread), seen);
++		}
+ 		wp210_gt_write8(addr, 0);
+ 		if ((++reports % 2000u) == 0) {
+ 			printf("WP210 TP: %u reports\n", reports);
