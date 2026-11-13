@@ -117,34 +117,21 @@ sgl_unsupported(int slot, const char *name)
 }
 
 /*
- * SWEETGL_GLERR: what the GL state looks like when a call failed with
- * GL_INVALID_OPERATION: the program's validation message, the framebuffer
- * status and the texture bound on each of the first units. Read-only apart
- * from glValidateProgram, which sets only the program's validate status.
+ * SWEETGL_GLERR: the current program's validation message after a
+ * GL_INVALID_OPERATION. Only glValidateProgram changes state (its status).
  */
 static void
 diag_invalid_op(int slot)
 {
-	GLint prog = 0, fb = 0, active = GL_TEXTURE0, vs = 0, len = 0;
+	GLint prog = 0, vs = 0, len = 0;
 	char log[512] = "";
 	glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
-	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
-	glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
-	sweet_drm_log("sweetgl: diag %d p%d fb%d st%#x", slot, prog, fb,
-	    (unsigned)glCheckFramebufferStatus(GL_FRAMEBUFFER));
-	for (int u = 0; u < 4; u++) {
-		GLint t = 0;
-		glActiveTexture(GL_TEXTURE0 + u);
-		glGetIntegerv(GL_TEXTURE_BINDING_2D, &t);
-		sweet_drm_log("sweetgl: diag u%d tex %d", u, t);
-	}
-	glActiveTexture((GLenum)active);
 	if (prog > 0) {
 		glValidateProgram((GLuint)prog);
 		glGetProgramiv((GLuint)prog, GL_VALIDATE_STATUS, &vs);
 		glGetProgramInfoLog((GLuint)prog, sizeof log, &len, log);
-		sweet_drm_log("sweetgl: diag v%d %.300s", vs, log);
 	}
+	sweet_drm_log("sweetgl: diag %d p%d v%d %.300s", slot, prog, vs, log);
 	for (int i = 0; i < 8 && glGetError() != GL_NO_ERROR; i++) {
 	}
 }
