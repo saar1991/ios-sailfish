@@ -65,8 +65,13 @@ The changes come from the iOS boot in the trace image, not from our install.
   - logical size 17208704
   - one extent: device block 122729397 × 4202 blocks
   - this matches the install script's target. The file hasn't moved; only its size limit matters.
-- Current (changed) SHA-256 of the nine blocks: see `scripts/check-metadata-readonly.sh` for the expected list.
-  Replacing the expected hashes is a decision to make only after the size problem is solved.
+- Current SHA-256 of the four changed blocks (after the trace boot):
+  - 119713536: 0c8892a2…
+  - 119897218: 9493e6ef…
+  - 119897220: 6b9dfaed…
+  - 119897768: 5bb364e7…
+- The expected (old) hashes are in `scripts/install-sweetgl-diag-0x502.sh`.
+  Replacing them is a decision to make only after the size problem is solved.
 
 ## Open items
 
