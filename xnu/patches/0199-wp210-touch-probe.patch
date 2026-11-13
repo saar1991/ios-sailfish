@@ -1,0 +1,77 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+index e6c134c..55dde01 100644
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -332,6 +332,59 @@ wp210_keys_init(void)
+ 	}
+ }
+ 
++/*
++ * WP210 touch bring-up, round 1: boot-arg wp210tpprobe=1 prints (READ ONLY)
++ * the state LK leaves behind for the Goodix Berlin-D controller on SPI2:
++ *   reset GPIO 3, AVDD enable GPIO 90, IOVDD enable GPIO 91, IRQ GPIO 135,
++ *   SPI2 pads GPIO 109..112 (Android: function 1)
++ *   topckgen 0x10000000 (spi mux) and pericfg_ao 0x11036000 (spi2 gate)
++ * wp210tpprobe=2 also reads the SPI2 controller at 0x11012000, last: with
++ * its clock gated that read may not return, and the line printed before it
++ * says so. Nothing is written anywhere.
++ */
++static void
++wp210_tp_dump(const char *name, uint32_t pa, uint32_t words)
++{
++	vm_offset_t va = ml_io_map(pa, 0x1000);
++	if (va == 0) {
++		printf("WP210 TP: %s map failed\n", name);
++		return;
++	}
++	for (uint32_t i = 0; i < words; i += 4) {
++		printf("WP210 TP: %s +%03x: %08x %08x %08x %08x\n", name, 4u * i,
++		    keys_rd(va, 4u * i), keys_rd(va, 4u * i + 4u),
++		    keys_rd(va, 4u * i + 8u), keys_rd(va, 4u * i + 12u));
++	}
++}
++
++static void
++wp210_tp_probe(int level)
++{
++	static const uint32_t pin[8] = {3, 90, 91, 109, 110, 111, 112, 135};
++	if (wp210_gpio == 0) {
++		wp210_gpio = ml_io_map(WP210_GPIO_PA, 0x1000);
++	}
++	if (wp210_gpio == 0) {
++		return;
++	}
++	for (int k = 0; k < 8; ++k) {
++		uint32_t p = pin[k], reg = 0x10u * (p / 32u), bit = p % 32u;
++		printf("WP210 TP: gpio%u mode=%u dir=%u dout=%u din=%u\n", p,
++		    (keys_rd(wp210_gpio, 0x300u + 0x10u * (p / 8u)) >> (4u * (p % 8u))) & 0xfu,
++		    (keys_rd(wp210_gpio, reg) >> bit) & 1u,
++		    (keys_rd(wp210_gpio, 0x100u + reg) >> bit) & 1u,
++		    (keys_rd(wp210_gpio, 0x200u + reg) >> bit) & 1u);
++	}
++	wp210_tp_dump("pericfg_ao", 0x11036000u, 16);
++	wp210_tp_dump("topckgen", 0x10000000u, 128);
++	if (level >= 2) {
++		printf("WP210 TP: reading SPI2 next; no spi2 lines after this = its clock is gated\n");
++		delay(200000);
++		wp210_tp_dump("spi2", 0x11012000u, 20);
++	}
++	printf("WP210 TP: probe done\n");
++}
++
+ void
+ sweet_keys_init(void)
+ {
+@@ -344,7 +397,12 @@ sweet_keys_init(void)
+ 	keys_started = true;
+ 	(void)PE_parse_boot_argn("wp210keys", &wp210, sizeof(wp210));
+ 	if (wp210) {
++		int tpprobe = 0;
+ 		wp210_keys_init();
++		(void)PE_parse_boot_argn("wp210tpprobe", &tpprobe, sizeof(tpprobe));
++		if (tpprobe) {
++			wp210_tp_probe(tpprobe);
++		}
+ 		return;
+ 	}
+ 	(void)PE_parse_boot_argn("sweetkeys", &enabled, sizeof(enabled));
