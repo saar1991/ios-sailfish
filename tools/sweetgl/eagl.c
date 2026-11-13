@@ -63,18 +63,6 @@ static bool dump_shaders;       /* SWEETGL_TRACE=1: every shader source, no limi
 
 #define TRACE(...) do { if (trace_left > 0) { trace_left--; sweet_drm_log("sweetgl: trace " __VA_ARGS__); } } while (0)
 
-/*
- * SWEETGL_TRACE: draws are traced in windows, every draw of one (state,
- * uniforms, the scissor box before and after): WIN_DRAWS draws from a draw
- * into a WIN_TRIGGER-sized viewport (CC slider modules, App Library pods),
- * then none for WIN_SECS.
- */
-#define WIN_SECS 30
-#define WIN_DRAWS 500
-#define WIN_TRIGGER(w, h) (((w) == 138 && (h) == 306) || ((w) == 296 && (h) == 296) || ((w) == 297 && (h) == 296))
-static int win_left;
-static time_t win_next;
-#define WTRACE(...) do { if (win_left > 0) TRACE(__VA_ARGS__); } while (0)
 
 /* ponytail: linear table of contexts; backboardd makes one or two */
 #define MAX_CTX 32
@@ -224,9 +212,6 @@ void
 sgl_DiscardFramebufferEXT(void *rctx, GLenum target, GLsizei n, const GLenum *attachments)
 {
 	SGL_CUR(rctx);
-	GLint fb = 0;
-	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
-	WTRACE("DiscardFramebuffer fb %d n %d first %#x", fb, n, n > 0 ? attachments[0] : 0);
 	glInvalidateFramebuffer(target, n, attachments);
 }
 
@@ -723,37 +708,10 @@ feedback_barrier(GLint prog)
 	    GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &att);
 	for (int u = 0; u < 15; u++) {
 		if ((prog_units[prog] & 1u << u) && unit_held[u] == (GLuint)att) {
-			WTRACE("feedback: prog %d samples fb %d's texture %d on unit %d: barrier", prog, fb, att, u);
 			_mesa_TextureBarrierNV();
 			return;
 		}
 	}
-}
-
-/* SWEETGL_TRACE: whether this draw is in a window (opens one when due) */
-static bool
-window_draw(void)
-{
-	struct timespec t;
-	GLint vp[4] = {0};
-	if (trace_left <= 0) {
-		return false;
-	}
-	if (win_left > 0 && --win_left > 0) {
-		return true;
-	}
-	glGetIntegerv(GL_VIEWPORT, vp);
-	if (!WIN_TRIGGER(vp[2], vp[3])) {
-		return false;
-	}
-	clock_gettime(CLOCK_MONOTONIC, &t);
-	if (t.tv_sec < win_next) {
-		return false;
-	}
-	win_next = t.tv_sec + WIN_SECS;
-	win_left = WIN_DRAWS;
-	TRACE("window at %lds (%dx%d draw): next %d draws", (long)t.tv_sec, vp[2], vp[3], WIN_DRAWS);
-	return true;
 }
 
 /* SWEETGL_TRACE: the draw's state and the program's non-sampler uniforms */
@@ -1014,7 +972,7 @@ fbfetch_bind(GLint prog)
 	_mesa_TextureBarrierNV();
 	/* SWEETGL_TRACE: the first draws of each fbfetch program, wherever they happen */
 	static uint8_t traced[PROG_MAX];
-	if (trace_left > 0 && win_left == 0 && traced[prog] < 12) {
+	if (trace_left > 0 && traced[prog] < 12) {
 		traced[prog]++;
 		TRACE("fbfetch draw %d of prog %d: fb %d texture %d %dx%d", traced[prog], prog, fb, att, w, h);
 		trace_draw_state(prog, 0, 0);
@@ -1024,11 +982,10 @@ fbfetch_bind(GLint prog)
 }
 
 /* before a draw: each unit holds what the program samples there, rect scale set */
-static bool
+static void
 draw_prep(GLenum mode, GLsizei count)
 {
 	GLint prog = 0, unit = -1, w = 0, h = 0, scale = -1;
-	bool fresh = false;
 	glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
 	for (int i = 0; i < n_rect_programs; i++) {
 		if (rect_programs[i].program == (GLuint)prog) {
@@ -1076,13 +1033,6 @@ draw_prep(GLenum mode, GLsizei count)
 	}
 	fbfetch_bind(prog);
 	feedback_barrier(prog);
-	if (prog != 0 && window_draw()) {
-		trace_empty_samplers(prog);
-		trace_draw_state(prog, mode, count);
-		trace_region("before");
-		fresh = true;
-	}
-	return fresh;
 }
 
 void
@@ -1139,21 +1089,11 @@ void
 sgl_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 {
 	SGL_CUR(rctx);
-	bool fresh = draw_prep(mode, count);
-	if (fresh) {
-		GLint prog = 0;
-		glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
-		trace_vertex_color(prog, 0, NULL, first);
-	}
+	draw_prep(mode, count);
 	glDrawArrays(mode, first, count);
 	if (fbfetch_pending) {
 		fbfetch_pending = false;
 		trace_region("after");
-	}
-	if (fresh) {
-		GLint prog = 0;
-		glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
-		trace_draw_result(prog);
 	}
 	SGL_POST(65);
 }
@@ -1162,22 +1102,11 @@ void
 sgl_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void *indices)
 {
 	SGL_CUR(rctx);
-	bool fresh = draw_prep(mode, count);
-	if (fresh) {
-		GLint prog = 0, ebuf = 0;
-		glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
-		glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &ebuf);
-		trace_vertex_color(prog, type, ebuf == 0 ? indices : NULL, 0);
-	}
+	draw_prep(mode, count);
 	glDrawElements(mode, count, type, indices);
 	if (fbfetch_pending) {
 		fbfetch_pending = false;
 		trace_region("after");
-	}
-	if (fresh) {
-		GLint prog = 0;
-		glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
-		trace_draw_result(prog);
 	}
 	SGL_POST(67);
 }
@@ -1252,14 +1181,6 @@ void
 sgl_Clear(void *rctx, GLbitfield mask)
 {
 	SGL_CUR(rctx);
-	GLint fb = 0;
-	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
-	GLfloat cc[4] = {0};
-	GLint sc[4] = {0};
-	glGetFloatv(GL_COLOR_CLEAR_VALUE, cc);
-	glGetIntegerv(GL_SCISSOR_BOX, sc);
-	WTRACE("Clear fb %d mask %#x color %.3g,%.3g,%.3g,%.3g scissor %d %d,%d %dx%d", fb, mask, cc[0], cc[1], cc[2], cc[3],
-	    glIsEnabled(GL_SCISSOR_TEST), sc[0], sc[1], sc[2], sc[3]);
 	glClear(mask);
 	SGL_POST(10);
 }
@@ -1268,7 +1189,6 @@ void
 sgl_BindFramebufferEXT(void *rctx, GLenum target, GLuint framebuffer)
 {
 	SGL_CUR(rctx);
-	WTRACE("BindFramebuffer %u", framebuffer);
 	glBindFramebuffer(target, framebuffer);
 	SGL_POST(672);
 }
