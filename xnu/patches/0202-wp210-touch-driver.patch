@@ -1,0 +1,259 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+index 135b90f..4c82117 100644
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -687,6 +687,243 @@ wp210_tp_thread(void *arg, wait_result_t result)
+ 	printf("WP210 TP: round 2 done\n");
+ }
+ 
++/*
++ * WP210 touch driver, boot-arg wp210tp=2. Round 3 showed the Goodix GT9916P
++ * answers a bit-banged SPI transfer on the pads as plain GPIOs:
++ *   chip select GPIO 110, clock GPIO 112, MOSI GPIO 111, MISO GPIO 109
++ *   read:  F1, address (4 bytes, big endian), 3 dummy bytes, then data
++ *   write: F0, address (4 bytes, big endian), data
++ * (the SPI2 controller clocked its transfers but returned zeros, loopback
++ * included, so it is not used). About 500 kHz; a touch report is 26 bytes.
++ * Report at the "touch data" address from the IC info block (0x10070):
++ *   byte 0 status (0x80 touch event, 0x40 request), byte 2 low nibble =
++ *   number of points, then 8 bytes a point from byte 8: id << 4 | type,
++ *   reserved, x, y, w (little endian 16 bit). Writing 0 to byte 0
++ *   acknowledges the report.
++ * Coordinates are panel pixels (1080 x 2412). The 750x1334 picture is scaled
++ * to 1080 x 1920 and centred (patch 0197), so y - 246 is what SweetHIDTouch
++ * expects (its logical size is 1080 x 1920).
++ */
++extern void sweet_hid_touch(int finger, int down, int x, int y);
++
++#define WP210_BB_DOUT    0x130u          /* GPIO 96..127 */
++#define WP210_BB_DIN     0x230u
++#define WP210_BB_MISO    (1u << 13)      /* GPIO 109 */
++#define WP210_BB_CS      (1u << 14)      /* GPIO 110 */
++#define WP210_BB_MOSI    (1u << 15)      /* GPIO 111 */
++#define WP210_BB_CLK     (1u << 16)      /* GPIO 112 */
++#define WP210_TP_Y0      246
++#define WP210_TP_W       1080
++#define WP210_TP_H       1920
++
++static void
++wp210_bb(const uint8_t *tx, uint8_t *rx, uint32_t len)
++{
++	uint32_t v = keys_rd(wp210_gpio, WP210_BB_DOUT) & ~(WP210_BB_CS | WP210_BB_CLK);
++	wp210_wr(wp210_gpio, WP210_BB_DOUT, v);
++	delay(2);
++	for (uint32_t i = 0; i < len; ++i) {
++		uint8_t out = tx[i], in = 0;
++		for (int bit = 7; bit >= 0; --bit) {
++			v = ((out >> bit) & 1u) ? (v | WP210_BB_MOSI) : (v & ~WP210_BB_MOSI);
++			wp210_wr(wp210_gpio, WP210_BB_DOUT, v);
++			delay(1);
++			wp210_wr(wp210_gpio, WP210_BB_DOUT, v | WP210_BB_CLK);
++			in = (uint8_t)(((uint32_t)in << 1) | ((keys_rd(wp210_gpio, WP210_BB_DIN) & WP210_BB_MISO) ? 1u : 0u));
++			delay(1);
++			wp210_wr(wp210_gpio, WP210_BB_DOUT, v);
++		}
++		rx[i] = in;
++	}
++	delay(2);
++	wp210_wr(wp210_gpio, WP210_BB_DOUT, v | WP210_BB_CS);
++}
++
++static void
++wp210_gt_read(uint32_t addr, uint8_t *out, uint32_t n)
++{
++	uint8_t tx[8 + 64], rx[8 + 64];
++	while (n != 0) {
++		uint32_t part = n > 64 ? 64 : n;
++		memset(tx, 0xff, sizeof(tx));
++		tx[0] = 0xf1;
++		tx[1] = (uint8_t)(addr >> 24);
++		tx[2] = (uint8_t)(addr >> 16);
++		tx[3] = (uint8_t)(addr >> 8);
++		tx[4] = (uint8_t)addr;
++		wp210_bb(tx, rx, 8u + part);
++		memcpy(out, rx + 8, part);
++		out += part;
++		addr += part;
++		n -= part;
++	}
++}
++
++static void
++wp210_gt_write8(uint32_t addr, uint8_t value)
++{
++	uint8_t tx[6], rx[6];
++	tx[0] = 0xf0;
++	tx[1] = (uint8_t)(addr >> 24);
++	tx[2] = (uint8_t)(addr >> 16);
++	tx[3] = (uint8_t)(addr >> 8);
++	tx[4] = (uint8_t)addr;
++	tx[5] = value;
++	wp210_bb(tx, rx, 6);
++}
++
++static void
++wp210_wait_ms(uint32_t ms)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&keys_sleep_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++/* IC info: length, version (16), feature (10), parameter block with five
++ * counted arrays of 16-bit values, then "misc" with the touch data address
++ * 42 bytes in (Linux goodix_berlin_parse_ic_info). 0 if it does not parse. */
++static uint32_t
++wp210_gt_touch_addr(const uint8_t *d, uint32_t len)
++{
++	uint32_t off = 2 + 16 + 10 + 4;
++	for (int k = 0; k < 5; ++k) {
++		if (off >= len) {
++			return 0;
++		}
++		off += 1u + 2u * d[off];
++	}
++	off += 42;
++	if (off + 4 > len) {
++		return 0;
++	}
++	return (uint32_t)d[off] | ((uint32_t)d[off + 1] << 8) | ((uint32_t)d[off + 2] << 16) | ((uint32_t)d[off + 3] << 24);
++}
++
++static void
++wp210_touch_thread(void *arg, wait_result_t result)
++{
++	static uint8_t info[512];
++	uint8_t buf[8 + 10 * 8 + 2];
++	int lastx[10], lasty[10];
++	uint32_t down = 0, addr, logged = 0, reports = 0;
++	unsigned idle = 0;
++	(void)arg;
++	(void)result;
++	memset(lastx, 0, sizeof(lastx));
++	memset(lasty, 0, sizeof(lasty));
++
++	/* Power as in round 2, pads as GPIOs: CS high, clock and MOSI low. */
++	wp210_gpio_mode(WP210_TP_RST, 0);
++	wp210_gpio_mode(WP210_TP_AVDD, 0);
++	wp210_gpio_mode(WP210_TP_IOVDD, 0);
++	wp210_gpio_mode(WP210_TP_IRQ, 0);
++	wp210_gpio_field(0x10u * (WP210_TP_IRQ / 32u), WP210_TP_IRQ % 32u, 1u, 0u);
++	wp210_gpio_out(WP210_TP_RST, 0);
++	wp210_gpio_out(110, 1);
++	wp210_gpio_out(111, 0);
++	wp210_gpio_out(112, 0);
++	wp210_gpio_field(0x10u * (109u / 32u), 109u % 32u, 1u, 0u);
++	for (uint32_t p = 109; p <= 112; ++p) {
++		wp210_gpio_mode(p, 0);
++	}
++	wp210_gpio_out(WP210_TP_IOVDD, 1);
++	delay(3000);
++	wp210_gpio_out(WP210_TP_AVDD, 1);
++	delay(15000);
++	wp210_gpio_out(WP210_TP_RST, 1);
++	wp210_wait_ms(200);
++
++	for (int tries = 0;; ++tries) {
++		wp210_gt_read(0x10014u, buf, 22);
++		if (memcmp(buf, "BERLIN", 6) == 0) {
++			break;
++		}
++		if (tries == 5) {
++			wp210_tp_hex("no answer, version", 0x10014u, buf, 22);
++			return;
++		}
++		wp210_wait_ms(50);
++	}
++	printf("WP210 TP: Goodix %.6s %.8s vid %02x%02x%02x%02x\n", (const char *)buf,
++	    (const char *)buf + 10, buf[18], buf[19], buf[20], buf[21]);
++
++	wp210_gt_read(0x10070u, info, 2);
++	uint32_t ilen = info[0] | ((uint32_t)info[1] << 8);
++	if (ilen > sizeof(info)) {
++		ilen = sizeof(info);
++	}
++	wp210_gt_read(0x10070u, info, ilen);
++	for (uint32_t off = 0; off < ilen; off += 23) {
++		wp210_tp_hex("icinfo", 0x10070u + off, info + off, ilen - off < 23 ? ilen - off : 23);
++	}
++	addr = wp210_gt_touch_addr(info, ilen);
++	printf("WP210 TP: ic info length %u, touch data address %#x\n", ilen, addr);
++	if (addr < 0x10000u || addr > 0x1ffffu) {
++		addr = 0x10308u;
++		printf("WP210 TP: address not plausible, using the Berlin-D default %#x\n", addr);
++	}
++	wp210_gt_write8(addr, 0);
++	printf("WP210 TP: touch polling started\n");
++
++	for (;;) {
++		wp210_wait_ms(down ? 6u : 4u);
++		/* Read when the chip signals (IRQ low), while fingers are down,
++		 * and every 100 ms regardless in case a pulse was missed. */
++		if (wp210_pin(WP210_TP_IRQ) && !down && ++idle < 25) {
++			continue;
++		}
++		idle = 0;
++		wp210_gt_read(addr, buf, 18);
++		uint8_t status = buf[0];
++		if (status == 0) {
++			continue;
++		}
++		uint32_t n = 0, seen = 0;
++		if (status & 0x80u) {
++			n = buf[2] & 0x0fu;
++			if (n > 10) {
++				n = 0;
++			}
++			if (n > 1) {
++				wp210_gt_read(addr + 18, buf + 18, (n - 1) * 8);
++			}
++		}
++		if (logged < 40) {
++			logged++;
++			wp210_tp_hex("report", addr, buf, 18);
++		}
++		for (uint32_t i = 0; i < n; ++i) {
++			const uint8_t *pt = buf + 8 + 8 * i;
++			uint32_t id = pt[0] >> 4;
++			int x = (int)pt[2] | ((int)pt[3] << 8);
++			int y = ((int)pt[4] | ((int)pt[5] << 8)) - WP210_TP_Y0;
++			if (id >= 10) {
++				continue;
++			}
++			x = x < 0 ? 0 : x >= WP210_TP_W ? WP210_TP_W - 1 : x;
++			y = y < 0 ? 0 : y >= WP210_TP_H ? WP210_TP_H - 1 : y;
++			seen |= 1u << id;
++			lastx[id] = x;
++			lasty[id] = y;
++			sweet_hid_touch((int)id, 1, x, y);
++		}
++		if (status & 0x80u) {
++			for (uint32_t id = 0; id < 10; ++id) {
++				if ((down & ~seen) & (1u << id)) {
++					sweet_hid_touch((int)id, 0, lastx[id], lasty[id]);
++				}
++			}
++			down = seen;
++		}
++		wp210_gt_write8(addr, 0);
++		if ((++reports % 2000u) == 0) {
++			printf("WP210 TP: %u reports\n", reports);
++		}
++	}
++}
++
+ static void
+ wp210_tp_start(void)
+ {
+@@ -701,7 +938,9 @@ wp210_tp_start(void)
+ 		printf("WP210 TP: MMIO mapping failed\n");
+ 		return;
+ 	}
+-	if (kernel_thread_start(wp210_tp_thread, NULL, &thread) == KERN_SUCCESS) {
++	int tp = 0;
++	(void)PE_parse_boot_argn("wp210tp", &tp, sizeof(tp));
++	if (kernel_thread_start(tp >= 2 ? wp210_touch_thread : wp210_tp_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
+ }
