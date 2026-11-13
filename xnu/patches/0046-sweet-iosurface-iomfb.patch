@@ -116,7 +116,7 @@
 +#endif /* _SWEET_SURFACE_H */
 --- /dev/null
 +++ b/iokit/Kernel/arm/SweetSurface.cpp
-@@ -0,0 +1,882 @@
+@@ -0,0 +1,884 @@
 +/*
 + * Built-in IOSurface for SWEET.
 + *
@@ -820,7 +820,9 @@
 +			}
 +		}
 +	}
-+	if (ret != kIOReturnSuccess || sweet_surface_creates_logged < 64) {
++	static int zero_logged;
++	if (ret != kIOReturnSuccess || sweet_surface_creates_logged < 64 ||
++	    (s->pixelFormat == 0 && zero_logged++ < 32)) {
 +		char name[32];
 +		proc_selfname(name, sizeof(name));
 +		sweet_surface_creates_logged++;
