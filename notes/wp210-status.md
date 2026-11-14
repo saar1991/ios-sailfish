@@ -1,4 +1,4 @@
-# WP210 iOS port: status notes (updated 2026-11-14 17:15)
+# WP210 iOS port: status notes (updated 2026-11-14 17:20)
 
 Working notes so the state survives session resets. Times are local
 (Asia/Jerusalem) unless stated. The newest state is at the top; the older
@@ -15,7 +15,13 @@ notes are kept under "History" at the end.
 
 ## Phone state now
 
-- **Shim installed:** build **75b34d3**, allocation SHA-256 `da79097dd34d6bab4f1bc407ff0f92fb44ce62aa00fe5c2d371035115202a03a`. It replaced 41be079 (`13e97388…`).
+- **Shim installed:** build **75b34d3** (`da79097dd34d6bab4f1bc407ff0f92fb44ce62aa00fe5c2d371035115202a03a`) as of the last confirmed install. It replaced 41be079 (`13e97388…`).
+  - **bb529ae, 17:13:** the refreshed script (`0c6a3d2d…`) printed `CHECK PASSED`. It is **not yet confirmed** whether `--install` was run before the next reboot; no `INSTALL VERIFIED` output was seen.
+  - **Settle it with a read-only check from Android:**
+    `adb shell "su -c '/data/adb/magisk/busybox dd if=/dev/block/sdc bs=4096 skip=122729397 count=4202 iflag=direct 2>/dev/null | sha256sum'"`
+    `f7c8d02b…` means bb529ae is installed; `da79097d…` means 75b34d3 is still there.
+- **Boot at 17:15:** `fastboot flash boot_a wp210-boot-fast2.img` failed (the image didn't exist yet), but `set_active a` and `reboot` ran. So iOS booted the **previous** image in boot_a, which has the automated test and no `SGLFAST` (count-only mode if bb529ae is installed). That boot changes the catalog blocks again.
+- **wp210-boot-fast2.img:** built 17:17 and copied to `C:\Users\artzi123\Downloads\wp210-shim`, 7442432 bytes. It has the k-watch kernel, `wp210.adt`, the stock `boot.img` (`74d48f32…`) and `args-fast2.txt` (604 characters, `SGLFAST=2` once in the payload). **Not flashed yet.**
 - **Boot image:** the last one used had the k-watch kernel (wp210-auto-input 6c51db1, `kernel.development.sweet` `1ca9bd9b…`), the normal `wp210.adt` with 8 cores, and the boot-args in `notes/bootargs/args-freq.txt` (copied from the boot-args line of log cbf8881a). That means `sweetperf=2`, `wp210auto=90`, `wp210cpumhz=2400` and `sweetprof=backboardd,SpringBoard`.
 - **Settings on the phone:** Reduce Transparency and Reduce Motion are on.
 - **Backups:**
@@ -180,12 +186,17 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
 
 ## Next steps
 
-1. **Build.** CI build of bb529ae, then check:
-   - the size is at most 17208704
-   - the signature ends at EOF
-   - the strings `fast mode`, `fastverify` and `slow frame` are there
-2. **Install.** Install with `OLD=da79097d…`. Expect a metadata refresh round, because iOS has booted since the 75b34d3 install.
-3. **Verify run.** Boot with `args-fast2.txt`. Check the qualifying counts, the reasons draws don't qualify, and whether there are any `fastverify` mismatches.
+1. **Done:** the bb529ae build is checked, and the install script is refreshed and passed `--check` (17:13).
+2. **Now:**
+   - let the 17:15 iOS boot finish its automated test
+   - back to Android: `fastboot set_active b`, `fastboot reboot`
+   - pull that log
+   - run the read-only shim hash check above
+     - if it shows `da79097d…`: run `--check` and the read-only metadata check, refresh the hashes, then `--install` until `INSTALL VERIFIED`
+3. **Verify run:**
+   - `adb reboot bootloader`
+   - `fastboot flash boot_a wp210-boot-fast2.img`, `fastboot set_active a`, `fastboot reboot`
+   - let the automated test finish, then pull the log Check the qualifying counts, the reasons draws don't qualify, and whether there are any `fastverify` mismatches.
 4. **Speed run.** Only if the verify run is clean, boot with `args-fast1.txt` and compare the `slow frame` and `WP210 AUTO` numbers with cbf8881a.
 5. **Later:**
    - run the fast path on several A78 cores
