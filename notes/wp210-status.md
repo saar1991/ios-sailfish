@@ -1,4 +1,4 @@
-# WP210 iOS port: status notes (updated 2026-11-14 20:00)
+# WP210 iOS port: status notes (updated 2026-11-14 20:30)
 
 Working notes so the state survives session resets. Times are local
 (Asia/Jerusalem) unless stated. The newest state is at the top; the older
@@ -60,8 +60,9 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | bb529ae | forward declaration of `fast_shader`; stripped build | 16274576 | `f7c8d02b…` | yes, then replaced |
 | 14f179d | fast-path diagnostics: time per reject reason, top 6 programs, reject details (logging only) | 16275200 | `b1059f33…` | yes, then replaced |
 | eed85c5 | half-float colours (fill, tint, alpha-tint), straight and mixed alpha blending, fast rows (memcpy for 1:1 copies), dispatch_apply over cores, map/pixel timing, program log at link | 16275584 | `141eb8a7…` | yes, then replaced |
-| 57394b7, e0ea1da | copy+noise and tint+noise kinds, atop blend, whole-pixel edges, clamped blends; SGLFAST=1 self-checks first | 16275808 | `f2f7b4b4…` | **yes, current** (19:46) |
-| a09c1a7 | softpipe's column coverage rule instead of whole-pixel edges | 16275792 | `b8bf661b…` | script sent (`OLD=f2f7b4b4…`) |
+| 57394b7, e0ea1da | copy+noise and tint+noise kinds, atop blend, whole-pixel edges, clamped blends; SGLFAST=1 self-checks first | 16275808 | `f2f7b4b4…` | yes, then replaced |
+| a09c1a7 | softpipe's column coverage rule instead of whole-pixel edges | 16275792 | `b8bf661b…` | **yes, current** (about 20:10) |
+| (next) | turned textures (u along y), shape reject reasons | | | pushed, to build |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -269,6 +270,23 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## a09c1a7 run (log 215a7147, `SGLFAST=1`, about 20:10): best so far
+
+- **Self-check:** 453 draws matched, none differed.
+- **Atop blending works:** opaque copies with atop now qualify (1291 draws).
+
+  | Run | Frames/s in the test window | Average slow frame | Steps with a frame | Mean first frame |
+  |---|---|---|---|---|
+  | t40 (no fast path) | 1.28 | 4.6 s | 14/30 | 1.16 s |
+  | eed85c5 | 1.49 | 3.2 s | 23/30 | 1.30 s |
+  | e0ea1da (edge rule too strict) | 1.35 | 4.0 s | 22/30 | 1.84 s |
+  | **a09c1a7** | **1.60** | 3.2 s | **24/30** | **1.11 s** |
+
+- **Fast path:** 15117 draws, 20.5 s (map 5.2 s, pixels 15.3 s). Rejected draws cost 117 s: kind 75 s, shape 41 s.
+- **The noise copy (program 9) is now the costliest program: 32%.** It is classified correctly, but all its draws failed the shape check. Its texture is 256x1, a gradient along the window's y axis (u follows y).
+  - **Next build:** turned textures (`fast_uv`) and a reason logged for every shape reject.
+- **Next costs:** program 5 (copy) 15%; programs 21, 13 (mask nine-slice), 45, 39, 29 and 19 between 3% and 9% each.
 
 ## e0ea1da run (log a685589a, `SGLFAST=1` self-checking, 19:46)
 

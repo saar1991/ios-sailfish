@@ -37,7 +37,7 @@ static void fill_img(struct fp_img *m, int w, int h, int fmt) {
 }
 static void read_rgba(const struct fp_img *m, int x, int y, uint8_t c[4]) { fp_read_rgba(m, x, y, c); }
 int main(void) {
-	int fails = 0, cases = 0, fast_rows = 0; long maxd_new = 0;
+	int fails = 0, cases = 0, fast_rows = 0, swaps = 0; long maxd_new = 0;
 	const int fmts[4] = {FP_BGRA, FP_RGBA, FP_BGRX, FP_RGBX};
 	for (int it = 0; it < 20000; it++) {
 		struct fp_img src = {0}, d1 = {0}, d2 = {0};
@@ -66,7 +66,20 @@ int main(void) {
 		uint8_t *o1 = NULL, *o2 = NULL; int use_out = rnd() % 4 == 0;
 		if (use_out) { o1 = calloc((size_t)w * h, 4); o2 = calloc((size_t)w * h, 4); }
 		cases++;
-		if (blendm <= 1 && j.kind <= 6) {
+		if (blendm <= 1 && j.kind >= 2 && j.kind <= 6 && rnd() % 3 == 0 && !use_out) {
+			/* turned texture: same pixels as the old loop on the transposed texture */
+			struct fp_img T = src; T.w = sh; T.h = sw; int bb = sfmt == FP_A8 ? 1 : 4; T.stride = sh * bb;
+			T.ptr = malloc((size_t)T.stride * sw);
+			for (int r = 0; r < sw; r++) for (int c = 0; c < sh; c++) memcpy(T.ptr + r * T.stride + c * bb, src.ptr + c * src.stride + r * bb, bb);
+			struct fp_job jt = j; jt.ua = j.va; jt.ub = j.vb; jt.va = j.ua; jt.vb = j.ub; jt.swap = 0;
+			j.swap = 1;
+			old_fp_run(&jt, &d1, &T, NULL, 0);
+			fp_threads = (int)(rnd() % 2);
+			fp_run(&j, &d2, &src, NULL, 0);
+			if (memcmp(d1.ptr, d2.ptr, (size_t)d1.stride * dh) != 0 && fails++ < 10) printf("SWAP MISMATCH it %d kind %d blend %d linear %d\n", it, j.kind, j.blend, j.linear);
+			swaps++;
+			free(T.ptr);
+		} else if (blendm <= 1 && j.kind <= 6) {
 			old_fp_run(&j, &d1, sp, o1, w * 4);
 			fp_threads = (int)(rnd() % 2);
 			fp_run(&j, &d2, sp, o2, w * 4);
@@ -112,6 +125,6 @@ int main(void) {
 		free(src.ptr); free(d1.ptr); free(d2.ptr); free(o1); free(o2); free(nz.ptr);
 	}
 	(void)fast_rows;
-	printf("cases %d fails %d max blend diff %ld\n", cases, fails, maxd_new);
+	printf("cases %d (turned %d) fails %d max blend diff %ld\n", cases, swaps, fails, maxd_new);
 	return fails != 0;
 }
