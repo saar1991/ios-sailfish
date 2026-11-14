@@ -202,6 +202,17 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
 - **Programs:** all of them share vertex shader 1. Programs 15 and 21 are the copy and tint shaders plus CA's noise dither (`texture2DProj` of a noise texture). Programs 9, 11 and 19 read the backdrop.
 - **Frames:** 30 slow frames, median 2.4 s, maximum 32 s (verify adds work for the first 400 draws). The previous run had a median of 2.3 s.
 
+## Speed run (log 0ded9c98, bb529ae, `SGLFAST=1`, 17:34, video 17:38)
+
+- **No visible corruption** from the fast path's own pixel writes; the only glitch was Control Center, which was the same before.
+- **Per draw:** a qualifying draw cost 5.5 ms on average on the CPU path, against 17.9 ms in softpipe in the verify run. Across the log: 7585 qualifying of 31475 draws, 42 s on the CPU path.
+- **Frame rate did not change.** Inside the automated-test window it was 1.28 / 1.25 / 1.30 frames per second for t40 (75b34d3) / verify / speed. In-window slow frames total 88 s over 19 frames, 73 s over 12 and 94 s over 24.
+- **Why:**
+  - **Coverage:** only about 25% of draws and time qualify. Fill (program 3), tint (program 7), the noise variants (15, 21) and the backdrop programs (9, 19, 25) all stay in softpipe, and program 5 (copy) is still often the costliest program in a frame.
+  - **Switching cost:** each CPU draw maps the framebuffer texture. That makes softpipe rasterize what it has queued and write back its colour tile cache, which the next softpipe draw must reload. Part of the saving moves into the neighbouring softpipe draws.
+- **Steps (first-frame ms)** vary a lot from run to run and are not clearly better.
+- **Next:** the 14f179d run (booted 17:50) shows time per reject reason and per program, and why fill and tint are rejected.
+
 ## Control Center rendering (video 17:38, seen in every run)
 
 - **What happens:** Control Center opens about 12 s after the swipe-up. Its background is missing, normally an opaque dark or blurred layer (Reduce Transparency is on). The home screen shows through, undimmed and unblurred, and the modules look translucent over the icons.
