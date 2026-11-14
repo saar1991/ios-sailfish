@@ -15,7 +15,8 @@ notes are kept under "History" at the end.
 
 ## Phone state now
 
-- **Shim installed:** build **bb529ae** (`f7c8d02b2fcfd1d3c3e06997d8f0d4f8319c8f4c88e8208ea997a0462c180793`), confirmed at 17:25 by the read-only hash check. It replaced 75b34d3 (`da79097d…`).
+- **Shim installed:** build **14f179d** (`b1059f3388ebfe0cc445d36648255626abc47828a1366d3682d64274454c15d4`), `INSTALL VERIFIED` at 17:48 with the refreshed script `a643ae3a…`. It replaced bb529ae (`f7c8d02b…`), whose backup is `/data/local/tmp/sweetgl-check.ogfDXh/before.bin`.
+- **boot_a:** `wp210-boot-fast1.img` (`SGLFAST=1`). The speed run with bb529ae was the 17:34 boot (video 17:38).
   - **bb529ae, 17:13:** the refreshed script (`0c6a3d2d…`) printed `CHECK PASSED`. It is **not yet confirmed** whether `--install` was run before the next reboot; no `INSTALL VERIFIED` output was seen.
   - **Settle it with a read-only check from Android:**
     `adb shell "su -c '/data/adb/magisk/busybox dd if=/dev/block/sdc bs=4096 skip=122729397 count=4202 iflag=direct 2>/dev/null | sha256sum'"`
@@ -51,8 +52,8 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | 41be079 | per-frame stats (`slow frame` lines); per-draw tracing removed | 17208272 | `13e97388…` | yes, then replaced |
 | 75b34d3 | per-draw list for the first 4 frames of 2 s or more | 17208480 | `da79097d…` | **yes, current** |
 | e98dfef | CPU fast paths (`SGLFAST`), stripped build | - | - | CI failed: implicit declaration of `fast_shader` |
-| bb529ae | forward declaration of `fast_shader`; stripped build | 16274576 | `f7c8d02b…` | **yes, current** |
-| 14f179d | fast-path diagnostics: time per reject reason, top 6 programs, reject details (logging only) | 16275200 | `b1059f33…` | script sent (`OLD=f7c8d02b…`), not yet installed |
+| bb529ae | forward declaration of `fast_shader`; stripped build | 16274576 | `f7c8d02b…` | yes, then replaced |
+| 14f179d | fast-path diagnostics: time per reject reason, top 6 programs, reject details (logging only) | 16275200 | `b1059f33…` | **yes, current** (17:48) |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
