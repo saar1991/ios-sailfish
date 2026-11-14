@@ -51,7 +51,8 @@ struct fp_job {
 	int blend;              /* FPB_ below: how the result combines with the framebuffer */
 	int x0, y0, x1, y1;     /* pixels written, half-open, framebuffer rows (no flip) */
 	float xa, xb, ya, yb;   /* the rectangle in window coordinates, xa < xb, ya < yb */
-	float ua, ub, va, vb;   /* texture coordinates at xa, xb and ya, yb */
+	float ua, ub, va, vb;   /* texture coordinates at xa, xb and ya, yb (swap: u at ya, yb and v at xa, xb) */
+	int swap;               /* the texture turned: u follows window y, v follows x */
 	int linear;             /* filter for this scale: 0 nearest, 1 linear (clamp to edge) */
 	uint8_t color[4];       /* RGBA */
 	/*

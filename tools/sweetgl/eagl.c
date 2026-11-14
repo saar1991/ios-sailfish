@@ -1080,6 +1080,31 @@ fast_near(float a, float b, float eps)
 }
 
 /*
+ * Texture coordinates of a rectangle's corners (cx, cy: at the high x / y
+ * edge): u must depend on one axis only and v on the other. uv[0], uv[1]: u
+ * at that axis' low and high edge; uv[2], uv[3]: v. swap: u follows y.
+ */
+static int
+fast_uv(const int cx[6], const int cy[6], const float tu[6], const float tv[6], int swap, float uv[4])
+{
+	int set[4] = {0};
+	for (int i = 0; i < 6; i++) {
+		int ui = swap ? cy[i] : cx[i], vi = 2 + (swap ? cx[i] : cy[i]);
+		if (!set[ui]) {
+			uv[ui] = tu[i], set[ui] = 1;
+		} else if (!fast_near(uv[ui], tu[i], 1e-5f)) {
+			return -1;
+		}
+		if (!set[vi]) {
+			uv[vi] = tv[i], set[vi] = 1;
+		} else if (!fast_near(uv[vi], tv[i], 1e-5f)) {
+			return -1;
+		}
+	}
+	return set[0] && set[1] && set[2] && set[3] ? 0 : -1;
+}
+
+/*
  * Returns 0: softpipe draws; 1: drawn here; 2: qualifies (counting or
  * verifying), softpipe draws.
  */
@@ -1234,36 +1259,35 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	if (!(xb - xa > e) || !(yb - ya > e)) {
 		return fast_no(NO_SHAPE);
 	}
-	int corner[6];
+	int corner[6], cx[6], cy[6], swap = 0;
 	float ua = 0, ub = 0, va = 0, vb = 0;
 	for (int i = 0; i < 6; i++) {
-		int cxb = fast_near(wx[i], xb, e), cyb = fast_near(wy[i], yb, e);
-		if ((!cxb && !fast_near(wx[i], xa, e)) || (!cyb && !fast_near(wy[i], ya, e))) {
+		cx[i] = fast_near(wx[i], xb, e), cy[i] = fast_near(wy[i], yb, e);
+		if ((!cx[i] && !fast_near(wx[i], xa, e)) || (!cy[i] && !fast_near(wy[i], ya, e))) {
+			FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: vertex %d at %g,%g not a corner of %g,%g-%g,%g", prog, kind, i,
+			    wx[i], wy[i], xa, ya, xb, yb);
 			return fast_no(NO_SHAPE);
 		}
-		corner[i] = cxb | cyb << 1;
-		if (textured) {
-			/* u may only depend on x, v only on y */
-			float *u = cxb ? &ub : &ua, *v = cyb ? &vb : &va;
-			static const float unset = -12345.0f;
-			if (i == 0) {
-				ua = ub = va = vb = unset;
-			}
-			if (*u == unset) {
-				*u = tu[i];
-			} else if (!fast_near(*u, tu[i], 1e-5f)) {
-				return fast_no(NO_SHAPE);
-			}
-			if (*v == unset) {
-				*v = tv[i];
-			} else if (!fast_near(*v, tv[i], 1e-5f)) {
-				return fast_no(NO_SHAPE);
-			}
+		corner[i] = cx[i] | cy[i] << 1;
+	}
+	if (textured) {
+		/* u from one axis and v from the other: as drawn, or turned (u follows y) */
+		float uv[4];
+		if (fast_uv(cx, cy, tu, tv, 0, uv) == 0) {
+			swap = 0;
+		} else if (fast_uv(cx, cy, tu, tv, 1, uv) == 0) {
+			swap = 1;
+		} else {
+			FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: texcoords %g,%g %g,%g %g,%g %g,%g follow neither axis", prog, kind,
+			    tu[0], tv[0], tu[1], tv[1], tu[2], tv[2], tu[3], tv[3]);
+			return fast_no(NO_SHAPE);
 		}
+		ua = uv[0], ub = uv[1], va = uv[2], vb = uv[3];
 	}
 	for (int t = 0; t < 2; t++) {
 		int a = corner[3 * t], b = corner[3 * t + 1], c = corner[3 * t + 2];
 		if (a == b || b == c || a == c) {
+			FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: triangle %d repeats a corner (%d%d%d)", prog, kind, t, a, b, c);
 			return fast_no(NO_SHAPE);
 		}
 	}
@@ -1279,12 +1303,11 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	int lone0 = 6 - corner[0] - corner[1] - corner[2], lone1 = 6 - corner[3] - corner[4] - corner[5];
 	diag = (lone0 ^ lone1) == 3;
 	if (shared != 2 || !diag) {
+		FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: corners %d%d%d %d%d%d are not two triangles on a diagonal", prog,
+		    kind, corner[0], corner[1], corner[2], corner[3], corner[4], corner[5]);
 		return fast_no(NO_SHAPE);
 	}
-	if (textured && (ua == -12345.0f || ub == -12345.0f || va == -12345.0f || vb == -12345.0f)) {
-		return fast_no(NO_SHAPE);
-	}
-	struct fp_job j = {.kind = kind, .blend = blend, .xa = xa, .xb = xb, .ya = ya, .yb = yb,
+	struct fp_job j = {.kind = kind, .blend = blend, .swap = swap, .xa = xa, .xb = xb, .ya = ya, .yb = yb,
 		.ua = ua, .ub = ub, .va = va, .vb = vb};
 	for (int k = 0; k < 4; k++) {
 		float c = col0[k] < 0.0f ? 0.0f : col0[k] > 1.0f ? 1.0f : col0[k];
@@ -1421,7 +1444,8 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		j.noise = &nimg;
 	}
 	if (textured) {
-		float rx = fabsf(ub - ua) * (float)src.w / (xb - xa), ry = fabsf(vb - va) * (float)src.h / (yb - ya);
+		float rx = fabsf(ub - ua) * (float)src.w / (swap ? yb - ya : xb - xa);
+		float ry = fabsf(vb - va) * (float)src.h / (swap ? xb - xa : yb - ya);
 		j.linear = ((rx > 1.0f || ry > 1.0f) ? minf : magf) == GL_LINEAR;
 	}
 	j.x0 = j.x0 > 0 ? j.x0 : 0, j.x1 = j.x1 < dst.w ? j.x1 : dst.w;

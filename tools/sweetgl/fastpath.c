@@ -261,7 +261,7 @@ fp_row(const struct fp_rows *R, int y)
 	uint8_t *o = R->out != NULL ? R->out + (size_t)y * (size_t)R->out_stride : NULL;
 	const uint8_t *r0 = NULL, *r1 = NULL;
 	int wy = 0;
-	if (src != NULL) {
+	if (src != NULL && !j->swap) {
 		r0 = src->ptr + (size_t)R->rows[3 * y] * (size_t)src->stride;
 		r1 = src->ptr + (size_t)R->rows[3 * y + 1] * (size_t)src->stride;
 		wy = R->rows[3 * y + 2];
@@ -270,7 +270,7 @@ fp_row(const struct fp_rows *R, int y)
 	 * Pixel for pixel copies between same-order 4-byte formats, written in
 	 * place: CA's layer contents are mostly drawn 1:1.
 	 */
-	if (src != NULL && R->cols_ident && wy == 0 && o == NULL && src->fmt == dst->fmt &&
+	if (src != NULL && !j->swap && R->cols_ident && wy == 0 && o == NULL && src->fmt == dst->fmt &&
 	    (dst->fmt == FP_BGRA || dst->fmt == FP_RGBA)) {
 		const uint8_t *s = r0 + (size_t)cols[0] * 4;
 		if (j->kind == FPK_COPY && j->blend == FPB_NONE) {
@@ -302,12 +302,26 @@ fp_row(const struct fp_rows *R, int y)
 			return;
 		}
 	}
-	const int plain = src != NULL && R->cols_plain && wy == 0;
+	const int plain = src != NULL && !j->swap && R->cols_plain && wy == 0;
 	const int rgba_dst = dst->fmt == FP_RGBA || dst->fmt == FP_RGBX, x_dst = dst->fmt == FP_BGRX || dst->fmt == FP_RGBX;
 	for (int x = 0; x < w; x++, d += 4) {
 		uint8_t t[4] = {0}, s[4], r[4];
 		if (plain) {
 			px_rgba(r0 + (size_t)cols[3 * x] * (size_t)sb, src->fmt, t);
+		} else if (src != NULL && j->swap) {
+			/* turned: the texture column comes from the window row, the texture row from the window column */
+			const int *c = &R->rows[3 * y], *rr = &cols[3 * x];
+			const uint8_t *q0 = src->ptr + (size_t)rr[0] * (size_t)src->stride, *q1 = src->ptr + (size_t)rr[1] * (size_t)src->stride;
+			uint8_t a[4], b[4], e[4], f[4];
+			px_rgba(q0 + (size_t)c[0] * (size_t)sb, src->fmt, a);
+			px_rgba(q0 + (size_t)c[1] * (size_t)sb, src->fmt, b);
+			px_rgba(q1 + (size_t)c[0] * (size_t)sb, src->fmt, e);
+			px_rgba(q1 + (size_t)c[1] * (size_t)sb, src->fmt, f);
+			for (int k = 0; k < 4; k++) {
+				int top = a[k] * (256 - c[2]) + b[k] * c[2];
+				int bot = e[k] * (256 - c[2]) + f[k] * c[2];
+				t[k] = (uint8_t)((top * (256 - rr[2]) + bot * rr[2] + 32768) >> 16);
+			}
 		} else if (src != NULL) {
 			const int *c = &cols[3 * x];
 			uint8_t a[4], b[4], e[4], f[4];
@@ -382,17 +396,30 @@ fp_run(const struct fp_job *j, struct fp_img *dst, const struct fp_img *src, uin
 			return;
 		}
 		int *rows = cols + 3 * w;
-		float du = (j->ub - j->ua) / (j->xb - j->xa), dv = (j->vb - j->va) / (j->yb - j->ya);
-		R.cols_plain = R.cols_ident = 1;
-		for (int i = 0; i < w; i++) {
-			texel(j->ua + ((float)(j->x0 + i) + 0.5f - j->xa) * du, src->w, j->linear, &cols[3 * i],
-			    &cols[3 * i + 1], &cols[3 * i + 2]);
-			R.cols_plain &= cols[3 * i + 2] == 0;
-			R.cols_ident &= cols[3 * i + 2] == 0 && cols[3 * i] == cols[0] + i;
-		}
-		for (int i = 0; i < h; i++) {
-			texel(j->va + ((float)(j->y0 + i) + 0.5f - j->ya) * dv, src->h, j->linear, &rows[3 * i],
-			    &rows[3 * i + 1], &rows[3 * i + 2]);
+		R.cols_plain = R.cols_ident = !j->swap;
+		if (!j->swap) {
+			float du = (j->ub - j->ua) / (j->xb - j->xa), dv = (j->vb - j->va) / (j->yb - j->ya);
+			for (int i = 0; i < w; i++) {
+				texel(j->ua + ((float)(j->x0 + i) + 0.5f - j->xa) * du, src->w, j->linear, &cols[3 * i],
+				    &cols[3 * i + 1], &cols[3 * i + 2]);
+				R.cols_plain &= cols[3 * i + 2] == 0;
+				R.cols_ident &= cols[3 * i + 2] == 0 && cols[3 * i] == cols[0] + i;
+			}
+			for (int i = 0; i < h; i++) {
+				texel(j->va + ((float)(j->y0 + i) + 0.5f - j->ya) * dv, src->h, j->linear, &rows[3 * i],
+				    &rows[3 * i + 1], &rows[3 * i + 2]);
+			}
+		} else {
+			/* cols: texture row per window column (v along x); rows: texture column per window row (u along y) */
+			float dv = (j->vb - j->va) / (j->xb - j->xa), du = (j->ub - j->ua) / (j->yb - j->ya);
+			for (int i = 0; i < w; i++) {
+				texel(j->va + ((float)(j->x0 + i) + 0.5f - j->xa) * dv, src->h, j->linear, &cols[3 * i],
+				    &cols[3 * i + 1], &cols[3 * i + 2]);
+			}
+			for (int i = 0; i < h; i++) {
+				texel(j->ua + ((float)(j->y0 + i) + 0.5f - j->ya) * du, src->w, j->linear, &rows[3 * i],
+				    &rows[3 * i + 1], &rows[3 * i + 2]);
+			}
 		}
 		R.cols = cols, R.rows = rows, R.sb = bpp(src->fmt);
 	}
