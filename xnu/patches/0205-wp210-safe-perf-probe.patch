@@ -1,0 +1,81 @@
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -512,6 +512,69 @@
+ 	return (((uint64_t)f * 10 + 15) * 4800000 / (0x10000 * 10 + 35)) / 1000000;
+ }
+ 
++/*
++ * Boot-arg sweetperf=2: the probe for the WP210 (MT6895). sweetperf=1 starts
++ * with Qualcomm clock and voltage registers (perf_clocks, clk_measure_mhz)
++ * that do not exist on MediaTek: the first access hangs the phone. This one
++ * uses only the CPUs and the kernel's own counters. Once: each CPU's MIDR
++ * (part 0xd05 Cortex-A55, 0xd41 Cortex-A78), clock and memcpy bandwidth.
++ * Every 10 s: each CPU's clock (dependent adds, interrupts off for a few
++ * ms), backboardd swaps/s and the swap gaps, touch moves, and SWEET TOP
++ * (per-process CPU, 100% = one CPU busy).
++ */
++#define PERF_SAFE_CPUS 8
++
++static void
++perf_thread_safe(void *arg, wait_result_t result)
++{
++	int ncpu = (int)ml_get_cpu_count();
++	(void)arg;
++	(void)result;
++	if (ncpu > PERF_SAFE_CPUS) {
++		ncpu = PERF_SAFE_CPUS;
++	}
++	for (int c = 0; c < ncpu; c++) {
++		uint64_t midr, mpidr;
++		thread_bind(cpu_to_processor(c));
++		thread_block(THREAD_CONTINUE_NULL);	/* migrate */
++		__asm__ volatile ("mrs %0, midr_el1" : "=r"(midr));
++		__asm__ volatile ("mrs %0, mpidr_el1" : "=r"(mpidr));
++		printf("SWEET PERF: cpu%d midr %#llx part %#llx mpidr %#llx %llu MHz\n", c,
++		    (unsigned long long)midr, (unsigned long long)((midr >> 4) & 0xfff),
++		    (unsigned long long)mpidr, (unsigned long long)perf_mhz());
++		perf_bandwidth(c);
++	}
++	thread_bind(NULL);
++	top_gen = 1;
++	perf_top(0);
++	uint64_t swaps = sweet_fb_stat_swaps, t = mach_absolute_time(), gap[4];
++	uint32_t moves = sweet_touch_moves;
++	memcpy(gap, sweet_fb_stat_gap, sizeof(gap));
++	for (;;) {
++		uint64_t mhz[PERF_SAFE_CPUS] = {0};
++		perf_wait(10);
++		for (int c = 0; c < ncpu; c++) {
++			thread_bind(cpu_to_processor(c));
++			thread_block(THREAD_CONTINUE_NULL);	/* migrate */
++			mhz[c] = perf_mhz();
++		}
++		thread_bind(NULL);
++		uint64_t now = mach_absolute_time(), ms = perf_ns(now - t) / NSEC_PER_MSEC;
++		uint64_t ds = sweet_fb_stat_swaps - swaps;
++		printf("SWEET PERF: MHz %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu  swaps %llu.%llu/s\n",
++		    mhz[0], mhz[1], mhz[2], mhz[3], mhz[4], mhz[5], mhz[6], mhz[7],
++		    ms ? ds * 1000 / ms : 0, ms ? ds * 10000 / ms % 10 : 0);
++		printf("SWEET PERF: swap gaps <20 %llu <37 %llu <54 %llu more %llu ms, touch moves %u\n",
++		    sweet_fb_stat_gap[0] - gap[0], sweet_fb_stat_gap[1] - gap[1], sweet_fb_stat_gap[2] - gap[2],
++		    sweet_fb_stat_gap[3] - gap[3], sweet_touch_moves - moves);
++		perf_top(perf_ns(now - t));
++		memcpy(gap, sweet_fb_stat_gap, sizeof(gap));
++		moves = sweet_touch_moves;
++		swaps = sweet_fb_stat_swaps;
++		t = now;
++	}
++}
++
+ extern bool sweet_rpm_clk(uint32_t type, uint32_t id, uint32_t khz);
+ extern bool sweet_rpm_clk_scaling(void);
+ 
+@@ -637,7 +700,7 @@
+ 	if (!enabled) {
+ 		return;
+ 	}
+-	if (kernel_thread_start(perf_thread, NULL, &thread) == KERN_SUCCESS) {
++	if (kernel_thread_start(enabled == 2 ? perf_thread_safe : perf_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
+ }
