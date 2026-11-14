@@ -1,0 +1,74 @@
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -539,13 +539,15 @@
+  */
+ #define WP210_CPUFREQ_PA        0x0011b000u
+ static const uint32_t wp210_cpufreq_dom[3] = {0xc10, 0xd30, 0xe50};
++static vm_offset_t wp210_csram;         /* 0x11b000..0x11cfff: the domains and the CSRAM after them */
++static int wp210_want[3] = {-1, -1, -1};        /* index set by wp210cpumhz */
+ 
+ static void
+ wp210_cpufreq(void)
+ {
+ 	int cap = 0;
+ 	(void)PE_parse_boot_argn("wp210cpumhz", &cap, sizeof(cap));
+-	vm_offset_t base = ml_io_map(WP210_CPUFREQ_PA, 0x1000);
++	vm_offset_t base = wp210_csram = ml_io_map(WP210_CPUFREQ_PA, 0x2000);
+ 	if (base == 0) {
+ 		printf("SWEET CPUFREQ: map failed\n");
+ 		return;
+@@ -602,6 +604,7 @@
+ 			continue;
+ 		}
+ 		r[0x88 / 4] = (uint32_t)best;
++		wp210_want[d] = best;
+ 		__asm__ volatile ("dsb sy" ::: "memory");
+ 		delay(2000);
+ 		printf("SWEET CPUFREQ: domain %d -> index %d (%u MHz), state %u hw %#x\n", d, best,
+@@ -609,6 +612,38 @@
+ 	}
+ }
+ 
++/*
++ * Every 10 s with sweetperf=2: each domain's state, hardware state and the
++ * words after its registers, and the CSRAM words the phone's DT names
++ * (eas_info: thermal limits at CSRAM+0x1208..0x1214, capacity at +0xfa0),
++ * to find what lowers the clocks after boot. A state that no longer holds
++ * the wp210cpumhz index is written again.
++ */
++static void
++wp210_cpufreq_watch(void)
++{
++	char line[400];
++	int m = 0;
++	if (wp210_csram == 0) {
++		return;
++	}
++	for (int d = 0; d < 3; d++) {
++		volatile uint32_t *r = (volatile uint32_t *)(wp210_csram + wp210_cpufreq_dom[d]);
++		uint32_t st = r[0x88 / 4];
++		m += snprintf(line + m, sizeof(line) - m, " d%d state %u hw %#x %#x %#x %#x %#x", d, st, r[0x8c / 4],
++		    r[0x80 / 4], r[0x114 / 4], r[0x118 / 4], r[0x11c / 4]);
++		if (wp210_want[d] >= 0 && st != (uint32_t)wp210_want[d]) {
++			r[0x88 / 4] = (uint32_t)wp210_want[d];
++			__asm__ volatile ("dsb sy" ::: "memory");
++			m += snprintf(line + m, sizeof(line) - m, " (set %d again)", wp210_want[d]);
++		}
++	}
++	volatile uint32_t *cs = (volatile uint32_t *)(wp210_csram + 0xc00);	/* CSRAM base 0x11bc00 */
++	printf("SWEET CPUFREQ:%s | limit %#x %#x %#x %#x cap %#x %#x %#x %#x\n", line,
++	    cs[0x1208 / 4], cs[0x120c / 4], cs[0x1210 / 4], cs[0x1214 / 4],
++	    cs[0xfa0 / 4], cs[0xfa4 / 4], cs[0xfa8 / 4], cs[0xfac / 4]);
++}
++
+ #define PERF_SAFE_CPUS 8
+ 
+ static void
+@@ -656,6 +691,7 @@
+ 		    sweet_fb_stat_gap[0] - gap[0], sweet_fb_stat_gap[1] - gap[1], sweet_fb_stat_gap[2] - gap[2],
+ 		    sweet_fb_stat_gap[3] - gap[3], sweet_touch_moves - moves);
+ 		perf_top(perf_ns(now - t));
++		wp210_cpufreq_watch();
+ 		memcpy(gap, sweet_fb_stat_gap, sizeof(gap));
+ 		moves = sweet_touch_moves;
+ 		swaps = sweet_fb_stat_swaps;
