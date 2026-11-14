@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # READ-ONLY. Compares the nine iOS catalog blocks with the expected hashes
-# used by install-sweetgl-diag-bb529ae.sh and prints MATCH or DIFFERS for each.
+# used by install-sweetgl-diag-14f179d.sh and prints MATCH or DIFFERS for each.
 # It never writes to /dev/block. Scratch files go in a new directory under
 # /data/local/tmp, which is kept for review.
 umask 077

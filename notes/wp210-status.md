@@ -52,7 +52,7 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | 75b34d3 | per-draw list for the first 4 frames of 2 s or more | 17208480 | `da79097d…` | **yes, current** |
 | e98dfef | CPU fast paths (`SGLFAST`), stripped build | - | - | CI failed: implicit declaration of `fast_shader` |
 | bb529ae | forward declaration of `fast_shader`; stripped build | 16274576 | `f7c8d02b…` | **yes, current** |
-| 14f179d | fast-path diagnostics: time per reject reason, top 6 programs, reject details (logging only) | | | pushed, to build |
+| 14f179d | fast-path diagnostics: time per reject reason, top 6 programs, reject details (logging only) | 16275200 | `b1059f33…` | script sent (`OLD=f7c8d02b…`), not yet installed |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -200,6 +200,15 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - program 15 (copy plus noise): 4%
 - **Programs:** all of them share vertex shader 1. Programs 15 and 21 are the copy and tint shaders plus CA's noise dither (`texture2DProj` of a noise texture). Programs 9, 11 and 19 read the backdrop.
 - **Frames:** 30 slow frames, median 2.4 s, maximum 32 s (verify adds work for the first 400 draws). The previous run had a median of 2.3 s.
+
+## Control Center rendering (video 17:38, seen in every run)
+
+- **What happens:** Control Center opens about 12 s after the swipe-up. Its background is missing, normally an opaque dark or blurred layer (Reduce Transparency is on). The home screen shows through, undimmed and unblurred, and the modules look translucent over the icons.
+- **It stays open to the end of the test.** The final Home press probably arrived while it was still animating in.
+- **Not caused by the fast path:** it looked the same in earlier runs.
+- **Lead:** in the shader-dump boot (log 8e3714c1), CA's `create_shader` hook logged **texture function 0x3d MISSING**. CA drops draws whose texture function its GL renderer lacks; that is how 0x2d, 0x14, 0x26 and 0x27 were found and supplied (`sgl_texfns`). 0x3d is not identified yet.
+- **Next:** log the caller address for MISSING functions and symbolicate it with ipsw. The hooks currently install only with `SWEETGL_TRACE=1`.
+- **Also seen:** opening the Phone app showed a white screen for about 20 s.
 
 ## Next steps
 
