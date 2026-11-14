@@ -68,7 +68,8 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | f7ea6b1 | multi-rect draws, mask kind, check budget 10, summary in two lines | 16292624 | `142cccbf…` | yes, then replaced |
 | 9a67231 | nine-slice pairing, mipmaps when not minified, luminanceCurve, dst-out | 16292736 | `14dd9a0c…` | yes (about 21:57) |
 | e5f492c | flat nine-slice cells, ONE/ONE blend, colour matrix over the backdrop | 16292800 | `e18828d6…` | **yes, current** (about 22:17) |
-| 5956cb2 | diagnostics: draws over 300 ms, unrecognised fragment shaders logged whole | 16292912 | `cb25b600…` | script sent (22:37) |
+| 5956cb2 | diagnostics: draws over 300 ms, unrecognised fragment shaders logged whole | 16292912 | `cb25b600…` | yes (about 22:40) |
+| 9bfed51 | supercircle / circle shapes, masked supercircle icons, mix over the backdrop; unrecognised vertex shaders logged | | | pushed, to build |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -276,6 +277,23 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## 5956cb2 run (log e556f5f9, `SGLFAST=1`, about 22:42): diagnostics
+
+- **Self-check:** no draw differed. 2.45 frames/s, 26/30 steps (a slower run; this build changed no drawing). It ended on the home screen this time (10 swaps/s after the test).
+- **Draws over 300 ms (34):** the blur passes are the big ones. Programs 45, 95 and 39 read 752x1336 and write 756x1340 or 750x1334, at 2.1-2.6 s per draw.
+- **Blur shaders** (unrecognised `fs 0 … vs 0` programs): CA's separable Gaussian.
+  - Each pass reads 4-12 taps of texture0 at texcoord0..13, with symmetric weights `weight[0..1]`.
+  - With `divide`, the result is divided by its alpha.
+  - The tap offsets are computed in their own vertex shader, so 9bfed51 logs unrecognised vertex shaders.
+  - About 10.5 s per test run in softpipe.
+- **Shape helpers, now in the log verbatim:** `supercircleImage` (pow 2.68 superellipse) and `circleImage`, both antialiased with `fwidth`.
+- **Time per test run:** softpipe (kinds not handled) about 23 s; the CPU path about 18 s (prog 13, masked nine-slices, 9.6 s in all), so the CPU loops are worth speeding up too.
+- **Next build (9bfed51):**
+  - supercircle and circle times colour
+  - texture times supercircle mask (program 69, 2.3 s)
+  - mix(texture1, framebuffer, texture0.a) (program 27, 2.5 s)
+  - host test `notes/tools/fptest/shapetest.c`: 17.6M pixels against a double model of softpipe's coarse derivatives, max difference 1
 
 ## e5f492c run (log 104d951b, `SGLFAST=1`, about 22:20): 3.72 frames/s
 
