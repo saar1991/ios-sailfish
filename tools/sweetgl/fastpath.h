@@ -25,6 +25,18 @@ enum fp_kind {
 	FPK_COUNT
 };
 
+/* blending, as (rgb factors / alpha factors), equation ADD */
+enum fp_blend {
+	FPB_NONE,       /* replace */
+	FPB_PREMUL,     /* ONE, ONE_MINUS_SRC_ALPHA / ONE, ONE_MINUS_SRC_ALPHA */
+	FPB_STRAIGHT,   /* SRC_ALPHA, ONE_MINUS_SRC_ALPHA / SRC_ALPHA, ONE_MINUS_SRC_ALPHA */
+	FPB_MIXED,      /* SRC_ALPHA, ONE_MINUS_SRC_ALPHA / ONE, ONE_MINUS_SRC_ALPHA */
+	FPB_COUNT
+};
+
+/* 1 (default): large rectangles are split across cores with libdispatch */
+extern int fp_threads;
+
 struct fp_img {
 	uint8_t *ptr;
 	int w, h, stride, fmt;
@@ -33,7 +45,7 @@ struct fp_img {
 
 struct fp_job {
 	int kind;
-	int blend;              /* 0: replace; 1: premultiplied over (ONE, ONE_MINUS_SRC_ALPHA) */
+	int blend;              /* FPB_ below: how the result combines with the framebuffer */
 	int x0, y0, x1, y1;     /* pixels written, half-open, framebuffer rows (no flip) */
 	float xa, xb, ya, yb;   /* the rectangle in window coordinates, xa < xb, ya < yb */
 	float ua, ub, va, vb;   /* texture coordinates at xa, xb and ya, yb */

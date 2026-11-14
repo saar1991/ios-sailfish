@@ -853,19 +853,23 @@ sgl_PixelStorei(void *rctx, GLenum pname, GLint param)
  * premultiplied "over", clamp-to-edge nearest or linear sampling of level 0.
  * SGLFAST (environment): 0 or unset, only count the draws that qualify;
  * 1, draw them on the CPU instead of softpipe; 2, verify: compute them,
- * let softpipe draw, compare (with a one-pixel border), first 400 draws.
+ * let softpipe draw, compare (with a one-pixel border), the first 60 draws
+ * of each shader kind and blend mode. A trailing s (1s, 2s) keeps the
+ * pixel loop on one thread.
  * Counts and times every 10 s with the flush statistics.
  */
 #define FAST_VS 0x40
 static int fast_mode;
 static uint8_t shader_kind[PROG_MAX], prog_kind[PROG_MAX];
+static char *shader_body[PROG_MAX];     /* fragment shader main(), whitespace removed */
 static struct {
 	GLint pos, color, tc0, matrix, texmat0, tex0;
 } prog_loc[PROG_MAX];
 enum { NO_KIND, NO_MODE, NO_STATE, NO_BLEND, NO_ARRAY, NO_SHAPE, NO_TEX, NO_FB, NO_MAP, NO_COUNT };
 static struct {
 	uint32_t draws, kind[FPK_COUNT], no[NO_COUNT], ok, bad;
-	uint64_t eligible_abs, fast_abs, no_abs[NO_COUNT];
+	uint64_t eligible_abs, fast_abs, no_abs[NO_COUNT], map_abs, run_abs;
+	uint32_t blend[FPB_COUNT];
 } fst;
 /* per program over the 10 s window: draws, qualifying draws, time, reasons seen (bit per NO_) */
 static struct {
@@ -881,10 +885,11 @@ static int fast_detail_left[NO_COUNT] = {[NO_ARRAY] = 40, [NO_BLEND] = 20, [NO_T
 	sweet_drm_log("sweetgl: fast no " __VA_ARGS__); } } while (0)
 static struct {
 	uint8_t *buf;
-	int bx, by, bw, bh, x0, y0, x1, y1, kind;
+	int bx, by, bw, bh, x0, y0, x1, y1, kind, blend;
 	GLuint tex;
 } fast_pend;
-static uint32_t fast_verified, fast_bad_logged;
+static uint32_t fast_verified[FPK_COUNT][FPB_COUNT], fast_bad_logged;
+#define FAST_VERIFY_EACH 60
 
 static void
 fast_shader(GLuint shader, const char *src)
@@ -911,16 +916,15 @@ fast_shader(GLuint shader, const char *src)
 	if (m == NULL) {
 		return;
 	}
-	char b[200];
-	size_t n = 0;
+	size_t n = 0, cap = strlen(m + 15) + 1;
+	char *b = malloc(cap);
+	if (b == NULL) {
+		return;
+	}
 	for (const char *q = m + 15; *q != 0; q++) {
-		if (*q == ' ' || *q == '\n' || *q == '\t' || *q == '\r') {
-			continue;
+		if (*q != ' ' && *q != '\n' && *q != '\t' && *q != '\r') {
+			b[n++] = *q;
 		}
-		if (n == sizeof(b) - 1) {
-			return;
-		}
-		b[n++] = *q;
 	}
 	b[n] = 0;
 	for (int k = 1; k < FPK_COUNT; k++) {
@@ -928,6 +932,8 @@ fast_shader(GLuint shader, const char *src)
 			shader_kind[shader] = (uint8_t)k;
 		}
 	}
+	free(shader_body[shader]);
+	shader_body[shader] = b;
 }
 
 static void
@@ -941,10 +947,22 @@ fast_link(GLuint program)
 	}
 	prog_kind[program] = 0;
 	glGetAttachedShaders(program, 4, &n, sh);
+	GLuint fsh = 0;
 	for (GLsizei i = 0; i < n; i++) {
 		int k = sh[i] < PROG_MAX ? shader_kind[sh[i]] : 0;
 		vs |= k == FAST_VS;
 		fs = k != 0 && k != FAST_VS ? k : fs;
+		fsh = k != FAST_VS && sh[i] < PROG_MAX && shader_body[sh[i]] != NULL ? sh[i] : fsh;
+	}
+	/* which program is which: the program numbers change between boots */
+	static int linked_logged;
+	if (linked_logged++ < 200) {
+		const char *b = fsh < PROG_MAX && shader_body[fsh] != NULL ? shader_body[fsh] : "?";
+		size_t l = strlen(b);
+		sweet_drm_log("sweetgl: fast link prog %u fs %u kind %d vs %d: %.360s", program, fsh, fs, vs, fs ? "" : b);
+		if (!fs && l > 360) {
+			sweet_drm_log("sweetgl: fast link prog %u ...: %.400s", program, b + 360);
+		}
 	}
 	if (!vs || !fs) {
 		return;
@@ -961,6 +979,19 @@ fast_link(GLuint program)
 		return;
 	}
 	prog_kind[program] = (uint8_t)fs;
+}
+
+#ifndef GL_HALF_FLOAT_OES
+#define GL_HALF_FLOAT_OES 0x8D61
+#endif
+
+/* IEEE half to float (CA passes vertex colours as GL_HALF_FLOAT) */
+static float
+half_float(uint16_t h)
+{
+	int e = (h >> 10) & 0x1f, m = h & 0x3ff;
+	float v = e == 0 ? ldexpf((float)m, -24) : e == 31 ? (m ? NAN : INFINITY) : ldexpf((float)(m | 0x400), e - 25);
+	return (h & 0x8000) ? -v : v;
 }
 
 struct fast_attr {
@@ -987,7 +1018,8 @@ fast_attr_get(GLint loc, struct fast_attr *a)
 	glGetVertexAttribPointerv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_POINTER, &ptr);
 	a->p = ptr;
 	return a->buf != 0 || ptr == NULL || a->size < 1 || a->size > 4 ||
-	       (a->type != GL_FLOAT && a->type != GL_UNSIGNED_BYTE) ? -1 : 0;
+	       (a->type != GL_FLOAT && a->type != GL_UNSIGNED_BYTE && a->type != GL_HALF_FLOAT &&
+	        a->type != GL_HALF_FLOAT_OES) ? -1 : 0;
 }
 
 static void
@@ -999,11 +1031,16 @@ fast_attr_read(const struct fast_attr *a, int idx, GLfloat v[4])
 		memcpy(v, a->cur, sizeof(a->cur));
 		return;
 	}
-	int esz = a->type == GL_FLOAT ? 4 : 1;
+	int half = a->type == GL_HALF_FLOAT || a->type == GL_HALF_FLOAT_OES;
+	int esz = a->type == GL_FLOAT ? 4 : half ? 2 : 1;
 	const uint8_t *e = a->p + (size_t)idx * (size_t)(a->stride ? a->stride : a->size * esz);
 	for (int c = 0; c < a->size; c++) {
 		if (a->type == GL_FLOAT) {
 			memcpy(&v[c], e + 4 * c, 4);
+		} else if (half) {
+			uint16_t h;
+			memcpy(&h, e + 2 * c, 2);
+			v[c] = half_float(h);
 		} else {
 			v[c] = a->norm ? (GLfloat)e[c] / 255.0f : (GLfloat)e[c];
 		}
@@ -1077,13 +1114,17 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		glGetIntegerv(GL_BLEND_DST_ALPHA, &f[3]);
 		glGetIntegerv(GL_BLEND_EQUATION_RGB, &f[4]);
 		glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &f[5]);
-		if (f[0] != GL_ONE || f[1] != GL_ONE_MINUS_SRC_ALPHA || f[2] != GL_ONE || f[3] != GL_ONE_MINUS_SRC_ALPHA ||
-		    f[4] != GL_FUNC_ADD || f[5] != GL_FUNC_ADD) {
+		if (f[1] == GL_ONE_MINUS_SRC_ALPHA && f[3] == GL_ONE_MINUS_SRC_ALPHA && f[4] == GL_FUNC_ADD &&
+		    f[5] == GL_FUNC_ADD) {
+			blend = f[0] == GL_ONE && f[2] == GL_ONE ? FPB_PREMUL :
+			    f[0] == GL_SRC_ALPHA && f[2] == GL_SRC_ALPHA ? FPB_STRAIGHT :
+			    f[0] == GL_SRC_ALPHA && f[2] == GL_ONE ? FPB_MIXED : FPB_NONE;
+		}
+		if (blend == FPB_NONE) {
 			FAST_DETAIL(NO_BLEND, "blend prog %d kind %d: src %#x dst %#x srca %#x dsta %#x eq %#x %#x", prog, kind, f[0],
 			    f[1], f[2], f[3], f[4], f[5]);
 			return fast_no(NO_BLEND);
 		}
-		blend = 1;
 	}
 	GLint fb = 0, type = 0, att = 0, lvl = 0, db = 0;
 	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fb);
@@ -1275,10 +1316,12 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		}
 	}
 	fst.kind[kind]++;
-	if (fast_mode == 0 || (fast_mode == 2 && (fast_verified >= 400 || fast_pend.buf != NULL))) {
+	fst.blend[blend]++;
+	if (fast_mode == 0 || (fast_mode == 2 && (fast_verified[kind][blend] >= FAST_VERIFY_EACH || fast_pend.buf != NULL))) {
 		return 2;
 	}
 	struct fp_img dst = {0}, src = {0};
+	uint64_t tm0 = mach_absolute_time();
 	if (fp_map_tex((GLuint)att, fast_mode == 1, &dst) != 0) {
 		FAST_DETAIL(NO_MAP, "map prog %d kind %d: target texture %d", prog, kind, att);
 		return fast_no(NO_MAP);
@@ -1294,6 +1337,7 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	}
 	j.x0 = j.x0 > 0 ? j.x0 : 0, j.x1 = j.x1 < dst.w ? j.x1 : dst.w;
 	j.y0 = j.y0 > 0 ? j.y0 : 0, j.y1 = j.y1 < dst.h ? j.y1 : dst.h;
+	uint64_t tm1 = mach_absolute_time();
 	if (fast_mode == 1) {
 		fp_run(&j, &dst, textured ? &src : NULL, NULL, 0);
 	} else if (j.x1 > j.x0 && j.y1 > j.y0) {
@@ -1311,13 +1355,16 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 			    bw * 4);
 			fast_pend.buf = buf, fast_pend.bx = bx, fast_pend.by = by, fast_pend.bw = bw, fast_pend.bh = bh;
 			fast_pend.x0 = j.x0, fast_pend.y0 = j.y0, fast_pend.x1 = j.x1, fast_pend.y1 = j.y1;
-			fast_pend.kind = kind, fast_pend.tex = (GLuint)att;
+			fast_pend.kind = kind, fast_pend.blend = blend, fast_pend.tex = (GLuint)att;
 		}
 	}
+	uint64_t tm2 = mach_absolute_time();
 	if (textured) {
 		fp_unmap(&src);
 	}
 	fp_unmap(&dst);
+	fst.map_abs += tm1 - tm0 + mach_absolute_time() - tm2;
+	fst.run_abs += tm2 - tm1;
 	return fast_mode == 1 ? 1 : 2;
 }
 
@@ -1328,7 +1375,7 @@ fast_verify(void)
 	struct fp_img dst = {0};
 	int bad = 0, maxd = 0, fx = -1, fy = -1;
 	uint8_t want[4] = {0}, got[4] = {0};
-	fast_verified++;
+	fast_verified[fast_pend.kind][fast_pend.blend]++;
 	if (fp_map_tex(fast_pend.tex, 0, &dst) == 0) {
 		for (int y = 0; y < fast_pend.bh; y++) {
 			for (int x = 0; x < fast_pend.bw; x++) {
@@ -1355,8 +1402,8 @@ fast_verify(void)
 	} else {
 		fst.bad++;
 		if (fast_bad_logged++ < 60) {
-			sweet_drm_log("sweetgl: fastverify kind %d rect %d,%d-%d,%d: %d px differ (max %d), first %d,%d "
-			    "want %02x%02x%02x%02x got %02x%02x%02x%02x", fast_pend.kind, fast_pend.x0, fast_pend.y0,
+			sweet_drm_log("sweetgl: fastverify kind %d blend %d rect %d,%d-%d,%d: %d px differ (max %d), first %d,%d "
+			    "want %02x%02x%02x%02x got %02x%02x%02x%02x", fast_pend.kind, fast_pend.blend, fast_pend.x0, fast_pend.y0,
 			    fast_pend.x1, fast_pend.y1, bad, maxd, fx, fy, want[0], want[1], want[2], want[3], got[0], got[1],
 			    got[2], got[3]);
 		}
@@ -1392,6 +1439,9 @@ fast_log(void)
 	    fst.kind[FPK_ATINT], fst.kind[FPK_OPAQUE], fst.kind[FPK_ALPHA], fs_ms(fst.eligible_abs), fs_ms(fst.fast_abs),
 	    fst.no[NO_KIND], fst.no[NO_MODE], fst.no[NO_STATE], fst.no[NO_BLEND], fst.no[NO_ARRAY], fst.no[NO_SHAPE],
 	    fst.no[NO_TEX], fst.no[NO_FB], fst.no[NO_MAP], fst.ok, fst.bad);
+	sweet_drm_log("sweetgl: fast here: map %llu ms, pixels %llu ms; blend none %u premul %u straight %u mixed %u",
+	    fs_ms(fst.map_abs), fs_ms(fst.run_abs), fst.blend[FPB_NONE], fst.blend[FPB_PREMUL], fst.blend[FPB_STRAIGHT],
+	    fst.blend[FPB_MIXED]);
 	sweet_drm_log("sweetgl: fast not, ms: kind %llu mode %llu state %llu blend %llu array %llu shape %llu tex %llu fb %llu "
 	    "map %llu", fs_ms(fst.no_abs[NO_KIND]), fs_ms(fst.no_abs[NO_MODE]), fs_ms(fst.no_abs[NO_STATE]),
 	    fs_ms(fst.no_abs[NO_BLEND]), fs_ms(fst.no_abs[NO_ARRAY]), fs_ms(fst.no_abs[NO_SHAPE]), fs_ms(fst.no_abs[NO_TEX]),
@@ -2647,6 +2697,7 @@ sweetgl_eagl_install(void)
 	sgl_check_errors = e && e[0] == '1';
 	const char *fm = getenv("SGLFAST");
 	fast_mode = fm != NULL && fm[0] >= '0' && fm[0] <= '2' ? fm[0] - '0' : 0;
+	fp_threads = !(fm != NULL && fm[0] != 0 && fm[1] == 's');
 	const char *t = getenv("SWEETGL_TRACE");
 	trace_left = t && t[0] == '1' ? 20000 : 0;
 	dump_shaders = trace_left > 0;
