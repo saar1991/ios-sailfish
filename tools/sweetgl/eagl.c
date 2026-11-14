@@ -969,6 +969,12 @@ fbfetch_bind(GLint prog)
 	if (fbfetch_scale[prog] > 0) {
 		glUniform2f(fbfetch_scale[prog] - 1, w > 0 ? 1.0f / (GLfloat)w : 1.0f, h > 0 ? 1.0f / (GLfloat)h : 1.0f);
 	}
+	/*
+	 * Rasterize the draws softpipe still has queued before the barrier, so
+	 * the framebuffer fetch reads them (test: rounded corners came out right
+	 * only while the trace's glReadPixels forced this flush).
+	 */
+	glFlush();
 	_mesa_TextureBarrierNV();
 	/* SWEETGL_GLERR: an error here comes from the setup above, not from the app's draw */
 	if (sgl_check_errors) {
