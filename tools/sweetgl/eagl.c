@@ -861,7 +861,22 @@ static struct {
 } fs;
 static GLuint fs_cur_fb;
 static uint64_t fs_start;
-static uint32_t fs_frame, fs_logged;
+static uint32_t fs_frame, fs_logged, fs_detailed;
+
+/*
+ * Every draw of the frame, kept so the first 4 frames of 2 s or more can be
+ * listed draw by draw: program, framebuffer and its texture size, viewport,
+ * scissor (-1: off), index count, unit 0's texture and size, time.
+ */
+#define FS_DRAWS 256
+static struct fs_rec {
+	GLint prog, vp[4], sc[4];
+	GLuint fb, tex0;
+	GLsizei count;
+	uint16_t fbw, fbh, t0w, t0h;
+	uint32_t us;
+} fs_rec[FS_DRAWS];
+static int fs_nrec;
 
 static uint64_t
 fs_ms(uint64_t abs)
@@ -874,11 +889,35 @@ fs_ms(uint64_t abs)
 }
 
 static void
-fs_draw(uint64_t dt)
+fs_draw(uint64_t dt, GLsizei count)
 {
-	GLint prog = 0;
+	GLint prog = 0, att = 0;
 	int i;
 	glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
+	if (fs_detailed < 4 && fs_nrec < FS_DRAWS) {
+		struct fs_rec *r = &fs_rec[fs_nrec++];
+		r->prog = prog;
+		r->fb = fs_cur_fb;
+		r->count = count;
+		r->us = (uint32_t)(fs_ms(dt * 1000));
+		glGetIntegerv(GL_VIEWPORT, r->vp);
+		r->sc[0] = r->sc[1] = r->sc[2] = r->sc[3] = -1;
+		if (glIsEnabled(GL_SCISSOR_TEST)) {
+			glGetIntegerv(GL_SCISSOR_BOX, r->sc);
+		}
+		r->fbw = r->fbh = 0;
+		if (fs_cur_fb != 0) {
+			glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+			    GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &att);
+			if (att > 0 && att < TEXSZ_MAX) {
+				r->fbw = tex_w[att];
+				r->fbh = tex_h[att];
+			}
+		}
+		r->tex0 = unit_held[0];
+		r->t0w = r->tex0 < TEXSZ_MAX ? tex_w[r->tex0] : 0;
+		r->t0h = r->tex0 < TEXSZ_MAX ? tex_h[r->tex0] : 0;
+	}
 	fs.draws++;
 	fs.draw_abs += dt;
 	for (i = 0; i < fs.nfb && fs.fb[i] != fs_cur_fb; i++) {
@@ -918,7 +957,17 @@ fs_end(uint64_t finish_abs, uint64_t now)
 		    fs_frame, fs_ms(total), fs_ms(fs.draw_abs), fs_ms(finish_abs), fs_start ? fs_ms(now - fs_start) : 0,
 		    fs.draws, fs.nfb, fs_ms(fs.draw_abs - presented), fs.binds, fs.clears,
 		    fs.nprog ? fs.prog[top] : 0, fs.nprog ? fs_ms(fs.prog_abs[top]) : 0, fs.nprog);
+		if (fs_ms(total) >= 2000 && fs_detailed < 4) {
+			fs_detailed++;
+			for (int i = 0; i < fs_nrec; i++) {
+				struct fs_rec *r = &fs_rec[i];
+				sweet_drm_log("sweetgl:  draw %d prog %d fb %u %ux%u vp %d,%d %dx%d sc %d,%d %dx%d n %d tex0 %u %ux%u %u us",
+				    i, r->prog, r->fb, r->fbw, r->fbh, r->vp[0], r->vp[1], r->vp[2], r->vp[3], r->sc[0], r->sc[1],
+				    r->sc[2], r->sc[3], r->count, r->tex0, r->t0w, r->t0h, r->us);
+			}
+		}
 	}
+	fs_nrec = 0;
 	memset(&fs, 0, sizeof(fs));
 	fs_start = now;
 }
@@ -930,7 +979,7 @@ sgl_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 	draw_prep(mode, count);
 	uint64_t t0 = mach_absolute_time();
 	glDrawArrays(mode, first, count);
-	fs_draw(mach_absolute_time() - t0);
+	fs_draw(mach_absolute_time() - t0, count);
 	SGL_POST(65);
 }
 
@@ -941,7 +990,7 @@ sgl_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void
 	draw_prep(mode, count);
 	uint64_t t0 = mach_absolute_time();
 	glDrawElements(mode, count, type, indices);
-	fs_draw(mach_absolute_time() - t0);
+	fs_draw(mach_absolute_time() - t0, count);
 	SGL_POST(67);
 }
 
