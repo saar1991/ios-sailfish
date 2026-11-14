@@ -77,6 +77,20 @@ bash wp210/loader/build.sh STOCK_BOOT payload.bin wp210-boot-X.img
 fastboot flash boot_a wp210-boot-X.img && fastboot set_active a && fastboot reboot
 ```
 
+Exact paths, from WSL (`build.sh` must run from `wp210/loader`):
+
+```
+ADT=/home/saar/ios-sailfish/wp210.adt
+STOCK=/mnt/c/Users/artzi123/Downloads/OUKITEL_WP210_EEA_V11_20251201/boot.img
+cd ~/ios-sailfish
+python3 tools/mkpayload.py ~/wp210-build/k-watch/kernel.development.sweet "$ADT" ~/ios-sailfish/payload-X.bin --cmdline "$(cat args-X.txt)"
+cd wp210/loader
+bash build.sh "$STOCK" ~/ios-sailfish/payload-X.bin ~/ios-sailfish/wp210-boot-X.img
+cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
+```
+
+- **Stock boot image:** `boot.img` from the firmware package. Its SHA-256 is `74d48f32800d8c3a8e63919bd8383681ab8fd0e949611e231aa7e6842d215aa9`, and `wp210-shim\boot.img` is the same file. `mkboot.py` takes only its ramdisk and OS version.
+- **k-watch kernel:** `~/wp210-build/k-watch/kernel.development.sweet`, SHA-256 `1ca9bd9b0d96b133…`.
 - Back to Android: `fastboot set_active b` then `fastboot reboot`.
 - The boot-args limit is 608 bytes. Check the length before building, and check that the file isn't empty (an empty cmdline still builds an image).
 - Copies of the boot-args:
