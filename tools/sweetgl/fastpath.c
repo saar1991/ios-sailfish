@@ -325,6 +325,12 @@ blend(int mode, const uint8_t s[4], const uint8_t dc[4], uint8_t r[4])
 			r[k] = lerp8(s[k], s[3], dc[k], ia);
 		}
 		break;
+	case FPB_ADD:
+		for (int k = 0; k < 4; k++) {
+			int v = s[k] + dc[k];
+			r[k] = (uint8_t)(v > 255 ? 255 : v);
+		}
+		break;
 	case FPB_DSTOUT:
 		for (int k = 0; k < 4; k++) {
 			r[k] = mul8(dc[k], ia);
@@ -426,10 +432,22 @@ fp_row(const struct fp_rows *R, int y)
 		}
 		int darken = j->kind == FPK_ATINTDK || j->kind == FPK_COPYDKN;
 		uint8_t dc[4];
-		if (darken || j->kind == FPK_LUMC || j->blend != FPB_NONE) {
+		int backdrop = j->kind == FPK_LUMC || j->kind == FPK_CM4 || j->kind == FPK_CM3;
+		if (darken || backdrop || j->blend != FPB_NONE) {
 			px_rgba(d, dst->fmt, dc);
 		}
-		if (j->kind == FPK_LUMC) {
+		if (j->kind == FPK_CM4 || j->kind == FPK_CM3) {
+			/* vec4(D.r * m0 + D.g * m1 + D.b * m2 (+ D.a * m3), D.a), in float */
+			float D[4];
+			for (int k = 0; k < 4; k++) {
+				D[k] = (float)dc[k] / 255.0f;
+			}
+			for (int k = 0; k < 3; k++) {
+				float c = D[0] * j->cm[0][k] + D[1] * j->cm[1][k] + D[2] * j->cm[2][k] + D[3] * j->cm[3][k];
+				s[k] = (uint8_t)(clampf(c, 0.0f, 1.0f) * 255.0f + 0.5f);
+			}
+			s[3] = dc[3];
+		} else if (j->kind == FPK_LUMC) {
 			/* luminanceCurve(D, p, a): x = curve(luma(D)); vec4(mix(D.rgb, vec3(x), a), D.a), in float */
 			float D[4];
 			for (int k = 0; k < 4; k++) {

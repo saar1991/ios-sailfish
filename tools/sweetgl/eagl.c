@@ -866,7 +866,7 @@ static uint8_t shader_kind[PROG_MAX], prog_kind[PROG_MAX];
 static char *shader_body[PROG_MAX];     /* fragment shader main(), whitespace removed */
 static uint8_t shader_clamp[PROG_MAX], prog_clamp[PROG_MAX];   /* CA's clamped-texcoord variant */
 static struct {
-	GLint pos, color, tc0, matrix, texmat0, tex0, tex1, texmatw, nscale, carg, tc1, texmat1, farg;
+	GLint pos, color, tc0, matrix, texmat0, tex0, tex1, texmatw, nscale, carg, tc1, texmat1, farg, cm[4];
 } prog_loc[PROG_MAX];
 enum { NO_KIND, NO_MODE, NO_STATE, NO_BLEND, NO_ARRAY, NO_SHAPE, NO_TEX, NO_FB, NO_MAP, NO_COUNT };
 static struct {
@@ -901,7 +901,7 @@ static uint8_t fast_off[FPK_COUNT][FPB_COUNT];   /* differed from softpipe: not 
 #define FAST_NOISE_SIZE 32.0f
 #define FAST_COLORED(k) ((k) == FPK_FILL || (k) == FPK_TINT || (k) == FPK_ATINT || (k) == FPK_TINTN || (k) == FPK_ATINTDK || \
 	(k) == FPK_MASK || (k) == FPK_LUMC)
-#define FAST_TEXTURED(k) ((k) != FPK_FILL && (k) != FPK_LUMC)
+#define FAST_TEXTURED(k) ((k) != FPK_FILL && (k) != FPK_LUMC && (k) != FPK_CM4 && (k) != FPK_CM3)
 #define FAST_LUMC_FN "lowpvec4luminanceCurve(lowpvec4s0,lowpvec4p,lowpfloata){lowpfloatx=dot(s0.rgb,vec3(.2125,.7154,.0721));" \
 	"x=clamp((((p.x*x)+p.y)*x+p.z)*x+p.w,0.0,1.0);returnvec4(mix(s0.rgb,vec3(x,x,x),a),s0.a);}"
 #define FAST_NOISY(k) ((k) == FPK_COPYN || (k) == FPK_TINTN || (k) == FPK_COPYDKN)
@@ -932,6 +932,10 @@ fast_shader(GLuint shader, const char *src)
 		[FPK_MASK] = "{lowpvec4s0=texture2D(texture0,texcoord0_0);lowpvec4s1=texture2D(texture1,texcoord1_0);"
 		    "gl_FragData[0]=color*s0*s1.a;}",
 		[FPK_LUMC] = "{" FAST_FB "lowpvec4s0=d0;gl_FragData[0]=luminanceCurve(s0,function_arg,color.a);}",
+		[FPK_CM4] = "{" FAST_FB "lowpvec4s0=d0;gl_FragData[0]=vec4(s0.r*color_matrix[0]+s0.g*color_matrix[1]+"
+		    "s0.b*color_matrix[2]+s0.a*color_matrix[3],s0.a);}",
+		[FPK_CM3] = "{" FAST_FB "lowpvec4s0=d0;gl_FragData[0]=vec4(s0.r*color_matrix[0]+s0.g*color_matrix[1]+"
+		    "s0.b*color_matrix[2],s0.a);}",
 	};
 	if (shader >= PROG_MAX) {
 		return;
@@ -1055,6 +1059,16 @@ fast_link(GLuint program)
 	prog_loc[program].farg = glGetUniformLocation(program, "function_arg");
 	if (fs == FPK_LUMC && prog_loc[program].farg < 0) {
 		return;
+	}
+	if (fs == FPK_CM4 || fs == FPK_CM3) {
+		/* color_matrix is vec3[4] (or [3]): one location per row */
+		static const char *const row[4] = {"color_matrix[0]", "color_matrix[1]", "color_matrix[2]", "color_matrix[3]"};
+		for (int r = 0; r < 4; r++) {
+			prog_loc[program].cm[r] = r < (fs == FPK_CM4 ? 4 : 3) ? glGetUniformLocation(program, row[r]) : -1;
+			if (r < (fs == FPK_CM4 ? 4 : 3) && prog_loc[program].cm[r] < 0) {
+				return;
+			}
+		}
 	}
 	if (fs == FPK_MASK && (prog_loc[program].tc1 < 0 || prog_loc[program].texmat1 < 0 || prog_loc[program].tex1 < 0)) {
 		return;
@@ -1413,6 +1427,12 @@ fast_pair(const struct fast_attr *ap, int *idx, int nrect)
 	for (int i = 0; i < 3 * ntri; i++) {
 		fast_attr_read(ap, idx[i], pos[i]);
 	}
+	/* flat triangles (a zero-width or zero-height nine-slice cell) cover nothing: left out */
+	for (int a = 0; a < ntri; a++) {
+		const GLfloat *p0 = pos[3 * a], *p1 = pos[3 * a + 1], *p2 = pos[3 * a + 2];
+		float area = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (p1[1] - p0[1]);
+		used[a] = area == 0.0f;
+	}
 	for (int a = 0; a < ntri; a++) {
 		if (used[a]) {
 			continue;
@@ -1467,7 +1487,7 @@ fast_pair(const struct fast_attr *ap, int *idx, int nrect)
 		}
 	}
 	memcpy(idx, out, sizeof(int) * (size_t)n);
-	return 0;
+	return n / 6;
 }
 
 /*
@@ -1533,6 +1553,9 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 			    f[0] == GL_SRC_ALPHA && f[2] == GL_ONE ? FPB_MIXED :
 			    f[0] == GL_DST_ALPHA && f[2] == GL_DST_ALPHA ? FPB_ATOP :
 			    f[0] == GL_ZERO && f[2] == GL_ZERO ? FPB_DSTOUT : FPB_NONE;
+		} else if (f[0] == GL_ONE && f[1] == GL_ONE && f[2] == GL_ONE && f[3] == GL_ONE && f[4] == GL_FUNC_ADD &&
+		    f[5] == GL_FUNC_ADD) {
+			blend = FPB_ADD;
 		}
 		if (blend == FPB_NONE) {
 			FAST_DETAIL(NO_BLEND, "blend prog %d kind %d: src %#x dst %#x srca %#x dsta %#x eq %#x %#x", prog, kind, f[0],
@@ -1597,9 +1620,13 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	if (in.scissor) {
 		glGetIntegerv(GL_SCISSOR_BOX, in.sc);
 	}
-	if (nrect > 1 && fast_pair(&ap, idx, nrect) != 0) {
-		FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: %d triangles do not pair into rectangles", prog, kind, 2 * nrect);
-		return fast_no(NO_SHAPE);
+	if (nrect > 1) {
+		int paired = fast_pair(&ap, idx, nrect);
+		if (paired <= 0) {
+			FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: %d triangles do not pair into rectangles", prog, kind, 2 * nrect);
+			return fast_no(NO_SHAPE);
+		}
+		nrect = paired;
 	}
 	struct fp_job jobs[FAST_RECTS];
 	for (int r = 0; r < nrect; r++) {
@@ -1609,9 +1636,14 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		}
 	}
 	/* draw-wide settings of the jobs */
-	GLfloat ca[4] = {0}, farg[4] = {0};
+	GLfloat ca[4] = {0}, farg[4] = {0}, cmr[4][3] = {{0}};
 	if (kind == FPK_LUMC) {
 		glGetUniformfv((GLuint)prog, prog_loc[prog].farg, farg);
+	}
+	if (kind == FPK_CM4 || kind == FPK_CM3) {
+		for (int r = 0; r < (kind == FPK_CM4 ? 4 : 3); r++) {
+			glGetUniformfv((GLuint)prog, prog_loc[prog].cm[r], cmr[r]);
+		}
 	}
 	if (prog_clamp[prog]) {
 		glGetUniformfv((GLuint)prog, prog_loc[prog].carg, ca);
@@ -1703,6 +1735,9 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		}
 		if (kind == FPK_LUMC) {
 			memcpy(j->farg, farg, sizeof(j->farg));
+		}
+		if (kind == FPK_CM4 || kind == FPK_CM3) {
+			memcpy(j->cm, cmr, sizeof(j->cm));
 		}
 		if (ntex != 0) {
 			/*
@@ -1825,17 +1860,19 @@ fast_log(void)
 {
 	/* two lines: one would pass the 512-byte log line */
 	sweet_drm_log("sweetgl: fast mode %d: %u draws; fill %u copy %u tint %u atint %u opaque %u alpha %u copyn %u tintn %u "
-	    "atintdk %u copydkn %u mask %u lumc %u: %llu ms in softpipe, %llu ms here; verify ok %u bad %u", fast_mode, fst.draws,
+	    "atintdk %u copydkn %u mask %u lumc %u cm %u: %llu ms in softpipe, %llu ms here; verify ok %u bad %u", fast_mode,
+	    fst.draws,
 	    fst.kind[FPK_FILL], fst.kind[FPK_COPY], fst.kind[FPK_TINT], fst.kind[FPK_ATINT], fst.kind[FPK_OPAQUE],
 	    fst.kind[FPK_ALPHA], fst.kind[FPK_COPYN], fst.kind[FPK_TINTN], fst.kind[FPK_ATINTDK], fst.kind[FPK_COPYDKN],
-	    fst.kind[FPK_MASK], fst.kind[FPK_LUMC], fs_ms(fst.eligible_abs), fs_ms(fst.fast_abs), fst.ok, fst.bad);
+	    fst.kind[FPK_MASK], fst.kind[FPK_LUMC], fst.kind[FPK_CM4] + fst.kind[FPK_CM3], fs_ms(fst.eligible_abs),
+	    fs_ms(fst.fast_abs), fst.ok, fst.bad);
 	sweet_drm_log("sweetgl: fast not: kind %u mode %u state %u blend %u array %u shape %u tex %u fb %u map %u",
 	    fst.no[NO_KIND], fst.no[NO_MODE], fst.no[NO_STATE], fst.no[NO_BLEND], fst.no[NO_ARRAY], fst.no[NO_SHAPE],
 	    fst.no[NO_TEX], fst.no[NO_FB], fst.no[NO_MAP]);
 	sweet_drm_log("sweetgl: fast here: map %llu ms, pixels %llu ms; blend none %u premul %u straight %u mixed %u atop %u "
-	    "dstout %u",
+	    "dstout %u add %u",
 	    fs_ms(fst.map_abs), fs_ms(fst.run_abs), fst.blend[FPB_NONE], fst.blend[FPB_PREMUL], fst.blend[FPB_STRAIGHT],
-	    fst.blend[FPB_MIXED], fst.blend[FPB_ATOP], fst.blend[FPB_DSTOUT]);
+	    fst.blend[FPB_MIXED], fst.blend[FPB_ATOP], fst.blend[FPB_DSTOUT], fst.blend[FPB_ADD]);
 	sweet_drm_log("sweetgl: fast not, ms: kind %llu mode %llu state %llu blend %llu array %llu shape %llu tex %llu fb %llu "
 	    "map %llu", fs_ms(fst.no_abs[NO_KIND]), fs_ms(fst.no_abs[NO_MODE]), fs_ms(fst.no_abs[NO_STATE]),
 	    fs_ms(fst.no_abs[NO_BLEND]), fs_ms(fst.no_abs[NO_ARRAY]), fs_ms(fst.no_abs[NO_SHAPE]), fs_ms(fst.no_abs[NO_TEX]),
