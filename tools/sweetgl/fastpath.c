@@ -209,6 +209,12 @@ struct fp_rows {
 	const int *ncols, *nrows;       /* noise texel per column / row */
 };
 
+static inline float
+clampf(float v, float lo, float hi)
+{
+	return v < lo ? lo : v > hi ? hi : v;
+}
+
 /* index of coordinate u in n texels, nearest, repeat */
 static int
 wrap_nearest(float u, int n)
@@ -372,8 +378,43 @@ fp_row(const struct fp_rows *R, int y)
 				t[k] = (uint8_t)((top * (256 - wy) + bot * wy + 32768) >> 16);
 			}
 		}
-		shade(j, t, s);
-		if (R->ncols != NULL) {
+		int darken = j->kind == FPK_ATINTDK || j->kind == FPK_COPYDKN;
+		uint8_t dc[4];
+		if (darken || j->blend != FPB_NONE) {
+			px_rgba(d, dst->fmt, dc);
+		}
+		if (darken) {
+			/*
+			 * CA's darkenSover(S, D) with D the framebuffer before the draw:
+			 * y = luma(D); S *= y^4; R = D * (1 - S.a) + S. Then the dither
+			 * (on R) for the noise variant. In float like the shader.
+			 */
+			float S[4], D[4], Rf[4];
+			for (int k = 0; k < 4; k++) {
+				D[k] = (float)dc[k] / 255.0f;
+				S[k] = j->kind == FPK_ATINTDK ? ((float)j->color[k] / 255.0f) * ((float)t[3] / 255.0f) : (float)t[k] / 255.0f;
+			}
+			float lum = D[0] * 0.2125f + D[1] * 0.7154f + D[2] * 0.0721f, y4 = (lum * lum) * (lum * lum);
+			for (int k = 0; k < 4; k++) {
+				Rf[k] = D[k] * (1.0f - S[3] * y4) + S[k] * y4;
+			}
+			if (R->ncols != NULL) {
+				uint8_t nz[4];
+				px_rgba(j->noise->ptr + (size_t)R->nrows[y] * (size_t)j->noise->stride +
+				    (size_t)R->ncols[x] * (size_t)bpp(j->noise->fmt), j->noise->fmt, nz);
+				for (int k = 0; k < 3; k++) {
+					float c = Rf[k] + ((float)nz[k] / 255.0f - 0.5f) * j->nscale * Rf[3];
+					Rf[k] = clampf(c, 0.0f, Rf[3]);
+				}
+			}
+			for (int k = 0; k < 4; k++) {
+				float c = clampf(Rf[k], 0.0f, 1.0f);
+				s[k] = (uint8_t)(c * 255.0f + 0.5f);
+			}
+		} else {
+			shade(j, t, s);
+		}
+		if (!darken && R->ncols != NULL) {
 			/* CA's dither, in float like the shader */
 			uint8_t nz[4];
 			px_rgba(j->noise->ptr + (size_t)R->nrows[y] * (size_t)j->noise->stride +
@@ -387,8 +428,6 @@ fp_row(const struct fp_rows *R, int y)
 			}
 		}
 		if (j->blend != FPB_NONE) {
-			uint8_t dc[4];
-			px_rgba(d, dst->fmt, dc);
 			blend(j->blend, s, dc, r);
 		} else {
 			memcpy(r, s, 4);
@@ -437,24 +476,28 @@ fp_run(const struct fp_job *j, struct fp_img *dst, const struct fp_img *src, uin
 		if (!j->swap) {
 			float du = (j->ub - j->ua) / (j->xb - j->xa), dv = (j->vb - j->va) / (j->yb - j->ya);
 			for (int i = 0; i < w; i++) {
-				texel(j->ua + ((float)(j->x0 + i) + 0.5f - j->xa) * du, src->w, j->linear, &cols[3 * i],
+				float u = j->ua + ((float)(j->x0 + i) + 0.5f - j->xa) * du;
+				texel(j->tclamp ? clampf(u, j->cu0, j->cu1) : u, src->w, j->linear, &cols[3 * i],
 				    &cols[3 * i + 1], &cols[3 * i + 2]);
 				R.cols_plain &= cols[3 * i + 2] == 0;
 				R.cols_ident &= cols[3 * i + 2] == 0 && cols[3 * i] == cols[0] + i;
 			}
 			for (int i = 0; i < h; i++) {
-				texel(j->va + ((float)(j->y0 + i) + 0.5f - j->ya) * dv, src->h, j->linear, &rows[3 * i],
+				float v = j->va + ((float)(j->y0 + i) + 0.5f - j->ya) * dv;
+				texel(j->tclamp ? clampf(v, j->cv0, j->cv1) : v, src->h, j->linear, &rows[3 * i],
 				    &rows[3 * i + 1], &rows[3 * i + 2]);
 			}
 		} else {
 			/* cols: texture row per window column (v along x); rows: texture column per window row (u along y) */
 			float dv = (j->vb - j->va) / (j->xb - j->xa), du = (j->ub - j->ua) / (j->yb - j->ya);
 			for (int i = 0; i < w; i++) {
-				texel(j->va + ((float)(j->x0 + i) + 0.5f - j->xa) * dv, src->h, j->linear, &cols[3 * i],
+				float v = j->va + ((float)(j->x0 + i) + 0.5f - j->xa) * dv;
+				texel(j->tclamp ? clampf(v, j->cv0, j->cv1) : v, src->h, j->linear, &cols[3 * i],
 				    &cols[3 * i + 1], &cols[3 * i + 2]);
 			}
 			for (int i = 0; i < h; i++) {
-				texel(j->ua + ((float)(j->y0 + i) + 0.5f - j->ya) * du, src->w, j->linear, &rows[3 * i],
+				float u = j->ua + ((float)(j->y0 + i) + 0.5f - j->ya) * du;
+				texel(j->tclamp ? clampf(u, j->cu0, j->cu1) : u, src->w, j->linear, &rows[3 * i],
 				    &rows[3 * i + 1], &rows[3 * i + 2]);
 			}
 		}

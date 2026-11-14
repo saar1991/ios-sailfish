@@ -24,6 +24,8 @@ enum fp_kind {
 	FPK_ALPHA,      /* vec4(texture.a) */
 	FPK_COPYN,      /* texture, then CA's noise dither */
 	FPK_TINTN,      /* color * texture, then CA's noise dither */
+	FPK_ATINTDK,    /* color * texture.a over the framebuffer with CA's darkenSover */
+	FPK_COPYDKN,    /* texture over the framebuffer with darkenSover, then the noise dither */
 	FPK_COUNT
 };
 
@@ -54,6 +56,8 @@ struct fp_job {
 	float xa, xb, ya, yb;   /* the rectangle in window coordinates, xa < xb, ya < yb */
 	float ua, ub, va, vb;   /* texture coordinates at xa, xb and ya, yb (swap: u at ya, yb and v at xa, xb) */
 	int swap;               /* the texture turned: u follows window y, v follows x */
+	int tclamp;             /* texture coordinates clamped to [cu0, cu1] x [cv0, cv1] first */
+	float cu0, cu1, cv0, cv1;
 	int linear;             /* filter for this scale: 0 nearest, 1 linear (clamp to edge) */
 	uint8_t color[4];       /* RGBA */
 	/*

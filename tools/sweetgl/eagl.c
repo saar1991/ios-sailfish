@@ -864,8 +864,9 @@ sgl_PixelStorei(void *rctx, GLenum pname, GLint param)
 static int fast_mode;
 static uint8_t shader_kind[PROG_MAX], prog_kind[PROG_MAX];
 static char *shader_body[PROG_MAX];     /* fragment shader main(), whitespace removed */
+static uint8_t shader_clamp[PROG_MAX], prog_clamp[PROG_MAX];   /* CA's clamped-texcoord variant */
 static struct {
-	GLint pos, color, tc0, matrix, texmat0, tex0, tex1, texmatw, nscale;
+	GLint pos, color, tc0, matrix, texmat0, tex0, tex1, texmatw, nscale, carg;
 } prog_loc[PROG_MAX];
 enum { NO_KIND, NO_MODE, NO_STATE, NO_BLEND, NO_ARRAY, NO_SHAPE, NO_TEX, NO_FB, NO_MAP, NO_COUNT };
 static struct {
@@ -898,8 +899,15 @@ static uint8_t fast_off[FPK_COUNT][FPB_COUNT];   /* differed from softpipe: not 
 #define FAST_NOISE "{mediumpvec3n=texture2DProj(texture1,texcoordN).xyz;n=(n-.5)*noise_scale;" \
 	"lowpvec3c=gl_FragData[0].rgb+n*gl_FragData[0].a;gl_FragData[0].rgb=clamp(c,0.,gl_FragData[0].a);}"
 #define FAST_NOISE_SIZE 32.0f
-#define FAST_COLORED(k) ((k) == FPK_FILL || (k) == FPK_TINT || (k) == FPK_ATINT || (k) == FPK_TINTN)
-#define FAST_NOISY(k) ((k) == FPK_COPYN || (k) == FPK_TINTN)
+#define FAST_COLORED(k) ((k) == FPK_FILL || (k) == FPK_TINT || (k) == FPK_ATINT || (k) == FPK_TINTN || (k) == FPK_ATINTDK)
+#define FAST_NOISY(k) ((k) == FPK_COPYN || (k) == FPK_TINTN || (k) == FPK_COPYDKN)
+/* the backdrop read (fbfetch rewrite) and CA's darken composite, as the darken kinds start and use them */
+#define FAST_FB "lowpvec4d0=texture2D(sgl_fb,gl_FragCoord.xy*sgl_fb_scale);"
+#define FAST_DARKEN "{lowpvec4S=gl_FragData[0];lowpvec4D=d0;lowpvec4R=darkenSover(S,D);gl_FragData[0]=R;}"
+#define FAST_DARKEN_FN "lowpvec4darkenSover(lowpvec4S,lowpvec4D){lowpfloaty=dot(D.rgb,vec3(.2125,.7154,.0721));" \
+	"S=S*(y*y)*(y*y);returnD*(1.-S.a)+S;}"
+/* CA's clamped sampling: tc0_0 = clamp(texcoord0_0, coord_arg.xy, coord_arg.zw), then tc0_0 in place of texcoord0_0 */
+#define FAST_CLAMP "mediumpvec2tc0_0=clamp(texcoord0_0,coord_arg.xy,coord_arg.zw);"
 
 static void
 fast_shader(GLuint shader, const char *src)
@@ -913,6 +921,10 @@ fast_shader(GLuint shader, const char *src)
 		[FPK_ALPHA] = "{lowpvec4t0=texture2D(texture0,texcoord0_0);lowpvec4s0=vec4(t0.a);gl_FragData[0]=s0;}",
 		[FPK_COPYN] = "{lowpvec4s0=texture2D(texture0,texcoord0_0);gl_FragData[0]=s0;" FAST_NOISE "}",
 		[FPK_TINTN] = "{lowpvec4s0=texture2D(texture0,texcoord0_0);gl_FragData[0]=color*s0;" FAST_NOISE "}",
+		[FPK_ATINTDK] = "{" FAST_FB "lowpvec4t0=texture2D(texture0,texcoord0_0);lowpvec4s0=vec4(t0.a);"
+		    "gl_FragData[0]=color*s0;" FAST_DARKEN "}",
+		[FPK_COPYDKN] = "{" FAST_FB "lowpvec4s0=texture2D(texture0,texcoord0_0);gl_FragData[0]=s0;" FAST_DARKEN
+		    FAST_NOISE "}",
 	};
 	if (shader >= PROG_MAX) {
 		return;
@@ -939,10 +951,50 @@ fast_shader(GLuint shader, const char *src)
 		}
 	}
 	b[n] = 0;
+	/* the clamped variant: the same body once the clamp is taken out and tc0_0 named back */
+	const char *cmp = b;
+	char *unclamped = NULL;
+	shader_clamp[shader] = 0;
+	if (b[0] == '{' && strncmp(b + 1, FAST_CLAMP, strlen(FAST_CLAMP)) == 0 && (unclamped = malloc(n + 64)) != NULL) {
+		char *o = unclamped;
+		*o++ = '{';
+		for (const char *q = b + 1 + strlen(FAST_CLAMP); *q != 0;) {
+			if (strncmp(q, "tc0_0", 5) == 0 && (q == b || q[-1] != 'r')) {
+				memcpy(o, "texcoord0_0", 11);
+				o += 11, q += 5;
+			} else {
+				*o++ = *q++;
+			}
+		}
+		*o = 0;
+		cmp = unclamped;
+		shader_clamp[shader] = 1;
+	}
 	for (int k = 1; k < FPK_COUNT; k++) {
-		if (strcmp(b, body[k]) == 0) {
+		if (strcmp(cmp, body[k]) == 0) {
 			shader_kind[shader] = (uint8_t)k;
 		}
+	}
+	free(unclamped);
+	if (shader_kind[shader] == FPK_ATINTDK || shader_kind[shader] == FPK_COPYDKN) {
+		/* and darkenSover must be CA's: the whole source, whitespace removed */
+		size_t l = strlen(src);
+		char *all = malloc(l + 1), *o = all;
+		if (all != NULL) {
+			for (const char *q = src; *q != 0; q++) {
+				if (*q != ' ' && *q != '\n' && *q != '\t' && *q != '\r') {
+					*o++ = *q;
+				}
+			}
+			*o = 0;
+		}
+		if (all == NULL || strstr(all, FAST_DARKEN_FN) == NULL) {
+			shader_kind[shader] = 0;
+		}
+		free(all);
+	}
+	if (shader_kind[shader] == 0) {
+		shader_clamp[shader] = 0;
 	}
 	free(shader_body[shader]);
 	shader_body[shader] = b;
@@ -958,6 +1010,7 @@ fast_link(GLuint program)
 		return;
 	}
 	prog_kind[program] = 0;
+	prog_clamp[program] = 0;
 	glGetAttachedShaders(program, 4, &n, sh);
 	GLuint fsh = 0;
 	for (GLsizei i = 0; i < n; i++) {
@@ -988,6 +1041,11 @@ fast_link(GLuint program)
 	prog_loc[program].tex1 = glGetUniformLocation(program, "texture1");
 	prog_loc[program].texmatw = glGetUniformLocation(program, "texmatW");
 	prog_loc[program].nscale = glGetUniformLocation(program, "noise_scale");
+	prog_loc[program].carg = glGetUniformLocation(program, "coord_arg");
+	int clamped = fsh < PROG_MAX && shader_clamp[fsh];
+	if (clamped && prog_loc[program].carg < 0) {
+		return;
+	}
 	int colored = FAST_COLORED(fs), textured = fs != FPK_FILL;
 	if (FAST_NOISY(fs) && (prog_loc[program].tex1 < 0 || prog_loc[program].texmatw < 0 || prog_loc[program].nscale < 0)) {
 		return;
@@ -997,6 +1055,7 @@ fast_link(GLuint program)
 		return;
 	}
 	prog_kind[program] = (uint8_t)fs;
+	prog_clamp[program] = (uint8_t)clamped;
 }
 
 #ifndef GL_HALF_FLOAT_OES
@@ -1307,11 +1366,16 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		    kind, corner[0], corner[1], corner[2], corner[3], corner[4], corner[5]);
 		return fast_no(NO_SHAPE);
 	}
-	struct fp_job j = {.kind = kind, .blend = blend, .swap = swap, .xa = xa, .xb = xb, .ya = ya, .yb = yb,
+	struct fp_job j = {.kind = kind, .blend = blend, .swap = swap, .tclamp = prog_clamp[prog], .xa = xa, .xb = xb, .ya = ya, .yb = yb,
 		.ua = ua, .ub = ub, .va = va, .vb = vb};
 	for (int k = 0; k < 4; k++) {
 		float c = col0[k] < 0.0f ? 0.0f : col0[k] > 1.0f ? 1.0f : col0[k];
 		j.color[k] = (uint8_t)(c * 255.0f + 0.5f);
+	}
+	if (j.tclamp) {
+		GLfloat ca[4] = {0};
+		glGetUniformfv((GLuint)prog, prog_loc[prog].carg, ca);
+		j.cu0 = ca[0], j.cv0 = ca[1], j.cu1 = ca[2], j.cv1 = ca[3];
 	}
 	/*
 	 * softpipe's coverage (sp_setup.c, half-pixel centres): rows from
@@ -1557,10 +1621,12 @@ fast_account(GLint prog, int fp, uint64_t dt)
 static void
 fast_log(void)
 {
-	sweet_drm_log("sweetgl: fast mode %d: %u draws; fill %u copy %u tint %u atint %u opaque %u alpha %u copyn %u tintn %u: %llu ms in "
+	sweet_drm_log("sweetgl: fast mode %d: %u draws; fill %u copy %u tint %u atint %u opaque %u alpha %u copyn %u tintn %u "
+	    "atintdk %u copydkn %u: %llu ms in "
 	    "softpipe, %llu ms here; not: kind %u mode %u state %u blend %u array %u shape %u tex %u fb %u map %u; "
 	    "verify ok %u bad %u", fast_mode, fst.draws, fst.kind[FPK_FILL], fst.kind[FPK_COPY], fst.kind[FPK_TINT],
 	    fst.kind[FPK_ATINT], fst.kind[FPK_OPAQUE], fst.kind[FPK_ALPHA], fst.kind[FPK_COPYN], fst.kind[FPK_TINTN],
+	    fst.kind[FPK_ATINTDK], fst.kind[FPK_COPYDKN],
 	    fs_ms(fst.eligible_abs), fs_ms(fst.fast_abs),
 	    fst.no[NO_KIND], fst.no[NO_MODE], fst.no[NO_STATE], fst.no[NO_BLEND], fst.no[NO_ARRAY], fst.no[NO_SHAPE],
 	    fst.no[NO_TEX], fst.no[NO_FB], fst.no[NO_MAP], fst.ok, fst.bad);
