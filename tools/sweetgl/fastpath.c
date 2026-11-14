@@ -207,12 +207,64 @@ struct fp_rows {
 	int cols_plain;         /* no column filtering: one texel a pixel across */
 	int cols_ident;         /* and consecutive: texel cols[0] + x */
 	const int *ncols, *nrows;       /* noise texel per column / row */
+	const int *cols2, *rows2;       /* FPK_MASK: the mask texture's tables */
 };
 
 static inline float
 clampf(float v, float lo, float hi)
 {
 	return v < lo ? lo : v > hi ? hi : v;
+}
+
+/*
+ * Texel tables for one texture over the w x h pixels at x0, y0: cols holds
+ * (index, index, weight) per window column, rows per window row; for a
+ * turned texture cols are texture rows (v along x) and rows texture columns.
+ */
+static void
+tables(const struct fp_job *j, const struct fp_img *src, float ua, float ub, float va, float vb, int swap, int linear,
+    int clamp, int w, int h, int *cols, int *rows)
+{
+	if (!swap) {
+		float du = (ub - ua) / (j->xb - j->xa), dv = (vb - va) / (j->yb - j->ya);
+		for (int i = 0; i < w; i++) {
+			float u = ua + ((float)(j->x0 + i) + 0.5f - j->xa) * du;
+			texel(clamp ? clampf(u, j->cu0, j->cu1) : u, src->w, linear, &cols[3 * i], &cols[3 * i + 1], &cols[3 * i + 2]);
+		}
+		for (int i = 0; i < h; i++) {
+			float v = va + ((float)(j->y0 + i) + 0.5f - j->ya) * dv;
+			texel(clamp ? clampf(v, j->cv0, j->cv1) : v, src->h, linear, &rows[3 * i], &rows[3 * i + 1], &rows[3 * i + 2]);
+		}
+	} else {
+		float dv = (vb - va) / (j->xb - j->xa), du = (ub - ua) / (j->yb - j->ya);
+		for (int i = 0; i < w; i++) {
+			float v = va + ((float)(j->x0 + i) + 0.5f - j->xa) * dv;
+			texel(clamp ? clampf(v, j->cv0, j->cv1) : v, src->h, linear, &cols[3 * i], &cols[3 * i + 1], &cols[3 * i + 2]);
+		}
+		for (int i = 0; i < h; i++) {
+			float u = ua + ((float)(j->y0 + i) + 0.5f - j->ya) * du;
+			texel(clamp ? clampf(u, j->cu0, j->cu1) : u, src->w, linear, &rows[3 * i], &rows[3 * i + 1], &rows[3 * i + 2]);
+		}
+	}
+}
+
+/* bilinear texel (x, y in the rectangle) from tables built by tables() */
+static inline void
+fetch(const struct fp_img *src, const int *cols, const int *rows, int swap, int x, int y, uint8_t t[4])
+{
+	const int sb = bpp(src->fmt);
+	const int *c = swap ? &rows[3 * y] : &cols[3 * x], *r = swap ? &cols[3 * x] : &rows[3 * y];
+	const uint8_t *q0 = src->ptr + (size_t)r[0] * (size_t)src->stride, *q1 = src->ptr + (size_t)r[1] * (size_t)src->stride;
+	uint8_t a[4], b[4], e[4], f[4];
+	px_rgba(q0 + (size_t)c[0] * (size_t)sb, src->fmt, a);
+	px_rgba(q0 + (size_t)c[1] * (size_t)sb, src->fmt, b);
+	px_rgba(q1 + (size_t)c[0] * (size_t)sb, src->fmt, e);
+	px_rgba(q1 + (size_t)c[1] * (size_t)sb, src->fmt, f);
+	for (int k = 0; k < 4; k++) {
+		int top = a[k] * (256 - c[2]) + b[k] * c[2];
+		int bot = e[k] * (256 - c[2]) + f[k] * c[2];
+		t[k] = (uint8_t)((top * (256 - r[2]) + bot * r[2] + 32768) >> 16);
+	}
 }
 
 /* index of coordinate u in n texels, nearest, repeat */
@@ -353,18 +405,7 @@ fp_row(const struct fp_rows *R, int y)
 			px_rgba(r0 + (size_t)cols[3 * x] * (size_t)sb, src->fmt, t);
 		} else if (src != NULL && j->swap) {
 			/* turned: the texture column comes from the window row, the texture row from the window column */
-			const int *c = &R->rows[3 * y], *rr = &cols[3 * x];
-			const uint8_t *q0 = src->ptr + (size_t)rr[0] * (size_t)src->stride, *q1 = src->ptr + (size_t)rr[1] * (size_t)src->stride;
-			uint8_t a[4], b[4], e[4], f[4];
-			px_rgba(q0 + (size_t)c[0] * (size_t)sb, src->fmt, a);
-			px_rgba(q0 + (size_t)c[1] * (size_t)sb, src->fmt, b);
-			px_rgba(q1 + (size_t)c[0] * (size_t)sb, src->fmt, e);
-			px_rgba(q1 + (size_t)c[1] * (size_t)sb, src->fmt, f);
-			for (int k = 0; k < 4; k++) {
-				int top = a[k] * (256 - c[2]) + b[k] * c[2];
-				int bot = e[k] * (256 - c[2]) + f[k] * c[2];
-				t[k] = (uint8_t)((top * (256 - rr[2]) + bot * rr[2] + 32768) >> 16);
-			}
+			fetch(src, cols, R->rows, 1, x, y, t);
 		} else if (src != NULL) {
 			const int *c = &cols[3 * x];
 			uint8_t a[4], b[4], e[4], f[4];
@@ -410,6 +451,14 @@ fp_row(const struct fp_rows *R, int y)
 			for (int k = 0; k < 4; k++) {
 				float c = clampf(Rf[k], 0.0f, 1.0f);
 				s[k] = (uint8_t)(c * 255.0f + 0.5f);
+			}
+		} else if (j->kind == FPK_MASK) {
+			/* color * s0 * s1.a in float, like the shader */
+			uint8_t t2[4];
+			fetch(j->src2, R->cols2, R->rows2, j->swap2, x, y, t2);
+			for (int k = 0; k < 4; k++) {
+				float c = ((float)j->color[k] / 255.0f) * ((float)t[k] / 255.0f) * ((float)t2[3] / 255.0f);
+				s[k] = (uint8_t)(clampf(c, 0.0f, 1.0f) * 255.0f + 0.5f);
 			}
 		} else {
 			shade(j, t, s);
@@ -472,41 +521,28 @@ fp_run(const struct fp_job *j, struct fp_img *dst, const struct fp_img *src, uin
 			return;
 		}
 		int *rows = cols + 3 * w;
+		tables(j, src, j->ua, j->ub, j->va, j->vb, j->swap, j->linear, j->tclamp, w, h, cols, rows);
 		R.cols_plain = R.cols_ident = !j->swap;
-		if (!j->swap) {
-			float du = (j->ub - j->ua) / (j->xb - j->xa), dv = (j->vb - j->va) / (j->yb - j->ya);
-			for (int i = 0; i < w; i++) {
-				float u = j->ua + ((float)(j->x0 + i) + 0.5f - j->xa) * du;
-				texel(j->tclamp ? clampf(u, j->cu0, j->cu1) : u, src->w, j->linear, &cols[3 * i],
-				    &cols[3 * i + 1], &cols[3 * i + 2]);
-				R.cols_plain &= cols[3 * i + 2] == 0;
-				R.cols_ident &= cols[3 * i + 2] == 0 && cols[3 * i] == cols[0] + i;
-			}
-			for (int i = 0; i < h; i++) {
-				float v = j->va + ((float)(j->y0 + i) + 0.5f - j->ya) * dv;
-				texel(j->tclamp ? clampf(v, j->cv0, j->cv1) : v, src->h, j->linear, &rows[3 * i],
-				    &rows[3 * i + 1], &rows[3 * i + 2]);
-			}
-		} else {
-			/* cols: texture row per window column (v along x); rows: texture column per window row (u along y) */
-			float dv = (j->vb - j->va) / (j->xb - j->xa), du = (j->ub - j->ua) / (j->yb - j->ya);
-			for (int i = 0; i < w; i++) {
-				float v = j->va + ((float)(j->x0 + i) + 0.5f - j->xa) * dv;
-				texel(j->tclamp ? clampf(v, j->cv0, j->cv1) : v, src->h, j->linear, &cols[3 * i],
-				    &cols[3 * i + 1], &cols[3 * i + 2]);
-			}
-			for (int i = 0; i < h; i++) {
-				float u = j->ua + ((float)(j->y0 + i) + 0.5f - j->ya) * du;
-				texel(j->tclamp ? clampf(u, j->cu0, j->cu1) : u, src->w, j->linear, &rows[3 * i],
-				    &rows[3 * i + 1], &rows[3 * i + 2]);
-			}
+		for (int i = 0; i < w && !j->swap; i++) {
+			R.cols_plain &= cols[3 * i + 2] == 0;
+			R.cols_ident &= cols[3 * i + 2] == 0 && cols[3 * i] == cols[0] + i;
 		}
 		R.cols = cols, R.rows = rows, R.sb = bpp(src->fmt);
+	}
+	int *mtab = NULL;
+	if (j->kind == FPK_MASK) {
+		if (j->src2 == NULL || src == NULL || (mtab = malloc(sizeof(int) * 3 * (size_t)(w + h))) == NULL) {
+			free(cols);
+			return;
+		}
+		tables(j, j->src2, j->u2a, j->u2b, j->v2a, j->v2b, j->swap2, j->linear2, 0, w, h, mtab, mtab + 3 * w);
+		R.cols2 = mtab, R.rows2 = mtab + 3 * w;
 	}
 	int *ntab = NULL;
 	if (j->noise != NULL) {
 		ntab = malloc(sizeof(int) * (size_t)(w + h));
 		if (ntab == NULL) {
+			free(mtab);
 			free(cols);
 			return;
 		}
@@ -527,5 +563,6 @@ fp_run(const struct fp_job *j, struct fp_img *dst, const struct fp_img *src, uin
 		}
 	}
 	free(ntab);
+	free(mtab);
 	free(cols);
 }

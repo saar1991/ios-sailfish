@@ -26,6 +26,7 @@ enum fp_kind {
 	FPK_TINTN,      /* color * texture, then CA's noise dither */
 	FPK_ATINTDK,    /* color * texture.a over the framebuffer with CA's darkenSover */
 	FPK_COPYDKN,    /* texture over the framebuffer with darkenSover, then the noise dither */
+	FPK_MASK,       /* color * texture * texture1.a (masked layers, nine-slices) */
 	FPK_COUNT
 };
 
@@ -58,6 +59,10 @@ struct fp_job {
 	int swap;               /* the texture turned: u follows window y, v follows x */
 	int tclamp;             /* texture coordinates clamped to [cu0, cu1] x [cv0, cv1] first */
 	float cu0, cu1, cv0, cv1;
+	/* FPK_MASK: the mask texture and its own coordinates, like ua..vb, swap and linear */
+	const struct fp_img *src2;
+	float u2a, u2b, v2a, v2b;
+	int swap2, linear2;
 	int linear;             /* filter for this scale: 0 nearest, 1 linear (clamp to edge) */
 	uint8_t color[4];       /* RGBA */
 	/*

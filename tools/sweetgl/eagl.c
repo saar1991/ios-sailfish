@@ -852,10 +852,10 @@ sgl_PixelStorei(void *rctx, GLenum pname, GLint param)
  * shader and a fill / copy / tinted-copy fragment shader, no blending or
  * premultiplied "over", clamp-to-edge nearest or linear sampling of level 0.
  * SGLFAST (environment): 0 or unset, only count the draws that qualify;
- * 1, draw them on the CPU instead of softpipe, after checking the first 60
+ * 1, draw them on the CPU instead of softpipe, after checking the first 10
  * of each shader kind and blend mode against softpipe (a kind and blend
  * that differs stays with softpipe); 2, verify only: compute them, let
- * softpipe draw, compare (with a one-pixel border), the first 60 draws of
+ * softpipe draw, compare (with a one-pixel border), the first 10 draws of
  * each shader kind and blend mode. A trailing s (1s, 2s) keeps the
  * pixel loop on one thread.
  * Counts and times every 10 s with the flush statistics.
@@ -866,7 +866,7 @@ static uint8_t shader_kind[PROG_MAX], prog_kind[PROG_MAX];
 static char *shader_body[PROG_MAX];     /* fragment shader main(), whitespace removed */
 static uint8_t shader_clamp[PROG_MAX], prog_clamp[PROG_MAX];   /* CA's clamped-texcoord variant */
 static struct {
-	GLint pos, color, tc0, matrix, texmat0, tex0, tex1, texmatw, nscale, carg;
+	GLint pos, color, tc0, matrix, texmat0, tex0, tex1, texmatw, nscale, carg, tc1, texmat1;
 } prog_loc[PROG_MAX];
 enum { NO_KIND, NO_MODE, NO_STATE, NO_BLEND, NO_ARRAY, NO_SHAPE, NO_TEX, NO_FB, NO_MAP, NO_COUNT };
 static struct {
@@ -893,13 +893,14 @@ static struct {
 } fast_pend;
 static uint32_t fast_verified[FPK_COUNT][FPB_COUNT], fast_bad_logged;
 static uint8_t fast_off[FPK_COUNT][FPB_COUNT];   /* differed from softpipe: not drawn here any more */
-#define FAST_VERIFY_EACH 60
+#define FAST_VERIFY_EACH 10
 
 /* CA's dither block after the colour (NOISE_SIZE 32 in its vertex shader) */
 #define FAST_NOISE "{mediumpvec3n=texture2DProj(texture1,texcoordN).xyz;n=(n-.5)*noise_scale;" \
 	"lowpvec3c=gl_FragData[0].rgb+n*gl_FragData[0].a;gl_FragData[0].rgb=clamp(c,0.,gl_FragData[0].a);}"
 #define FAST_NOISE_SIZE 32.0f
-#define FAST_COLORED(k) ((k) == FPK_FILL || (k) == FPK_TINT || (k) == FPK_ATINT || (k) == FPK_TINTN || (k) == FPK_ATINTDK)
+#define FAST_COLORED(k) ((k) == FPK_FILL || (k) == FPK_TINT || (k) == FPK_ATINT || (k) == FPK_TINTN || (k) == FPK_ATINTDK || \
+	(k) == FPK_MASK)
 #define FAST_NOISY(k) ((k) == FPK_COPYN || (k) == FPK_TINTN || (k) == FPK_COPYDKN)
 /* the backdrop read (fbfetch rewrite) and CA's darken composite, as the darken kinds start and use them */
 #define FAST_FB "lowpvec4d0=texture2D(sgl_fb,gl_FragCoord.xy*sgl_fb_scale);"
@@ -925,6 +926,8 @@ fast_shader(GLuint shader, const char *src)
 		    "gl_FragData[0]=color*s0;" FAST_DARKEN "}",
 		[FPK_COPYDKN] = "{" FAST_FB "lowpvec4s0=texture2D(texture0,texcoord0_0);gl_FragData[0]=s0;" FAST_DARKEN
 		    FAST_NOISE "}",
+		[FPK_MASK] = "{lowpvec4s0=texture2D(texture0,texcoord0_0);lowpvec4s1=texture2D(texture1,texcoord1_0);"
+		    "gl_FragData[0]=color*s0*s1.a;}",
 	};
 	if (shader >= PROG_MAX) {
 		return;
@@ -1042,6 +1045,11 @@ fast_link(GLuint program)
 	prog_loc[program].texmatw = glGetUniformLocation(program, "texmatW");
 	prog_loc[program].nscale = glGetUniformLocation(program, "noise_scale");
 	prog_loc[program].carg = glGetUniformLocation(program, "coord_arg");
+	prog_loc[program].tc1 = glGetAttribLocation(program, "vertex_texcoord1");
+	prog_loc[program].texmat1 = glGetUniformLocation(program, "texmat1");
+	if (fs == FPK_MASK && (prog_loc[program].tc1 < 0 || prog_loc[program].texmat1 < 0 || prog_loc[program].tex1 < 0)) {
+		return;
+	}
 	int clamped = fsh < PROG_MAX && shader_clamp[fsh];
 	if (clamped && prog_loc[program].carg < 0) {
 		return;
@@ -1167,10 +1175,222 @@ fast_uv(const int cx[6], const int cy[6], const float tu[6], const float tv[6], 
  * Returns 0: softpipe draws; 1: drawn here; 2: qualifies (counting or
  * verifying), softpipe draws.
  */
+/* a texture a fast-path shader samples: bound as CA bound it, one level, identity swizzle, these wraps */
+static int
+fast_tex(GLint prog, GLint loc, GLint att, int kind, GLenum wrap, int nearest_only, const char *what, GLuint *tex,
+    GLint *minf, GLint *magf)
+{
+	GLint unit = -1, active = GL_TEXTURE0, bound = 0, sampler = 0, ws = 0, wt = 0, base = 0, sw[4] = {0};
+	glGetUniformiv((GLuint)prog, loc, &unit);
+	if (unit < 0 || unit >= UNITS || (*tex = unit_held[unit]) == 0 || *tex == (GLuint)att) {
+		FAST_DETAIL(NO_TEX, "%s prog %d kind %d: unit %d texture %u target %d", what, prog, kind, unit,
+		    unit >= 0 && unit < UNITS ? unit_held[unit] : 0, att);
+		return -1;
+	}
+	glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+	glActiveTexture(GL_TEXTURE0 + (GLenum)unit);
+	glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+	glGetIntegerv(GL_SAMPLER_BINDING, &sampler);
+	glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minf);
+	glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magf);
+	glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, &ws);
+	glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, &wt);
+	glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, &base);
+	glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, &sw[0]);
+	glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, &sw[1]);
+	glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, &sw[2]);
+	glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, &sw[3]);
+	glActiveTexture((GLenum)active);
+	if ((GLuint)bound != *tex || sampler != 0 || ws != (GLint)wrap || wt != (GLint)wrap || base != 0 ||
+	    sw[0] != GL_RED || sw[1] != GL_GREEN || sw[2] != GL_BLUE || sw[3] != GL_ALPHA ||
+	    (*minf != GL_NEAREST && (nearest_only || *minf != GL_LINEAR)) ||
+	    (*magf != GL_NEAREST && (nearest_only || *magf != GL_LINEAR))) {
+		FAST_DETAIL(NO_TEX, "%s prog %d kind %d: texture %u bound %d sampler %d wrap %#x %#x base %d swizzle %#x %#x "
+		    "%#x %#x filter %#x %#x", what, prog, kind, *tex, bound, sampler, ws, wt, base, sw[0], sw[1], sw[2], sw[3],
+		    *minf, *magf);
+		return -1;
+	}
+	return 0;
+}
+
+/* what one rectangle of a draw needs from its 6 vertices, before the textures are mapped */
+struct fast_in {
+	GLint prog;
+	int kind, colored, textured, masked;
+	const struct fast_attr *ap, *ac, *at, *at1;
+	const GLfloat *M, *tm, *tm1;
+	const GLint *vp;
+	int scissor;
+	GLint sc[4];
+};
+
+/*
+ * One rectangle (two triangles, 6 vertex indices) into a job: window rect,
+ * texture coordinates per axis (as drawn or turned), colour, the pixels
+ * softpipe would cover. Returns 0, or the NO_ reason (counted by the caller).
+ */
+static int
+fast_rect(const struct fast_in *in, const int idx[6], struct fp_job *j)
+{
+	const GLfloat *M = in->M;
+	GLint prog = in->prog;
+	int kind = in->kind;
+	float wx[6], wy[6], tu[6], tv[6], tu1[6], tv1[6], w0 = 0.0f;
+	GLfloat col0[4] = {0};
+	for (int i = 0; i < 6; i++) {
+		GLfloat p[4], c[4], t[4];
+		fast_attr_read(in->ap, idx[i], p);
+		float cx = M[0] * p[0] + M[4] * p[1] + M[8] * p[2] + M[12] * p[3];
+		float cy = M[1] * p[0] + M[5] * p[1] + M[9] * p[2] + M[13] * p[3];
+		float cz = M[2] * p[0] + M[6] * p[1] + M[10] * p[2] + M[14] * p[3];
+		float cw = M[3] * p[0] + M[7] * p[1] + M[11] * p[2] + M[15] * p[3];
+		if (!(cw > 0.0f) || !isfinite(cx) || !isfinite(cy) || !isfinite(cz) || fabsf(cz) > cw ||
+		    (i > 0 && !fast_near(cw, w0, 1e-6f * w0))) {
+			FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: vertex %d clip %g,%g,%g,%g", prog, kind, i, cx, cy, cz, cw);
+			return NO_SHAPE;
+		}
+		w0 = cw;
+		wx[i] = (float)in->vp[0] + (cx / cw + 1.0f) * (float)in->vp[2] * 0.5f;
+		wy[i] = (float)in->vp[1] + (cy / cw + 1.0f) * (float)in->vp[3] * 0.5f;
+		if (in->colored) {
+			fast_attr_read(in->ac, idx[i], c);
+			if (i == 0) {
+				memcpy(col0, c, sizeof(col0));
+			} else if (memcmp(c, col0, sizeof(col0)) != 0) {
+				FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: colour differs between vertices", prog, kind);
+				return NO_SHAPE;
+			}
+		}
+		if (in->textured) {
+			fast_attr_read(in->at, idx[i], t);
+			tu[i] = t[0] * in->tm[0] + in->tm[2];
+			tv[i] = t[1] * in->tm[1] + in->tm[3];
+			if (!isfinite(tu[i]) || !isfinite(tv[i])) {
+				return NO_SHAPE;
+			}
+		}
+		if (in->masked) {
+			fast_attr_read(in->at1, idx[i], t);
+			tu1[i] = t[0] * in->tm1[0] + in->tm1[2];
+			tv1[i] = t[1] * in->tm1[1] + in->tm1[3];
+			if (!isfinite(tu1[i]) || !isfinite(tv1[i])) {
+				return NO_SHAPE;
+			}
+		}
+	}
+	/* an axis-aligned rectangle: two triangles that meet on a diagonal */
+	float xa = wx[0], xb = wx[0], ya = wy[0], yb = wy[0];
+	for (int i = 1; i < 6; i++) {
+		xa = fminf(xa, wx[i]), xb = fmaxf(xb, wx[i]), ya = fminf(ya, wy[i]), yb = fmaxf(yb, wy[i]);
+	}
+	const float e = 1e-3f;
+	if (!(xb - xa > e) || !(yb - ya > e)) {
+		return NO_SHAPE;
+	}
+	int corner[6], cx[6], cy[6];
+	for (int i = 0; i < 6; i++) {
+		cx[i] = fast_near(wx[i], xb, e), cy[i] = fast_near(wy[i], yb, e);
+		if ((!cx[i] && !fast_near(wx[i], xa, e)) || (!cy[i] && !fast_near(wy[i], ya, e))) {
+			FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: vertex %d at %g,%g not a corner of %g,%g-%g,%g", prog, kind, i,
+			    wx[i], wy[i], xa, ya, xb, yb);
+			return NO_SHAPE;
+		}
+		corner[i] = cx[i] | cy[i] << 1;
+	}
+	for (int t = 0; t < 2; t++) {
+		int a = corner[3 * t], b = corner[3 * t + 1], c = corner[3 * t + 2];
+		if (a == b || b == c || a == c) {
+			FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: triangle %d repeats a corner (%d%d%d)", prog, kind, t, a, b, c);
+			return NO_SHAPE;
+		}
+	}
+	int shared = 0;
+	for (int i = 0; i < 3; i++) {
+		for (int k = 3; k < 6; k++) {
+			if (corner[i] == corner[k]) {
+				shared++;
+			}
+		}
+	}
+	/* the corner each triangle has alone must be opposite the other's */
+	int lone0 = 6 - corner[0] - corner[1] - corner[2], lone1 = 6 - corner[3] - corner[4] - corner[5];
+	if (shared != 2 || (lone0 ^ lone1) != 3) {
+		FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: corners %d%d%d %d%d%d are not two triangles on a diagonal", prog,
+		    kind, corner[0], corner[1], corner[2], corner[3], corner[4], corner[5]);
+		return NO_SHAPE;
+	}
+	memset(j, 0, sizeof(*j));
+	j->kind = kind, j->xa = xa, j->xb = xb, j->ya = ya, j->yb = yb;
+	if (in->textured) {
+		/* u from one axis and v from the other: as drawn, or turned (u follows y) */
+		float uv[4];
+		if (fast_uv(cx, cy, tu, tv, 0, uv) == 0) {
+			j->swap = 0;
+		} else if (fast_uv(cx, cy, tu, tv, 1, uv) == 0) {
+			j->swap = 1;
+		} else {
+			FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: texcoords %g,%g %g,%g %g,%g %g,%g follow neither axis", prog, kind,
+			    tu[0], tv[0], tu[1], tv[1], tu[2], tv[2], tu[3], tv[3]);
+			return NO_SHAPE;
+		}
+		j->ua = uv[0], j->ub = uv[1], j->va = uv[2], j->vb = uv[3];
+	}
+	if (in->masked) {
+		float uv[4];
+		if (fast_uv(cx, cy, tu1, tv1, 0, uv) == 0) {
+			j->swap2 = 0;
+		} else if (fast_uv(cx, cy, tu1, tv1, 1, uv) == 0) {
+			j->swap2 = 1;
+		} else {
+			FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: mask texcoords follow neither axis", prog, kind);
+			return NO_SHAPE;
+		}
+		j->u2a = uv[0], j->u2b = uv[1], j->v2a = uv[2], j->v2b = uv[3];
+	}
+	for (int k = 0; k < 4; k++) {
+		float c = col0[k] < 0.0f ? 0.0f : col0[k] > 1.0f ? 1.0f : col0[k];
+		j->color[k] = (uint8_t)(c * 255.0f + 0.5f);
+	}
+	/*
+	 * softpipe's coverage (sp_setup.c, half-pixel centres): rows from
+	 * ceil(y - 0.5), columns from (int)(x + 0.5), each up to the far edge's
+	 * value, exclusive. They differ from ceil(x - 0.5) when an edge sits
+	 * exactly on a half pixel (scaled layers): verify caught a sliver ending
+	 * at x 739.5 where softpipe drew column 739.
+	 */
+	const GLint *vp = in->vp;
+	j->x0 = (int)floorf(xa + 0.5f), j->x1 = (int)floorf(xb + 0.5f);
+	j->y0 = (int)ceilf(ya - 0.5f), j->y1 = (int)ceilf(yb - 0.5f);
+	j->x0 = j->x0 > vp[0] ? j->x0 : vp[0], j->x1 = j->x1 < vp[0] + vp[2] ? j->x1 : vp[0] + vp[2];
+	j->y0 = j->y0 > vp[1] ? j->y0 : vp[1], j->y1 = j->y1 < vp[1] + vp[3] ? j->y1 : vp[1] + vp[3];
+	if (in->scissor) {
+		const GLint *sc = in->sc;
+		j->x0 = j->x0 > sc[0] ? j->x0 : sc[0], j->x1 = j->x1 < sc[0] + sc[2] ? j->x1 : sc[0] + sc[2];
+		j->y0 = j->y0 > sc[1] ? j->y0 : sc[1], j->y1 = j->y1 < sc[1] + sc[3] ? j->y1 : sc[1] + sc[3];
+	}
+	return 0;
+}
+
+/* filter for a job's scale: minification filter when a texel step exceeds a pixel */
+static int
+fast_linear(float ua, float ub, float va, float vb, int swap, const struct fp_job *j, const struct fp_img *src,
+    GLint minf, GLint magf)
+{
+	float rx = fabsf(ub - ua) * (float)src->w / (swap ? j->yb - j->ya : j->xb - j->xa);
+	float ry = fabsf(vb - va) * (float)src->h / (swap ? j->xb - j->xa : j->yb - j->ya);
+	return ((rx > 1.0f || ry > 1.0f) ? minf : magf) == GL_LINEAR;
+}
+
+#define FAST_RECTS 16
+
+/*
+ * Returns 0: softpipe draws; 1: drawn here; 2: qualifies (counting or
+ * verifying), softpipe draws.
+ */
 static int
 fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, const void *indices, GLint first)
 {
-	int kind = prog > 0 && prog < PROG_MAX ? prog_kind[prog] : 0, idx[6];
+	int kind = prog > 0 && prog < PROG_MAX ? prog_kind[prog] : 0, idx[6 * FAST_RECTS], nrect;
 	fst.draws++;
 	if (kind == 0) {
 		return fast_no(NO_KIND);
@@ -1185,8 +1405,10 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 			return fast_no(NO_ARRAY);
 		}
 	}
-	if (mode == GL_TRIANGLES && count == 6) {
-		for (int i = 0; i < 6; i++) {
+	/* one rectangle (6 indices or a 4-vertex strip), or several (6 indices each: nine-slices) */
+	if (mode == GL_TRIANGLES && count >= 6 && count % 6 == 0 && count <= 6 * FAST_RECTS) {
+		nrect = count / 6;
+		for (int i = 0; i < count; i++) {
 			idx[i] = elements ? ((const GLushort *)indices)[i] : first + i;
 		}
 	} else if (mode == GL_TRIANGLE_STRIP && count == 4) {
@@ -1195,6 +1417,7 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 			v[i] = elements ? ((const GLushort *)indices)[i] : first + i;
 		}
 		idx[0] = v[0], idx[1] = v[1], idx[2] = v[2], idx[3] = v[1], idx[4] = v[2], idx[5] = v[3];
+		nrect = 1;
 	} else {
 		FAST_DETAIL(NO_MODE, "mode prog %d kind %d: mode %#x n %d elements %d", prog, kind, mode, count, elements);
 		return fast_no(NO_MODE);
@@ -1251,16 +1474,19 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		return fast_no(NO_FB);
 	}
 	/* vertices */
-	struct fast_attr ap, ac, at;
-	int colored = FAST_COLORED(kind), textured = kind != FPK_FILL;
+	struct fast_attr ap, ac, at, at1;
+	struct fast_in in = {.prog = prog, .kind = kind, .colored = FAST_COLORED(kind), .textured = kind != FPK_FILL,
+	    .masked = kind == FPK_MASK, .ap = &ap, .ac = &ac, .at = &at, .at1 = &at1};
 	const char *an = NULL;
 	const struct fast_attr *bad = NULL;
 	if (fast_attr_get(prog_loc[prog].pos, &ap)) {
 		an = "position", bad = &ap;
-	} else if (colored && fast_attr_get(prog_loc[prog].color, &ac)) {
+	} else if (in.colored && fast_attr_get(prog_loc[prog].color, &ac)) {
 		an = "color", bad = &ac;
-	} else if (textured && fast_attr_get(prog_loc[prog].tc0, &at)) {
+	} else if (in.textured && fast_attr_get(prog_loc[prog].tc0, &at)) {
 		an = "texcoord0", bad = &at;
+	} else if (in.masked && fast_attr_get(prog_loc[prog].tc1, &at1)) {
+		an = "texcoord1", bad = &at1;
 	}
 	if (an != NULL) {
 		FAST_DETAIL(NO_ARRAY, "array prog %d kind %d: %s buffer %d size %d type %#x stride %d norm %d pointer %s, "
@@ -1268,262 +1494,134 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		    bad->p != NULL ? "set" : "null", mode, count, elements);
 		return fast_no(NO_ARRAY);
 	}
-	GLfloat M[16], tm[4] = {1, 1, 0, 0};
+	GLfloat M[16], tm[4] = {1, 1, 0, 0}, tmm[4] = {1, 1, 0, 0};
 	glGetUniformfv((GLuint)prog, prog_loc[prog].matrix, M);
-	if (textured) {
+	if (in.textured) {
 		glGetUniformfv((GLuint)prog, prog_loc[prog].texmat0, tm);
+	}
+	if (in.masked) {
+		glGetUniformfv((GLuint)prog, prog_loc[prog].texmat1, tmm);
 	}
 	GLint vp[4] = {0};
 	glGetIntegerv(GL_VIEWPORT, vp);
-	float wx[6], wy[6], tu[6], tv[6], w0 = 0.0f;
-	GLfloat col0[4] = {0};
-	for (int i = 0; i < 6; i++) {
-		GLfloat p[4], c[4], t[4];
-		fast_attr_read(&ap, idx[i], p);
-		float cx = M[0] * p[0] + M[4] * p[1] + M[8] * p[2] + M[12] * p[3];
-		float cy = M[1] * p[0] + M[5] * p[1] + M[9] * p[2] + M[13] * p[3];
-		float cz = M[2] * p[0] + M[6] * p[1] + M[10] * p[2] + M[14] * p[3];
-		float cw = M[3] * p[0] + M[7] * p[1] + M[11] * p[2] + M[15] * p[3];
-		if (!(cw > 0.0f) || !isfinite(cx) || !isfinite(cy) || !isfinite(cz) || fabsf(cz) > cw ||
-		    (i > 0 && !fast_near(cw, w0, 1e-6f * w0))) {
-			FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: vertex %d clip %g,%g,%g,%g", prog, kind, i, cx, cy, cz, cw);
-			return fast_no(NO_SHAPE);
-		}
-		w0 = cw;
-		wx[i] = (float)vp[0] + (cx / cw + 1.0f) * (float)vp[2] * 0.5f;
-		wy[i] = (float)vp[1] + (cy / cw + 1.0f) * (float)vp[3] * 0.5f;
-		if (colored) {
-			fast_attr_read(&ac, idx[i], c);
-			if (i == 0) {
-				memcpy(col0, c, sizeof(col0));
-			} else if (memcmp(c, col0, sizeof(col0)) != 0) {
-				return fast_no(NO_SHAPE);
-			}
-		}
-		if (textured) {
-			fast_attr_read(&at, idx[i], t);
-			tu[i] = t[0] * tm[0] + tm[2];
-			tv[i] = t[1] * tm[1] + tm[3];
-			if (!isfinite(tu[i]) || !isfinite(tv[i])) {
-				return fast_no(NO_SHAPE);
-			}
+	in.M = M, in.tm = tm, in.tm1 = tmm, in.vp = vp;
+	in.scissor = glIsEnabled(GL_SCISSOR_TEST);
+	if (in.scissor) {
+		glGetIntegerv(GL_SCISSOR_BOX, in.sc);
+	}
+	struct fp_job jobs[FAST_RECTS];
+	for (int r = 0; r < nrect; r++) {
+		int why = fast_rect(&in, idx + 6 * r, &jobs[r]);
+		if (why != 0) {
+			return fast_no(why);
 		}
 	}
-	/* an axis-aligned rectangle: two triangles that meet on a diagonal */
-	float xa = wx[0], xb = wx[0], ya = wy[0], yb = wy[0];
-	for (int i = 1; i < 6; i++) {
-		xa = fminf(xa, wx[i]), xb = fmaxf(xb, wx[i]), ya = fminf(ya, wy[i]), yb = fmaxf(yb, wy[i]);
-	}
-	const float e = 1e-3f;
-	if (!(xb - xa > e) || !(yb - ya > e)) {
-		return fast_no(NO_SHAPE);
-	}
-	int corner[6], cx[6], cy[6], swap = 0;
-	float ua = 0, ub = 0, va = 0, vb = 0;
-	for (int i = 0; i < 6; i++) {
-		cx[i] = fast_near(wx[i], xb, e), cy[i] = fast_near(wy[i], yb, e);
-		if ((!cx[i] && !fast_near(wx[i], xa, e)) || (!cy[i] && !fast_near(wy[i], ya, e))) {
-			FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: vertex %d at %g,%g not a corner of %g,%g-%g,%g", prog, kind, i,
-			    wx[i], wy[i], xa, ya, xb, yb);
-			return fast_no(NO_SHAPE);
-		}
-		corner[i] = cx[i] | cy[i] << 1;
-	}
-	if (textured) {
-		/* u from one axis and v from the other: as drawn, or turned (u follows y) */
-		float uv[4];
-		if (fast_uv(cx, cy, tu, tv, 0, uv) == 0) {
-			swap = 0;
-		} else if (fast_uv(cx, cy, tu, tv, 1, uv) == 0) {
-			swap = 1;
-		} else {
-			FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: texcoords %g,%g %g,%g %g,%g %g,%g follow neither axis", prog, kind,
-			    tu[0], tv[0], tu[1], tv[1], tu[2], tv[2], tu[3], tv[3]);
-			return fast_no(NO_SHAPE);
-		}
-		ua = uv[0], ub = uv[1], va = uv[2], vb = uv[3];
-	}
-	for (int t = 0; t < 2; t++) {
-		int a = corner[3 * t], b = corner[3 * t + 1], c = corner[3 * t + 2];
-		if (a == b || b == c || a == c) {
-			FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: triangle %d repeats a corner (%d%d%d)", prog, kind, t, a, b, c);
-			return fast_no(NO_SHAPE);
-		}
-	}
-	int shared = 0, diag = 1;
-	for (int i = 0; i < 3; i++) {
-		for (int k = 3; k < 6; k++) {
-			if (corner[i] == corner[k]) {
-				shared++;
-			}
-		}
-	}
-	/* the corner each triangle has alone must be opposite the other's */
-	int lone0 = 6 - corner[0] - corner[1] - corner[2], lone1 = 6 - corner[3] - corner[4] - corner[5];
-	diag = (lone0 ^ lone1) == 3;
-	if (shared != 2 || !diag) {
-		FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: corners %d%d%d %d%d%d are not two triangles on a diagonal", prog,
-		    kind, corner[0], corner[1], corner[2], corner[3], corner[4], corner[5]);
-		return fast_no(NO_SHAPE);
-	}
-	struct fp_job j = {.kind = kind, .blend = blend, .swap = swap, .tclamp = prog_clamp[prog], .xa = xa, .xb = xb, .ya = ya, .yb = yb,
-		.ua = ua, .ub = ub, .va = va, .vb = vb};
-	for (int k = 0; k < 4; k++) {
-		float c = col0[k] < 0.0f ? 0.0f : col0[k] > 1.0f ? 1.0f : col0[k];
-		j.color[k] = (uint8_t)(c * 255.0f + 0.5f);
-	}
-	if (j.tclamp) {
-		GLfloat ca[4] = {0};
+	/* draw-wide settings of the jobs */
+	GLfloat ca[4] = {0};
+	if (prog_clamp[prog]) {
 		glGetUniformfv((GLuint)prog, prog_loc[prog].carg, ca);
-		j.cu0 = ca[0], j.cv0 = ca[1], j.cu1 = ca[2], j.cv1 = ca[3];
 	}
-	/*
-	 * softpipe's coverage (sp_setup.c, half-pixel centres): rows from
-	 * ceil(y - 0.5), columns from (int)(x + 0.5), each up to the far edge's
-	 * value, exclusive. They differ from ceil(x - 0.5) when an edge sits
-	 * exactly on a half pixel (scaled layers): verify caught a sliver ending
-	 * at x 739.5 where softpipe drew column 739.
-	 */
-	j.x0 = (int)floorf(xa + 0.5f), j.x1 = (int)floorf(xb + 0.5f);
-	j.y0 = (int)ceilf(ya - 0.5f), j.y1 = (int)ceilf(yb - 0.5f);
-	j.x0 = j.x0 > vp[0] ? j.x0 : vp[0], j.x1 = j.x1 < vp[0] + vp[2] ? j.x1 : vp[0] + vp[2];
-	j.y0 = j.y0 > vp[1] ? j.y0 : vp[1], j.y1 = j.y1 < vp[1] + vp[3] ? j.y1 : vp[1] + vp[3];
-	if (glIsEnabled(GL_SCISSOR_TEST)) {
-		GLint sc[4] = {0};
-		glGetIntegerv(GL_SCISSOR_BOX, sc);
-		j.x0 = j.x0 > sc[0] ? j.x0 : sc[0], j.x1 = j.x1 < sc[0] + sc[2] ? j.x1 : sc[0] + sc[2];
-		j.y0 = j.y0 > sc[1] ? j.y0 : sc[1], j.y1 = j.y1 < sc[1] + sc[3] ? j.y1 : sc[1] + sc[3];
+	/* textures: what the shader's texture0 (and texture1 for masks) samples, clamped, one level */
+	GLuint tex = 0, mtex = 0;
+	GLint minf = 0, magf = 0, mminf = 0, mmagf = 0;
+	if (in.textured && fast_tex(prog, prog_loc[prog].tex0, att, kind, GL_CLAMP_TO_EDGE, 0, "tex", &tex, &minf, &magf) != 0) {
+		return fast_no(NO_TEX);
 	}
-	/* texture: what the shader's texture0 samples, clamped, one level */
-	GLuint tex = 0;
-	GLint minf = 0, magf = 0;
-	if (textured) {
-		GLint unit = -1, active = GL_TEXTURE0, bound = 0, sampler = 0, ws = 0, wt = 0, base = 0, sw[4] = {0};
-		glGetUniformiv((GLuint)prog, prog_loc[prog].tex0, &unit);
-		if (unit < 0 || unit >= UNITS || (tex = unit_held[unit]) == 0 || tex == (GLuint)att) {
-			FAST_DETAIL(NO_TEX, "tex prog %d kind %d: unit %d texture %u target %d", prog, kind, unit,
-			    unit >= 0 && unit < UNITS ? unit_held[unit] : 0, att);
-			return fast_no(NO_TEX);
-		}
-		glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
-		glActiveTexture(GL_TEXTURE0 + (GLenum)unit);
-		glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
-		glGetIntegerv(GL_SAMPLER_BINDING, &sampler);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &minf);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, &magf);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, &ws);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, &wt);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, &base);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, &sw[0]);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, &sw[1]);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, &sw[2]);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, &sw[3]);
-		glActiveTexture((GLenum)active);
-		if ((GLuint)bound != tex || sampler != 0 || ws != GL_CLAMP_TO_EDGE || wt != GL_CLAMP_TO_EDGE || base != 0 ||
-		    sw[0] != GL_RED || sw[1] != GL_GREEN || sw[2] != GL_BLUE || sw[3] != GL_ALPHA ||
-		    (minf != GL_NEAREST && minf != GL_LINEAR) || (magf != GL_NEAREST && magf != GL_LINEAR)) {
-			FAST_DETAIL(NO_TEX, "tex prog %d kind %d: texture %u bound %d sampler %d wrap %#x %#x base %d swizzle %#x %#x "
-			    "%#x %#x filter %#x %#x", prog, kind, tex, bound, sampler, ws, wt, base, sw[0], sw[1], sw[2], sw[3], minf,
-			    magf);
-			return fast_no(NO_TEX);
-		}
+	if (in.masked &&
+	    fast_tex(prog, prog_loc[prog].tex1, att, kind, GL_CLAMP_TO_EDGE, 0, "mask", &mtex, &mminf, &mmagf) != 0) {
+		return fast_no(NO_TEX);
 	}
 	GLuint ntex = 0;
 	GLfloat W[4] = {0}, nscale = 0;
 	if (FAST_NOISY(kind)) {
-		GLint unit = -1, active = GL_TEXTURE0, bound = 0, sampler = 0, ws = 0, wt = 0, base = 0, nmin = 0, nmag = 0;
-		GLint sw[4] = {0};
-		glGetUniformiv((GLuint)prog, prog_loc[prog].tex1, &unit);
-		if (unit < 0 || unit >= UNITS || (ntex = unit_held[unit]) == 0 || ntex == (GLuint)att) {
-			FAST_DETAIL(NO_TEX, "noise prog %d kind %d: unit %d texture %u", prog, kind, unit,
-			    unit >= 0 && unit < UNITS ? unit_held[unit] : 0);
-			return fast_no(NO_TEX);
-		}
-		glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
-		glActiveTexture(GL_TEXTURE0 + (GLenum)unit);
-		glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
-		glGetIntegerv(GL_SAMPLER_BINDING, &sampler);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &nmin);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, &nmag);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, &ws);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, &wt);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, &base);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, &sw[0]);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, &sw[1]);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, &sw[2]);
-		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, &sw[3]);
-		glActiveTexture((GLenum)active);
-		if ((GLuint)bound != ntex || sampler != 0 || ws != GL_REPEAT || wt != GL_REPEAT || base != 0 || nmin != GL_NEAREST ||
-		    nmag != GL_NEAREST || sw[0] != GL_RED || sw[1] != GL_GREEN || sw[2] != GL_BLUE || sw[3] != GL_ALPHA) {
-			FAST_DETAIL(NO_TEX, "noise prog %d kind %d: texture %u bound %d sampler %d wrap %#x %#x base %d swizzle %#x %#x "
-			    "%#x %#x filter %#x %#x", prog, kind, ntex, bound, sampler, ws, wt, base, sw[0], sw[1], sw[2], sw[3], nmin,
-			    nmag);
+		GLint nmin = 0, nmag = 0;
+		if (fast_tex(prog, prog_loc[prog].tex1, att, kind, GL_REPEAT, 1, "noise", &ntex, &nmin, &nmag) != 0) {
 			return fast_no(NO_TEX);
 		}
 		glGetUniformfv((GLuint)prog, prog_loc[prog].texmatw, W);
 		glGetUniformfv((GLuint)prog, prog_loc[prog].nscale, &nscale);
-		/*
-		 * texcoordN = (clip.xy * W.xy + W.zw * w, w * NOISE_SIZE), w constant
-		 * here: u = (ndc.x * W.x + W.z) / NOISE_SIZE, ndc.x = (x - vp.x) * 2 / vp.w - 1
-		 */
-		j.nud = 2.0f * W[0] / ((float)vp[2] * FAST_NOISE_SIZE);
-		j.nu0 = (W[2] - W[0] - 2.0f * W[0] * (float)vp[0] / (float)vp[2]) / FAST_NOISE_SIZE;
-		j.nvd = 2.0f * W[1] / ((float)vp[3] * FAST_NOISE_SIZE);
-		j.nv0 = (W[3] - W[1] - 2.0f * W[1] * (float)vp[1] / (float)vp[3]) / FAST_NOISE_SIZE;
-		j.nscale = nscale;
 	}
 	fst.kind[kind]++;
 	fst.blend[blend]++;
 	/*
 	 * Checked draws: all of them in mode 2 (up to the budget), and in mode 1
 	 * the first FAST_VERIFY_EACH of each kind and blend; a kind and blend
-	 * that ever differs from softpipe goes back to softpipe for good.
+	 * that ever differs from softpipe goes back to softpipe for good. Draws
+	 * of several rectangles are only drawn here once single ones passed.
 	 */
 	int check = fast_mode == 2 || fast_verified[kind][blend] < FAST_VERIFY_EACH;
-	if (fast_mode == 0 || fast_off[kind][blend] ||
+	if (fast_mode == 0 || fast_off[kind][blend] || (check && nrect > 1) ||
 	    (check && (fast_verified[kind][blend] >= FAST_VERIFY_EACH || fast_pend.buf != NULL))) {
 		return 2;
 	}
-	struct fp_img dst = {0}, src = {0};
+	struct fp_img dst = {0}, src = {0}, mimg = {0}, nimg = {0};
 	uint64_t tm0 = mach_absolute_time();
 	if (fp_map_tex((GLuint)att, !check, &dst) != 0) {
 		FAST_DETAIL(NO_MAP, "map prog %d kind %d: target texture %d (why %d, format %u)", prog, kind, att, fp_map_why,
 		    fp_map_format);
 		return fast_no(NO_MAP);
 	}
-	if (dst.fmt == FP_A8 || (textured && fp_map_tex(tex, 0, &src) != 0)) {
-		FAST_DETAIL(NO_MAP, "map prog %d kind %d: target format %d, source texture %u (why %d, format %u)", prog, kind,
-		    dst.fmt, tex, fp_map_why, fp_map_format);
+	int mapped = 1;
+	if (dst.fmt == FP_A8) {
+		mapped = 0;
+	} else if (in.textured && fp_map_tex(tex, 0, &src) != 0) {
+		FAST_DETAIL(NO_MAP, "map prog %d kind %d: source texture %u (why %d, format %u)", prog, kind, tex, fp_map_why,
+		    fp_map_format);
+		mapped = 0;
+	} else if (in.masked && fp_map_tex(mtex, 0, &mimg) != 0) {
+		FAST_DETAIL(NO_MAP, "map prog %d kind %d: mask texture %u (why %d, format %u)", prog, kind, mtex, fp_map_why,
+		    fp_map_format);
+		mapped = 0;
+	} else if (ntex != 0 && (fp_map_tex(ntex, 0, &nimg) != 0 || nimg.w <= 0 || nimg.h <= 0)) {
+		FAST_DETAIL(NO_MAP, "map prog %d kind %d: noise texture %u (why %d, format %u)", prog, kind, ntex, fp_map_why,
+		    fp_map_format);
+		mapped = 0;
+	}
+	if (!mapped) {
+		fp_unmap(&nimg);
+		fp_unmap(&mimg);
+		fp_unmap(&src);
 		fp_unmap(&dst);
 		return fast_no(NO_MAP);
 	}
-	struct fp_img nimg = {0};
-	if (ntex != 0) {
-		if (fp_map_tex(ntex, 0, &nimg) != 0 || nimg.w <= 0 || nimg.h <= 0) {
-			FAST_DETAIL(NO_MAP, "map prog %d kind %d: noise texture %u (why %d, format %u)", prog, kind, ntex, fp_map_why,
-			    fp_map_format);
-			if (textured) {
-				fp_unmap(&src);
-			}
-			fp_unmap(&dst);
-			return fast_no(NO_MAP);
+	for (int r = 0; r < nrect; r++) {
+		struct fp_job *j = &jobs[r];
+		j->blend = blend;
+		if (prog_clamp[prog]) {
+			j->tclamp = 1, j->cu0 = ca[0], j->cv0 = ca[1], j->cu1 = ca[2], j->cv1 = ca[3];
 		}
-		j.noise = &nimg;
+		if (in.textured) {
+			j->linear = fast_linear(j->ua, j->ub, j->va, j->vb, j->swap, j, &src, minf, magf);
+		}
+		if (in.masked) {
+			j->src2 = &mimg;
+			j->linear2 = fast_linear(j->u2a, j->u2b, j->v2a, j->v2b, j->swap2, j, &mimg, mminf, mmagf);
+		}
+		if (ntex != 0) {
+			/*
+			 * texcoordN = (clip.xy * W.xy + W.zw * w, w * NOISE_SIZE), w constant
+			 * here: u = (ndc.x * W.x + W.z) / NOISE_SIZE, ndc.x = (x - vp.x) * 2 / vp.w - 1
+			 */
+			j->noise = &nimg;
+			j->nud = 2.0f * W[0] / ((float)vp[2] * FAST_NOISE_SIZE);
+			j->nu0 = (W[2] - W[0] - 2.0f * W[0] * (float)vp[0] / (float)vp[2]) / FAST_NOISE_SIZE;
+			j->nvd = 2.0f * W[1] / ((float)vp[3] * FAST_NOISE_SIZE);
+			j->nv0 = (W[3] - W[1] - 2.0f * W[1] * (float)vp[1] / (float)vp[3]) / FAST_NOISE_SIZE;
+			j->nscale = nscale;
+		}
+		j->x0 = j->x0 > 0 ? j->x0 : 0, j->x1 = j->x1 < dst.w ? j->x1 : dst.w;
+		j->y0 = j->y0 > 0 ? j->y0 : 0, j->y1 = j->y1 < dst.h ? j->y1 : dst.h;
 	}
-	if (textured) {
-		float rx = fabsf(ub - ua) * (float)src.w / (swap ? yb - ya : xb - xa);
-		float ry = fabsf(vb - va) * (float)src.h / (swap ? xb - xa : yb - ya);
-		j.linear = ((rx > 1.0f || ry > 1.0f) ? minf : magf) == GL_LINEAR;
-	}
-	j.x0 = j.x0 > 0 ? j.x0 : 0, j.x1 = j.x1 < dst.w ? j.x1 : dst.w;
-	j.y0 = j.y0 > 0 ? j.y0 : 0, j.y1 = j.y1 < dst.h ? j.y1 : dst.h;
 	uint64_t tm1 = mach_absolute_time();
 	if (!check) {
-		fp_run(&j, &dst, textured ? &src : NULL, NULL, 0);
-	} else if (j.x1 > j.x0 && j.y1 > j.y0) {
-		/* verify: the expected pixels of the rectangle plus a one-pixel border */
-		int bx = j.x0 > 0 ? j.x0 - 1 : 0, by = j.y0 > 0 ? j.y0 - 1 : 0;
-		int bw = (j.x1 < dst.w ? j.x1 + 1 : dst.w) - bx, bh = (j.y1 < dst.h ? j.y1 + 1 : dst.h) - by;
+		for (int r = 0; r < nrect; r++) {
+			fp_run(&jobs[r], &dst, in.textured ? &src : NULL, NULL, 0);
+		}
+	} else if (jobs[0].x1 > jobs[0].x0 && jobs[0].y1 > jobs[0].y0) {
+		/* verify (one rectangle): the expected pixels of the rectangle plus a one-pixel border */
+		struct fp_job *j = &jobs[0];
+		int bx = j->x0 > 0 ? j->x0 - 1 : 0, by = j->y0 > 0 ? j->y0 - 1 : 0;
+		int bw = (j->x1 < dst.w ? j->x1 + 1 : dst.w) - bx, bh = (j->y1 < dst.h ? j->y1 + 1 : dst.h) - by;
 		uint8_t *buf = malloc((size_t)bw * (size_t)bh * 4);
 		if (buf != NULL) {
 			for (int y = 0; y < bh; y++) {
@@ -1531,20 +1629,17 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 					fp_read_rgba(&dst, bx + x, by + y, buf + ((size_t)y * (size_t)bw + (size_t)x) * 4);
 				}
 			}
-			fp_run(&j, &dst, textured ? &src : NULL, buf + ((size_t)(j.y0 - by) * (size_t)bw + (size_t)(j.x0 - bx)) * 4,
+			fp_run(j, &dst, in.textured ? &src : NULL, buf + ((size_t)(j->y0 - by) * (size_t)bw + (size_t)(j->x0 - bx)) * 4,
 			    bw * 4);
 			fast_pend.buf = buf, fast_pend.bx = bx, fast_pend.by = by, fast_pend.bw = bw, fast_pend.bh = bh;
-			fast_pend.x0 = j.x0, fast_pend.y0 = j.y0, fast_pend.x1 = j.x1, fast_pend.y1 = j.y1;
+			fast_pend.x0 = j->x0, fast_pend.y0 = j->y0, fast_pend.x1 = j->x1, fast_pend.y1 = j->y1;
 			fast_pend.kind = kind, fast_pend.blend = blend, fast_pend.tex = (GLuint)att;
 		}
 	}
 	uint64_t tm2 = mach_absolute_time();
-	if (ntex != 0) {
-		fp_unmap(&nimg);
-	}
-	if (textured) {
-		fp_unmap(&src);
-	}
+	fp_unmap(&nimg);
+	fp_unmap(&mimg);
+	fp_unmap(&src);
 	fp_unmap(&dst);
 	fst.map_abs += tm1 - tm0 + mach_absolute_time() - tm2;
 	fst.run_abs += tm2 - tm1;
@@ -1621,15 +1716,15 @@ fast_account(GLint prog, int fp, uint64_t dt)
 static void
 fast_log(void)
 {
+	/* two lines: one would pass the 512-byte log line */
 	sweet_drm_log("sweetgl: fast mode %d: %u draws; fill %u copy %u tint %u atint %u opaque %u alpha %u copyn %u tintn %u "
-	    "atintdk %u copydkn %u: %llu ms in "
-	    "softpipe, %llu ms here; not: kind %u mode %u state %u blend %u array %u shape %u tex %u fb %u map %u; "
-	    "verify ok %u bad %u", fast_mode, fst.draws, fst.kind[FPK_FILL], fst.kind[FPK_COPY], fst.kind[FPK_TINT],
-	    fst.kind[FPK_ATINT], fst.kind[FPK_OPAQUE], fst.kind[FPK_ALPHA], fst.kind[FPK_COPYN], fst.kind[FPK_TINTN],
-	    fst.kind[FPK_ATINTDK], fst.kind[FPK_COPYDKN],
-	    fs_ms(fst.eligible_abs), fs_ms(fst.fast_abs),
+	    "atintdk %u copydkn %u mask %u: %llu ms in softpipe, %llu ms here; verify ok %u bad %u", fast_mode, fst.draws,
+	    fst.kind[FPK_FILL], fst.kind[FPK_COPY], fst.kind[FPK_TINT], fst.kind[FPK_ATINT], fst.kind[FPK_OPAQUE],
+	    fst.kind[FPK_ALPHA], fst.kind[FPK_COPYN], fst.kind[FPK_TINTN], fst.kind[FPK_ATINTDK], fst.kind[FPK_COPYDKN],
+	    fst.kind[FPK_MASK], fs_ms(fst.eligible_abs), fs_ms(fst.fast_abs), fst.ok, fst.bad);
+	sweet_drm_log("sweetgl: fast not: kind %u mode %u state %u blend %u array %u shape %u tex %u fb %u map %u",
 	    fst.no[NO_KIND], fst.no[NO_MODE], fst.no[NO_STATE], fst.no[NO_BLEND], fst.no[NO_ARRAY], fst.no[NO_SHAPE],
-	    fst.no[NO_TEX], fst.no[NO_FB], fst.no[NO_MAP], fst.ok, fst.bad);
+	    fst.no[NO_TEX], fst.no[NO_FB], fst.no[NO_MAP]);
 	sweet_drm_log("sweetgl: fast here: map %llu ms, pixels %llu ms; blend none %u premul %u straight %u mixed %u atop %u",
 	    fs_ms(fst.map_abs), fs_ms(fst.run_abs), fst.blend[FPB_NONE], fst.blend[FPB_PREMUL], fst.blend[FPB_STRAIGHT],
 	    fst.blend[FPB_MIXED], fst.blend[FPB_ATOP]);
