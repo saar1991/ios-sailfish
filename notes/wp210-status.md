@@ -1,4 +1,4 @@
-# WP210 iOS port: status notes (updated 2026-11-14 17:45)
+# WP210 iOS port: status notes (updated 2026-11-14 18:10)
 
 Working notes so the state survives session resets. Times are local
 (Asia/Jerusalem) unless stated. The newest state is at the top; the older
@@ -11,31 +11,36 @@ notes are kept under "History" at the end.
 - **Display:** drawn by the `sweetgl.dylib` shim (Mesa softpipe, all on the CPU), injected into backboardd.
 - **Status:** iOS boots to the home screen with correct colours and rounded corners. It is usable but very slow: taps, Home presses and swipes lag by seconds, and heavy screens take seconds per frame.
 - **Cause found:** CoreAnimation draws each frame as about 85-110 mostly full-screen layers, and softpipe interprets every pixel of every layer (see "Why the UI is slow").
-- **Work in progress:** CPU fast paths in the shim for CA's simple draws (`SGLFAST`, commit e98dfef plus the fix bb529ae). Waiting for the CI build.
+- **Work in progress:** CPU fast paths in the shim for CA's simple draws (`SGLFAST`).
+  - The first version (bb529ae) matched softpipe exactly but did not raise the frame rate: it covered too little, and its loop was slow.
+  - **eed85c5** widens it (half-float colours, straight-alpha blending) and makes the loop much faster. It is pushed and waits for the CI build.
+- **Also open:** Control Center draws without its background (lead: CA texture function 0x3d is missing).
 
 ## Phone state now
 
-- **Shim installed:** build **14f179d** (`b1059f3388ebfe0cc445d36648255626abc47828a1366d3682d64274454c15d4`), `INSTALL VERIFIED` at 17:48 with the refreshed script `a643ae3a…`. It replaced bb529ae (`f7c8d02b…`), whose backup is `/data/local/tmp/sweetgl-check.ogfDXh/before.bin`.
-- **boot_a:** `wp210-boot-fast1.img` (`SGLFAST=1`). The speed run with bb529ae was the 17:34 boot (video 17:38).
-  - **bb529ae, 17:13:** the refreshed script (`0c6a3d2d…`) printed `CHECK PASSED`. It is **not yet confirmed** whether `--install` was run before the next reboot; no `INSTALL VERIFIED` output was seen.
-  - **Settle it with a read-only check from Android:**
+- **Shim installed:** build **14f179d** (`b1059f3388ebfe0cc445d36648255626abc47828a1366d3682d64274454c15d4`), `INSTALL VERIFIED` at 17:48 with the refreshed script `a643ae3a…`.
+  - It replaced bb529ae (`f7c8d02b…`), whose backup is `/data/local/tmp/sweetgl-check.ogfDXh/before.bin`.
+  - Check what's installed, read-only, from Android:
     `adb shell "su -c '/data/adb/magisk/busybox dd if=/dev/block/sdc bs=4096 skip=122729397 count=4202 iflag=direct 2>/dev/null | sha256sum'"`
-    `f7c8d02b…` means bb529ae is installed; `da79097d…` means 75b34d3 is still there.
-- **Boot at 17:15:** `fastboot flash boot_a wp210-boot-fast2.img` failed (the image didn't exist yet), but `set_active a` and `reboot` ran. So iOS booted the **previous** image in boot_a, which has the automated test and no `SGLFAST` (count-only mode if bb529ae is installed). That boot changes the catalog blocks again.
-- **wp210-boot-fast2.img:** built 17:17 and copied to `C:\Users\artzi123\Downloads\wp210-shim`, 7442432 bytes. It has the k-watch kernel, `wp210.adt`, the stock `boot.img` (`74d48f32…`) and `args-fast2.txt` (604 characters, `SGLFAST=2` once in the payload). **Not flashed yet.**
-- **Boot image:** the last one used had the k-watch kernel (wp210-auto-input 6c51db1, `kernel.development.sweet` `1ca9bd9b…`), the normal `wp210.adt` with 8 cores, and the boot-args in `notes/bootargs/args-freq.txt` (copied from the boot-args line of log cbf8881a). That means `sweetperf=2`, `wp210auto=90`, `wp210cpumhz=2400` and `sweetprof=backboardd,SpringBoard`.
+- **boot_a:** `wp210-boot-fast1.img` (`SGLFAST=1`). The phone booted it at 17:34 (bb529ae speed run) and at 17:50 (14f179d diagnostics run).
+- **Boot images in `C:\Users\artzi123\Downloads\wp210-shim`:**
+  - `wp210-boot-fast2.img`: verify mode, 7442432 bytes, built 17:17
+  - `wp210-boot-fast1.img`: speed run
+
+  Both use the k-watch kernel (wp210-auto-input 6c51db1, `kernel.development.sweet` `1ca9bd9b…`), `wp210.adt` with 8 cores, the stock `boot.img` (`74d48f32…`) and `notes/bootargs/args-fast2.txt` or `args-fast1.txt`. Those are `args-freq.txt` plus `SGLFAST` in sweetenv, with `sweetperf=2`, `wp210auto=90`, `wp210cpumhz=2400` and `sweetprof=backboardd,SpringBoard`.
 - **Settings on the phone:** Reduce Transparency and Reduce Motion are on.
 - **Backups:**
   - original pre-BGRA shim `2db9d1eb…`: PC copy in `C:\Users\artzi123\Downloads`
   - BGRA shim `309a61d7…`: `before-bgra.bin`, on the PC and on the phone
   - the allocation files (`sweetgl-diag-<commit>-allocation.bin`) for each install were pushed from `C:\Users\artzi123\Downloads\wp210-shim`; keep them there
+  - every install keeps the replaced shim as `before.bin` in its `/data/local/tmp/sweetgl-check.*` folder
 
 ## Branches
 
 | Branch | Head | What |
 |---|---|---|
 | `main` | 1465988 | BGRA upload for format-0 4bpp IOSurfaces (the copy-error fix) |
-| `sweetgl-diag-0x502` | bb529ae | shim work on top of 1465988 (table below) |
+| `sweetgl-diag-0x502` | eed85c5 | shim work on top of 1465988 (table below) |
 | `wp210-auto-input` | 6c51db1 | kernel patches 0204-0207, `mkadt.py --bigfirst` |
 | `wp210-status-notes` | this file | notes, install scripts, tools, boot-args |
 
@@ -166,26 +171,40 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
 - **Also seen, not yet investigated:** launchd at about 70% CPU and mediaserverd at about 48%, both spinning constantly.
 - **0x502 errors:** they come from the shim's own fbfetch setup (`fbfetch setup err`), not from CA's draws. Low priority.
 
-## Fast paths (SGLFAST), e98dfef + bb529ae
+## Fast paths (SGLFAST): e98dfef, bb529ae, 14f179d, eed85c5
 
 - **What qualifies:**
-  - CA's standard vertex shader
+  - CA's standard vertex shader, which every program uses
   - one of six fragment shaders, compared as source text with whitespace removed: fill, copy, tint, alpha-tint, opaque copy, alpha copy
-  - an axis-aligned rectangle of 6 triangle vertices or a 4-vertex strip, from client arrays
-  - no blend, or CA's premultiplied ONE / ONE_MINUS_SRC_ALPHA
-  - a 2D texture with clamp-to-edge, level 0, NEAREST or LINEAR
+  - an axis-aligned rectangle of 6 triangle vertices or a 4-vertex strip, from client arrays of float, unsigned byte or (since eed85c5) half-float, which is CA's colour format
+  - blending: none, premultiplied (ONE / ONE_MINUS_SRC_ALPHA), or since eed85c5 straight (SRC_ALPHA / ONE_MINUS_SRC_ALPHA) and mixed (straight colour, premultiplied alpha)
+  - a 2D texture with clamp-to-edge, level 0, NEAREST or LINEAR, identity swizzle
   - drawn into a texture-backed framebuffer
 
   Anything else goes to softpipe as before.
-- **How:** `fastpath.c` maps the textures with `pipe_texture_map_3d`, which makes softpipe flush its tile cache first and mark the texture as changed afterwards. It then runs a per-pixel loop with separable texel tables.
+- **How:** `fastpath.c` maps the textures with `pipe_texture_map_3d`, which makes softpipe rasterize its queued draws and flush its tile cache first, and mark the texture as changed afterwards. Then it runs the pixel loop.
+- **The loop since eed85c5:**
+  - same-order 1:1 copies are memcpy rows, or a direct premultiplied blend
+  - unfiltered sampling reads one texel
+  - otherwise bilinear with separable tables
+  - rectangles of 64K pixels or more run in 16-row chunks with `dispatch_apply_f`
 - **Modes** (`SGLFAST` in sweetenv):
-  - 0 or unset: only counts how many draws would qualify, why the others don't, and their softpipe time
+  - 0 or unset: only counts how many draws qualify and why the others don't
   - 1: the CPU path draws them
-  - 2: verify mode. softpipe still draws; for the first 400 qualifying draws the CPU result is compared with softpipe's, including a 1-pixel border, and up to 60 `fastverify` mismatch lines are logged.
-- **Log lines:**
-  - `sweetgl: fast mode M: N draws; fill … copy … : X ms in softpipe, Y ms here; not: …; verify ok A bad B`, every 10 s
-  - `sweetgl: fastverify kind … rect … px differ …`
-- **Checked locally** (bb529ae): all of `eagl.c` and `fastpath.c` compile with stand-in Apple headers. The two Mesa calls (`_mesa_get_current_context`, `_mesa_lookup_texture`) exist in Mesa e24dc5bd, and the 7 new GL calls are GL 2.0 core functions.
+  - 2: verify mode. softpipe still draws; the CPU result is compared with softpipe's, including a 1-pixel border, and up to 60 `fastverify` mismatch lines are logged. Up to bb529ae the first 400 draws were checked; since eed85c5 it's the first 60 of each kind and blend mode.
+  - A trailing `s` (`1s`, `2s`) keeps the loop on one thread (eed85c5).
+- **Log lines** (every 10 s unless noted):
+  - `sweetgl: fast mode M: N draws; fill … copy …: X ms in softpipe, Y ms here; not: …; verify ok A bad B`
+  - `sweetgl: fast here: map … ms, pixels … ms; blend none … premul … straight … mixed …` (eed85c5)
+  - `sweetgl: fast not, ms: kind … mode … blend … array …` (14f179d)
+  - `sweetgl: fast prog P kind K: T ms, D draws, Q qualify, not 0x…` for the 6 costliest programs. The reason bits are 1 kind, 2 mode, 4 state, 8 blend, 16 array, 32 shape, 64 tex, 128 fb, 256 map (14f179d).
+  - `sweetgl: fast no <reason> prog …`: the details of the first rejects of each reason (14f179d)
+  - `sweetgl: fast link prog P fs F kind K vs V: <shader body>`, at link (eed85c5)
+  - `sweetgl: fastverify kind … blend … rect … px differ …`
+- **Checked locally:**
+  - all of `eagl.c` and `fastpath.c` compile with stand-in Apple headers
+  - the new loop is tested on the host with `notes/tools/fptest`: bit-identical to 14f179d's loop for replace and premultiplied blending, and exact against a float model for straight and mixed
+  - the half-float conversion is checked on all 65536 values
 
 ## Verify run (log fde81b55, bb529ae, `SGLFAST=2`, 17:20)
 
@@ -251,30 +270,25 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
 
 ## Next steps
 
-1. **Done:** the bb529ae build is checked, and the install script is refreshed and passed `--check` (17:13).
-2. **Now:**
-   - let the 17:15 iOS boot finish its automated test
-   - back to Android: `fastboot set_active b`, `fastboot reboot`
-   - pull that log
-   - run the read-only shim hash check above
-     - if it shows `da79097d…`: run `--check` and the read-only metadata check, refresh the hashes, then `--install` until `INSTALL VERIFIED`
-3. **Verify run: done, clean** (see above).
-3a. **Speed run with bb529ae:** a boot image from `args-fast1.txt`; no install needed. Also watch the screen for corruption: the CPU path now writes its own pixels, which verify mode never did.
-3b. **Diagnostic build 14f179d:** done (log 22868134, see above).
-3c. **eed85c5:**
-   - CI and install (`OLD=b1059f33…`)
-   - verify run with the fast2 image (`SGLFAST=2`, already built)
-   - if clean, speed run with the fast1 image Check the qualifying counts, the reasons draws don't qualify, and whether there are any `fastverify` mismatches.
-4. **Speed run.** Only if the verify run is clean, boot with `args-fast1.txt` and compare the `slow frame` and `WP210 AUTO` numbers with cbf8881a.
-5. **Later:**
-   - run the fast path on several A78 cores
-   - support REPEAT wrap and vertices from buffer objects, if the reason counts show they matter
-   - fbfetch programs on the CPU
+1. **eed85c5:**
+   - CI build (`sweetgl-sw` on `sweetgl-diag-0x502`)
+   - check size and signature, make the install script (`OLD=b1059f33…`), refresh the metadata hashes, install
+2. **Verify run:** boot `wp210-boot-fast2.img`. This is the first check of fill, tint, alpha-tint and the straight and mixed blends against softpipe, and of the threaded loop.
+3. **Speed run:** only if verification is clean, boot `wp210-boot-fast1.img`. Compare against the bb529ae and 14f179d runs:
+   - frames per second inside the automated-test window (1.25-1.30 so far)
+   - map vs pixel-loop time
+   - the program table
+4. **Then:**
+   - identify the expensive unknown programs from the `fast link` lines (program 9: darken with backdrop read plus noise; programs 47, 39 and 51: few, huge draws)
+   - the noise-dither variants of copy and tint
+   - draws of several rectangles at once
+   - the ARGB-swizzled textures
+5. **Control Center background:** log where CA asks for the missing texture function 0x3d, then symbolicate the caller with ipsw.
 6. **Lower priority:**
    - the 0x502 setup errors
-   - the launchd and mediaserverd spin
+   - the launchd and mediaserverd spin (about 70% and 47% CPU all the time)
    - the A55 MHz reading
-   - llvmpipe as the long-term renderer
+   - llvmpipe or a multi-threaded rasterizer as the long-term renderer (the 17.2 MB installed size limit applies)
 
 ## Rules followed
 
@@ -282,16 +296,18 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
 - **No bypassing the metadata check:** its hashes are refreshed only after the changed blocks are identified (and node 19204 is confirmed unchanged).
 - **Keep backups** until a new install is verified working.
 - **Commit after cause:** shim behaviour changes only once a cause is known. The fast path is behind `SGLFAST`, and the default is count-only.
+- **Verify before speed:** every new fast-path case runs in verify mode (`SGLFAST=2`) before `SGLFAST=1`.
 
 ## Files in this branch
 
 - `notes/scripts/`:
-  - install scripts for BGRA, 0x502, 22ec055, d17061a, fedeca3, 41be079, 75b34d3 and bb529ae
-  - `check-metadata-readonly.sh` (latest version: the same 9 hashes as the 75b34d3 and bb529ae install scripts)
+  - install scripts for BGRA, 0x502, 22ec055, d17061a, fedeca3, 41be079, 75b34d3, bb529ae and 14f179d (each with the hashes it was last run with)
+  - `check-metadata-readonly.sh` (latest version: the same 9 hashes as the 14f179d install)
 - `notes/tools/`:
   - `pull-sweetlog.bat`
   - `resolve-callers.sh`
   - `prof.py`
+  - `fptest/` (host test and benchmark for `fastpath.c`)
 - `notes/bootargs/`:
   - `args-freq.txt`
   - `args-fast2.txt`
