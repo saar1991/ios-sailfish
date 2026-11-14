@@ -67,7 +67,8 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | 3a1708a | darken-over-backdrop kinds, clamped texcoords | 16276064 | `a6f61661…` | yes, then replaced |
 | f7ea6b1 | multi-rect draws, mask kind, check budget 10, summary in two lines | 16292624 | `142cccbf…` | yes, then replaced |
 | 9a67231 | nine-slice pairing, mipmaps when not minified, luminanceCurve, dst-out | 16292736 | `14dd9a0c…` | yes (about 21:57) |
-| e5f492c | flat nine-slice cells, ONE/ONE blend, colour matrix over the backdrop | 16292800 | `e18828d6…` | script sent (22:15) |
+| e5f492c | flat nine-slice cells, ONE/ONE blend, colour matrix over the backdrop | 16292800 | `e18828d6…` | **yes, current** (about 22:17) |
+| 5956cb2 | diagnostics: draws over 300 ms, unrecognised fragment shaders logged whole | | | pushed, to build |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -275,6 +276,15 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## e5f492c run (log 104d951b, `SGLFAST=1`, about 22:20): 3.72 frames/s
+
+- **Self-check:** no draw differed (the colour-matrix and ONE/ONE kinds included).
+- **Test window:** 3.72 frames/s (3.39 for 9a67231; same measure, the mean of the swap rate between start and done). **28/30 steps** drew a frame (best). Median slow frame 0.76 s (0.87 s).
+- **Two 10-11 s frames,** both in tap_dock1 (rounds 2 and 3): one unrecognised program (45 this boot, `fs 0`) took 9.1 s for 2 draws. In other frames the same program is the small blur chain (288x139, 721x715, about 10 ms a draw). Without those two frames the mean slow frame would be about 1.0 s.
+- **Stuck on Control Center at the end:** in round 3 SpringBoard laid out Control Center again while the swipe was in progress (42 layout warnings between touch down and up). It drew 2 frames in 3 s, and the Home press at 211 s came while it was still opening and changed nothing. Afterwards nothing animates (0 swaps/s; earlier runs went back to the home screen's 10/s), and SpringBoard and backboardd are idle, not spinning. It looks like a missed Home press, not a hang. To check: press Home or swipe it down.
+- **Still in softpipe:** supercircle mask (63, 1.9 s per 10 s), circleImage (77), the blur programs, ARGB-swizzled textures (tex rejects).
+- **Next build (5956cb2):** diagnostics only. It logs every draw of 300 ms or more, and the whole source of unrecognised fragment shaders, so the blur and circle-mask kinds can be written next.
 
 ## 9a67231 run (log 18eee082, `SGLFAST=1`, about 21:58): 3.39 frames/s
 
