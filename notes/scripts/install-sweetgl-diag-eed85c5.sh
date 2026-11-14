@@ -83,7 +83,7 @@ read_region() {
 # which made the block hashes go stale after each boot. What the write
 # depends on is checked directly:
 #   - volume header: HFSX version 5, 4 KiB blocks, same size, the catalog
-#     file in the same four extents (so catalog node N is where we read it)
+#     file in the same extents (so catalog node N is where we read it)
 #   - catalog header node: 8 KiB nodes, 20480 of them, node 19204 in use
 #   - node 19204: a leaf whose live records (by its offset table, not stray
 #     bytes) include /usr/lib/sweetgl.dylib exactly once, as file 318814,
@@ -101,7 +101,7 @@ expect_hex() {
 }
 SHIM_KEY=00200004ca40000d007300770065006500740067006c002e00640079006c00690062
 SHIM_FORK=0000000001069580000000000000106a002e04b50000106a0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-CAT_FORK=000000000a000000020000000000a0000002cd820000400000033b050000200000114cc000002000001a626c000020000000000000000000000000000000000000000000000000000000000000000000
+CAT_FORK=000000000c000000020000000000c0000002cd820000400000033b050000200000114cc000002000001a626c00002000002e279600002000000000000000000000000000000000000000000000000000
 check_catalog_files() {
     vh=$1 node0=$2 leaf=$3
     expect_hex "$vh" 1024 4 48580005 'volume header signature and version (HFSX 5)'
@@ -109,7 +109,7 @@ check_catalog_files() {
     expect_hex "$vh" 1296 80 "$CAT_FORK" 'catalog file size and extents'
     expect_hex "$node0" 8 1 01 'catalog header node kind'
     expect_hex "$node0" 32 2 2000 'catalog node size'
-    expect_hex "$node0" 36 4 00005000 'catalog node count'
+    expect_hex "$node0" 36 4 00006000 'catalog node count'
     expect_hex "$node0" 8186 2 00f8 'catalog map record offset'
     map=$(hx "$node0" 2648 1) || die 'Cannot read the catalog node map'
     [ $((0x$map & 8)) -ne 0 ] || die 'Catalog check failed: node 19204 is not in use'

@@ -6,9 +6,12 @@ header and the first catalog nodes, which every iOS boot rewrites, with the
 fields the write depends on:
 
 - volume header: HFSX 5, 4096-byte blocks, 4194304 blocks, catalog file
-  167772160 bytes in extents 183682x16384, 211717x8192, 1133760x8192,
-  1729132x8192 (so node 19204 is device blocks 121448308-121448309)
-- catalog header node: node size 8192, 20480 nodes, map record at 248, the
+  in extents 183682x16384, 211717x8192, 1133760x8192, 1729132x8192 (so node
+  19204 is device blocks 121448308-121448309), and since some boot before
+  18:21 on 2026-11-14 a fifth, 3024790x8192: 201326592 bytes. A growing
+  catalog stops the check; update CAT_FORK and the node count after
+  confirming the first four extents are unchanged.
+- catalog header node: node size 8192, 24576 nodes (20480 before the growth), map record at 248, the
   map bit of node 19204 set (in use)
 - node 19204: leaf (kind -1, height 1); among its live records (offset
   table) the key parent 313920 + "sweetgl.dylib" exactly once; record type
