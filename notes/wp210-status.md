@@ -1,4 +1,4 @@
-# WP210 iOS port: status notes (updated 2026-11-14 18:10)
+# WP210 iOS port: status notes (updated 2026-11-14 18:30)
 
 Working notes so the state survives session resets. Times are local
 (Asia/Jerusalem) unless stated. The newest state is at the top; the older
@@ -59,13 +59,22 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | e98dfef | CPU fast paths (`SGLFAST`), stripped build | - | - | CI failed: implicit declaration of `fast_shader` |
 | bb529ae | forward declaration of `fast_shader`; stripped build | 16274576 | `f7c8d02b…` | yes, then replaced |
 | 14f179d | fast-path diagnostics: time per reject reason, top 6 programs, reject details (logging only) | 16275200 | `b1059f33…` | **yes, current** (17:48) |
-| eed85c5 | half-float colours (fill, tint, alpha-tint), straight and mixed alpha blending, fast rows (memcpy for 1:1 copies), dispatch_apply over cores, map/pixel timing, program log at link | | | pushed, to build |
+| eed85c5 | half-float colours (fill, tint, alpha-tint), straight and mixed alpha blending, fast rows (memcpy for 1:1 copies), dispatch_apply over cores, map/pixel timing, program log at link | 16275584 | `141eb8a7…` | script sent (`OLD=b1059f33…`, field-level catalog check) |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
 The install scripts that were sent for each build are in `notes/scripts/install-sweetgl-diag-<commit>.sh`. Their metadata hashes are the values at the time of that install.
 
 ## Installing a new shim build (the procedure that works)
+
+**From eed85c5 on, the install script checks the catalog by field** (`notes/tools/catalog-check`). It checks:
+- the volume geometry and the catalog's location
+- that node 19204 is in use
+- the shim's live record: file 318814, 17208704 bytes, 122729397 x 4202
+- the four index nodes, by hash
+
+So `--check` passes after an ordinary iOS boot without refreshing hashes. If it prints `CHECK PASSED`, `--install` can follow directly; a `STOP` line names the field that changed. The steps below are the old procedure, needed only with scripts before eed85c5.
+
 
 1. **Download the artifact.** Run the `sweetgl-sw` workflow on `sweetgl-diag-0x502` and download its zip.
 2. **Check and pad the dylib.** It must be at most 17208704 bytes, with the code signature ending at EOF. Pad it with zeros to 17211392 bytes (4202 blocks of 4 KiB); that is the allocation file.
@@ -270,9 +279,7 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
 
 ## Next steps
 
-1. **eed85c5:**
-   - CI build (`sweetgl-sw` on `sweetgl-diag-0x502`)
-   - check size and signature, make the install script (`OLD=b1059f33…`), refresh the metadata hashes, install
+1. **eed85c5:** built and checked (16275584 bytes, signature valid). Install with `install-sweetgl-diag-eed85c5.sh` (`OLD=b1059f33…`, `NEW=141eb8a7…`, field-level catalog check, no hash refresh).
 2. **Verify run:** boot `wp210-boot-fast2.img`. This is the first check of fill, tint, alpha-tint and the straight and mixed blends against softpipe, and of the threaded loop.
 3. **Speed run:** only if verification is clean, boot `wp210-boot-fast1.img`. Compare against the bb529ae and 14f179d runs:
    - frames per second inside the automated-test window (1.25-1.30 so far)
@@ -301,13 +308,14 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
 ## Files in this branch
 
 - `notes/scripts/`:
-  - install scripts for BGRA, 0x502, 22ec055, d17061a, fedeca3, 41be079, 75b34d3, bb529ae and 14f179d (each with the hashes it was last run with)
+  - install scripts for BGRA, 0x502, 22ec055, d17061a, fedeca3, 41be079, 75b34d3, bb529ae and 14f179d (each with the hashes it was last run with), and eed85c5 (field-level catalog check)
   - `check-metadata-readonly.sh` (latest version: the same 9 hashes as the 14f179d install)
 - `notes/tools/`:
   - `pull-sweetlog.bat`
   - `resolve-callers.sh`
   - `prof.py`
   - `fptest/` (host test and benchmark for `fastpath.c`)
+  - `catalog-check/` (the field-level catalog check and its test)
 - `notes/bootargs/`:
   - `args-freq.txt`
   - `args-fast2.txt`
