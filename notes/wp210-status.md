@@ -1,4 +1,4 @@
-# WP210 iOS port: status notes (updated 2026-11-14 21:15)
+# WP210 iOS port: status notes (updated 2026-11-14 21:45)
 
 Working notes so the state survives session resets. Times are local
 (Asia/Jerusalem) unless stated. The newest state is at the top; the older
@@ -63,8 +63,9 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | 57394b7, e0ea1da | copy+noise and tint+noise kinds, atop blend, whole-pixel edges, clamped blends; SGLFAST=1 self-checks first | 16275808 | `f2f7b4b4…` | yes, then replaced |
 | a09c1a7 | softpipe's column coverage rule instead of whole-pixel edges | 16275792 | `b8bf661b…` | yes, then replaced |
 | 27eb0f3 | turned textures (u along y), shape reject reasons | 16275872 | `da8d58c3…` | yes, then replaced |
-| 92e026d | map failure reasons; RGBA copy for sources in other formats | 16275936 | `577d72ae…` | **yes, current** (about 20:52) |
-| 3a1708a | darken-over-backdrop kinds, clamped texcoords | 16276064 | `a6f61661…` | script sent (`OLD=577d72ae…`) |
+| 92e026d | map failure reasons; RGBA copy for sources in other formats | 16275936 | `577d72ae…` | yes, then replaced |
+| 3a1708a | darken-over-backdrop kinds, clamped texcoords | 16276064 | `a6f61661…` | **yes, current** (about 21:12) |
+| (next) | multi-rect draws, mask kind, check budget 10, summary in two lines | | | pushed, to build |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -272,6 +273,22 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## 3a1708a run (log 518ec7c1, `SGLFAST=1`, about 21:14)
+
+- **Self-check:** no draw differed, including the new darken kinds (alpha-tint+darken 1486 draws, copy+darken+noise 46).
+- **Test window:** 2.44 frames/s. Slow frames averaged 1.9 s (median of all 1.7 s, worst 9.5 s); **27/30 steps** drew a frame (best so far); the first frame after a step took 1.11 s on average.
+- **The check budget of 60 was too high for rare full-screen kinds:** the copy+darken shader came only 46 times, so every one was drawn twice (softpipe and CPU, 14 s for 41 draws).
+- **The 10 s summary line passed the 512-byte log limit** and was cut.
+- **Left in softpipe:**
+  - program 13, the masked nine-slice: 16%
+  - program 29, luminanceCurve over the backdrop (34 draws, 0.3 s each): 10.5%
+  - programs 31 and 51 (colour matrix over the backdrop), 89 (no fast vertex shader), 65 (clamped supercircle mask) and 95 (circleImage tint)
+- **Next build:**
+  - multi-rect draws (up to 16)
+  - the mask kind (`color*s0*s1.a`)
+  - check budget 10
+  - the summary in two lines (`fast mode` and `fast not`)
 
 ## 92e026d run (log bdf90282, `SGLFAST=1`, about 20:55): 2.75 frames/s
 
