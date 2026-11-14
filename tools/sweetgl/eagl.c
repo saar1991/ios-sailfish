@@ -18,6 +18,7 @@
 #include <objc/message.h>
 #include <objc/runtime.h>
 #include <pthread.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +37,7 @@
 #include "util/u_inlines.h"
 #include "drm-uapi/drm_fourcc.h"
 
+#include "fastpath.h"
 #include "sweet_drm.h"
 #include "sweetgl.h"
 
@@ -515,6 +517,7 @@ sgl_ShaderSourceARB(void *rctx, GLhandleARB shader, GLsizei count, const GLcharA
 			sweet_drm_log("sweetgl:   | %.400s", src + i);
 		}
 	}
+	fast_shader(H(shader), src);
 	const GLchar *one = src;
 	glShaderSource(H(shader), 1, &one, NULL);
 	free(src);
@@ -841,6 +844,499 @@ sgl_PixelStorei(void *rctx, GLenum pname, GLint param)
 }
 
 /*
+ * CPU fast paths (fastpath.c) for CA's simplest draws: one screen-aligned
+ * rectangle (6 indices or a 4-vertex strip, client arrays) with CA's vertex
+ * shader and a fill / copy / tinted-copy fragment shader, no blending or
+ * premultiplied "over", clamp-to-edge nearest or linear sampling of level 0.
+ * SGLFAST (environment): 0 or unset, only count the draws that qualify;
+ * 1, draw them on the CPU instead of softpipe; 2, verify: compute them,
+ * let softpipe draw, compare (with a one-pixel border), first 400 draws.
+ * Counts and times every 10 s with the flush statistics.
+ */
+#define FAST_VS 0x40
+static int fast_mode;
+static uint8_t shader_kind[PROG_MAX], prog_kind[PROG_MAX];
+static struct {
+	GLint pos, color, tc0, matrix, texmat0, tex0;
+} prog_loc[PROG_MAX];
+enum { NO_KIND, NO_MODE, NO_STATE, NO_BLEND, NO_ARRAY, NO_SHAPE, NO_TEX, NO_FB, NO_MAP, NO_COUNT };
+static struct {
+	uint32_t draws, kind[FPK_COUNT], no[NO_COUNT], ok, bad;
+	uint64_t eligible_abs, fast_abs;
+} fst;
+static struct {
+	uint8_t *buf;
+	int bx, by, bw, bh, x0, y0, x1, y1, kind;
+	GLuint tex;
+} fast_pend;
+static uint32_t fast_verified, fast_bad_logged;
+
+static void
+fast_shader(GLuint shader, const char *src)
+{
+	static const char *const body[FPK_COUNT] = {
+		[FPK_FILL] = "{gl_FragData[0]=color;}",
+		[FPK_COPY] = "{lowpvec4s0=texture2D(texture0,texcoord0_0);gl_FragData[0]=s0;}",
+		[FPK_TINT] = "{lowpvec4s0=texture2D(texture0,texcoord0_0);gl_FragData[0]=color*s0;}",
+		[FPK_ATINT] = "{lowpvec4t0=texture2D(texture0,texcoord0_0);lowpvec4s0=vec4(t0.a);gl_FragData[0]=color*s0;}",
+		[FPK_OPAQUE] = "{lowpvec4t0=texture2D(texture0,texcoord0_0);lowpvec4s0=vec4(t0.rgb,1.);gl_FragData[0]=s0;}",
+		[FPK_ALPHA] = "{lowpvec4t0=texture2D(texture0,texcoord0_0);lowpvec4s0=vec4(t0.a);gl_FragData[0]=s0;}",
+	};
+	if (shader >= PROG_MAX) {
+		return;
+	}
+	shader_kind[shader] = 0;
+	if (strstr(src, "gl_Position = vertex_matrix * vertex_position;") != NULL &&
+	    strstr(src, "color = vertex_color;") != NULL &&
+	    strstr(src, "texcoord0_0 = vertex_texcoord0 * texmat0.xy + texmat0.zw;") != NULL) {
+		shader_kind[shader] = FAST_VS;
+		return;
+	}
+	const char *m = strstr(src, "void main(void)");
+	if (m == NULL) {
+		return;
+	}
+	char b[200];
+	size_t n = 0;
+	for (const char *q = m + 15; *q != 0; q++) {
+		if (*q == ' ' || *q == '\n' || *q == '\t' || *q == '\r') {
+			continue;
+		}
+		if (n == sizeof(b) - 1) {
+			return;
+		}
+		b[n++] = *q;
+	}
+	b[n] = 0;
+	for (int k = 1; k < FPK_COUNT; k++) {
+		if (strcmp(b, body[k]) == 0) {
+			shader_kind[shader] = (uint8_t)k;
+		}
+	}
+}
+
+static void
+fast_link(GLuint program)
+{
+	GLuint sh[4] = {0};
+	GLsizei n = 0;
+	int vs = 0, fs = 0;
+	if (program >= PROG_MAX) {
+		return;
+	}
+	prog_kind[program] = 0;
+	glGetAttachedShaders(program, 4, &n, sh);
+	for (GLsizei i = 0; i < n; i++) {
+		int k = sh[i] < PROG_MAX ? shader_kind[sh[i]] : 0;
+		vs |= k == FAST_VS;
+		fs = k != 0 && k != FAST_VS ? k : fs;
+	}
+	if (!vs || !fs) {
+		return;
+	}
+	prog_loc[program].pos = glGetAttribLocation(program, "vertex_position");
+	prog_loc[program].color = glGetAttribLocation(program, "vertex_color");
+	prog_loc[program].tc0 = glGetAttribLocation(program, "vertex_texcoord0");
+	prog_loc[program].matrix = glGetUniformLocation(program, "vertex_matrix");
+	prog_loc[program].texmat0 = glGetUniformLocation(program, "texmat0");
+	prog_loc[program].tex0 = glGetUniformLocation(program, "texture0");
+	int colored = fs == FPK_FILL || fs == FPK_TINT || fs == FPK_ATINT, textured = fs != FPK_FILL;
+	if (prog_loc[program].pos < 0 || prog_loc[program].matrix < 0 || (colored && prog_loc[program].color < 0) ||
+	    (textured && (prog_loc[program].tc0 < 0 || prog_loc[program].texmat0 < 0 || prog_loc[program].tex0 < 0))) {
+		return;
+	}
+	prog_kind[program] = (uint8_t)fs;
+}
+
+struct fast_attr {
+	const uint8_t *p;
+	GLint on, size, type, stride, norm;
+	GLfloat cur[4];
+};
+
+static int
+fast_attr_get(GLint loc, struct fast_attr *a)
+{
+	GLint buf = 0;
+	void *ptr = NULL;
+	memset(a, 0, sizeof(*a));
+	glGetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &a->on);
+	if (!a->on) {
+		glGetVertexAttribfv((GLuint)loc, GL_CURRENT_VERTEX_ATTRIB, a->cur);
+		return 0;
+	}
+	glGetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &buf);
+	glGetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_SIZE, &a->size);
+	glGetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_TYPE, &a->type);
+	glGetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_STRIDE, &a->stride);
+	glGetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, &a->norm);
+	glGetVertexAttribPointerv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_POINTER, &ptr);
+	a->p = ptr;
+	return buf != 0 || ptr == NULL || a->size < 1 || a->size > 4 ||
+	       (a->type != GL_FLOAT && a->type != GL_UNSIGNED_BYTE) ? -1 : 0;
+}
+
+static void
+fast_attr_read(const struct fast_attr *a, int idx, GLfloat v[4])
+{
+	v[0] = v[1] = v[2] = 0.0f;
+	v[3] = 1.0f;
+	if (!a->on) {
+		memcpy(v, a->cur, sizeof(a->cur));
+		return;
+	}
+	int esz = a->type == GL_FLOAT ? 4 : 1;
+	const uint8_t *e = a->p + (size_t)idx * (size_t)(a->stride ? a->stride : a->size * esz);
+	for (int c = 0; c < a->size; c++) {
+		if (a->type == GL_FLOAT) {
+			memcpy(&v[c], e + 4 * c, 4);
+		} else {
+			v[c] = a->norm ? (GLfloat)e[c] / 255.0f : (GLfloat)e[c];
+		}
+	}
+}
+
+static int
+fast_no(int why)
+{
+	fst.no[why]++;
+	return 0;
+}
+
+static inline int
+fast_near(float a, float b, float eps)
+{
+	return fabsf(a - b) <= eps;
+}
+
+/*
+ * Returns 0: softpipe draws; 1: drawn here; 2: qualifies (counting or
+ * verifying), softpipe draws.
+ */
+static int
+fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, const void *indices, GLint first)
+{
+	int kind = prog > 0 && prog < PROG_MAX ? prog_kind[prog] : 0, idx[6];
+	fst.draws++;
+	if (kind == 0) {
+		return fast_no(NO_KIND);
+	}
+	if (elements) {
+		/* indices in client memory only (with a bound buffer they are an offset) */
+		GLint eb = 0;
+		glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &eb);
+		if (eb != 0 || itype != GL_UNSIGNED_SHORT || indices == NULL) {
+			return fast_no(NO_ARRAY);
+		}
+	}
+	if (mode == GL_TRIANGLES && count == 6) {
+		for (int i = 0; i < 6; i++) {
+			idx[i] = elements ? ((const GLushort *)indices)[i] : first + i;
+		}
+	} else if (mode == GL_TRIANGLE_STRIP && count == 4) {
+		int v[4];
+		for (int i = 0; i < 4; i++) {
+			v[i] = elements ? ((const GLushort *)indices)[i] : first + i;
+		}
+		idx[0] = v[0], idx[1] = v[1], idx[2] = v[2], idx[3] = v[1], idx[4] = v[2], idx[5] = v[3];
+	} else {
+		return fast_no(NO_MODE);
+	}
+	GLboolean cm[4] = {0};
+	glGetBooleanv(GL_COLOR_WRITEMASK, cm);
+	if (!cm[0] || !cm[1] || !cm[2] || !cm[3] || glIsEnabled(GL_DEPTH_TEST) || glIsEnabled(GL_STENCIL_TEST) ||
+	    glIsEnabled(GL_CULL_FACE) || glIsEnabled(GL_RASTERIZER_DISCARD) || glIsEnabled(GL_SAMPLE_ALPHA_TO_COVERAGE)) {
+		return fast_no(NO_STATE);
+	}
+	int blend = 0;
+	if (glIsEnabled(GL_BLEND)) {
+		GLint f[6] = {0};
+		glGetIntegerv(GL_BLEND_SRC_RGB, &f[0]);
+		glGetIntegerv(GL_BLEND_DST_RGB, &f[1]);
+		glGetIntegerv(GL_BLEND_SRC_ALPHA, &f[2]);
+		glGetIntegerv(GL_BLEND_DST_ALPHA, &f[3]);
+		glGetIntegerv(GL_BLEND_EQUATION_RGB, &f[4]);
+		glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &f[5]);
+		if (f[0] != GL_ONE || f[1] != GL_ONE_MINUS_SRC_ALPHA || f[2] != GL_ONE || f[3] != GL_ONE_MINUS_SRC_ALPHA ||
+		    f[4] != GL_FUNC_ADD || f[5] != GL_FUNC_ADD) {
+			return fast_no(NO_BLEND);
+		}
+		blend = 1;
+	}
+	GLint fb = 0, type = 0, att = 0, lvl = 0, db = 0;
+	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fb);
+	if (fb == 0) {
+		return fast_no(NO_FB);
+	}
+	glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+	    GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &type);
+	if (type != GL_TEXTURE) {
+		return fast_no(NO_FB);
+	}
+	glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+	    GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &att);
+	glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+	    GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL, &lvl);
+	glGetIntegerv(GL_DRAW_BUFFER0, &db);
+	if (att <= 0 || lvl != 0 || db != GL_COLOR_ATTACHMENT0) {
+		return fast_no(NO_FB);
+	}
+	/* vertices */
+	struct fast_attr ap, ac, at;
+	int colored = kind == FPK_FILL || kind == FPK_TINT || kind == FPK_ATINT, textured = kind != FPK_FILL;
+	if (fast_attr_get(prog_loc[prog].pos, &ap) || (colored && fast_attr_get(prog_loc[prog].color, &ac)) ||
+	    (textured && fast_attr_get(prog_loc[prog].tc0, &at))) {
+		return fast_no(NO_ARRAY);
+	}
+	GLfloat M[16], tm[4] = {1, 1, 0, 0};
+	glGetUniformfv((GLuint)prog, prog_loc[prog].matrix, M);
+	if (textured) {
+		glGetUniformfv((GLuint)prog, prog_loc[prog].texmat0, tm);
+	}
+	GLint vp[4] = {0};
+	glGetIntegerv(GL_VIEWPORT, vp);
+	float wx[6], wy[6], tu[6], tv[6], w0 = 0.0f;
+	GLfloat col0[4] = {0};
+	for (int i = 0; i < 6; i++) {
+		GLfloat p[4], c[4], t[4];
+		fast_attr_read(&ap, idx[i], p);
+		float cx = M[0] * p[0] + M[4] * p[1] + M[8] * p[2] + M[12] * p[3];
+		float cy = M[1] * p[0] + M[5] * p[1] + M[9] * p[2] + M[13] * p[3];
+		float cz = M[2] * p[0] + M[6] * p[1] + M[10] * p[2] + M[14] * p[3];
+		float cw = M[3] * p[0] + M[7] * p[1] + M[11] * p[2] + M[15] * p[3];
+		if (!(cw > 0.0f) || !isfinite(cx) || !isfinite(cy) || !isfinite(cz) || fabsf(cz) > cw ||
+		    (i > 0 && !fast_near(cw, w0, 1e-6f * w0))) {
+			return fast_no(NO_SHAPE);
+		}
+		w0 = cw;
+		wx[i] = (float)vp[0] + (cx / cw + 1.0f) * (float)vp[2] * 0.5f;
+		wy[i] = (float)vp[1] + (cy / cw + 1.0f) * (float)vp[3] * 0.5f;
+		if (colored) {
+			fast_attr_read(&ac, idx[i], c);
+			if (i == 0) {
+				memcpy(col0, c, sizeof(col0));
+			} else if (memcmp(c, col0, sizeof(col0)) != 0) {
+				return fast_no(NO_SHAPE);
+			}
+		}
+		if (textured) {
+			fast_attr_read(&at, idx[i], t);
+			tu[i] = t[0] * tm[0] + tm[2];
+			tv[i] = t[1] * tm[1] + tm[3];
+			if (!isfinite(tu[i]) || !isfinite(tv[i])) {
+				return fast_no(NO_SHAPE);
+			}
+		}
+	}
+	/* an axis-aligned rectangle: two triangles that meet on a diagonal */
+	float xa = wx[0], xb = wx[0], ya = wy[0], yb = wy[0];
+	for (int i = 1; i < 6; i++) {
+		xa = fminf(xa, wx[i]), xb = fmaxf(xb, wx[i]), ya = fminf(ya, wy[i]), yb = fmaxf(yb, wy[i]);
+	}
+	const float e = 1e-3f;
+	if (!(xb - xa > e) || !(yb - ya > e)) {
+		return fast_no(NO_SHAPE);
+	}
+	int corner[6];
+	float ua = 0, ub = 0, va = 0, vb = 0;
+	for (int i = 0; i < 6; i++) {
+		int cxb = fast_near(wx[i], xb, e), cyb = fast_near(wy[i], yb, e);
+		if ((!cxb && !fast_near(wx[i], xa, e)) || (!cyb && !fast_near(wy[i], ya, e))) {
+			return fast_no(NO_SHAPE);
+		}
+		corner[i] = cxb | cyb << 1;
+		if (textured) {
+			/* u may only depend on x, v only on y */
+			float *u = cxb ? &ub : &ua, *v = cyb ? &vb : &va;
+			static const float unset = -12345.0f;
+			if (i == 0) {
+				ua = ub = va = vb = unset;
+			}
+			if (*u == unset) {
+				*u = tu[i];
+			} else if (!fast_near(*u, tu[i], 1e-5f)) {
+				return fast_no(NO_SHAPE);
+			}
+			if (*v == unset) {
+				*v = tv[i];
+			} else if (!fast_near(*v, tv[i], 1e-5f)) {
+				return fast_no(NO_SHAPE);
+			}
+		}
+	}
+	for (int t = 0; t < 2; t++) {
+		int a = corner[3 * t], b = corner[3 * t + 1], c = corner[3 * t + 2];
+		if (a == b || b == c || a == c) {
+			return fast_no(NO_SHAPE);
+		}
+	}
+	int shared = 0, diag = 1;
+	for (int i = 0; i < 3; i++) {
+		for (int k = 3; k < 6; k++) {
+			if (corner[i] == corner[k]) {
+				shared++;
+			}
+		}
+	}
+	/* the corner each triangle has alone must be opposite the other's */
+	int lone0 = 6 - corner[0] - corner[1] - corner[2], lone1 = 6 - corner[3] - corner[4] - corner[5];
+	diag = (lone0 ^ lone1) == 3;
+	if (shared != 2 || !diag) {
+		return fast_no(NO_SHAPE);
+	}
+	if (textured && (ua == -12345.0f || ub == -12345.0f || va == -12345.0f || vb == -12345.0f)) {
+		return fast_no(NO_SHAPE);
+	}
+	struct fp_job j = {.kind = kind, .blend = blend, .xa = xa, .xb = xb, .ya = ya, .yb = yb,
+		.ua = ua, .ub = ub, .va = va, .vb = vb};
+	for (int k = 0; k < 4; k++) {
+		float c = col0[k] < 0.0f ? 0.0f : col0[k] > 1.0f ? 1.0f : col0[k];
+		j.color[k] = (uint8_t)(c * 255.0f + 0.5f);
+	}
+	j.x0 = (int)ceilf(xa - 0.5f), j.x1 = (int)ceilf(xb - 0.5f);
+	j.y0 = (int)ceilf(ya - 0.5f), j.y1 = (int)ceilf(yb - 0.5f);
+	j.x0 = j.x0 > vp[0] ? j.x0 : vp[0], j.x1 = j.x1 < vp[0] + vp[2] ? j.x1 : vp[0] + vp[2];
+	j.y0 = j.y0 > vp[1] ? j.y0 : vp[1], j.y1 = j.y1 < vp[1] + vp[3] ? j.y1 : vp[1] + vp[3];
+	if (glIsEnabled(GL_SCISSOR_TEST)) {
+		GLint sc[4] = {0};
+		glGetIntegerv(GL_SCISSOR_BOX, sc);
+		j.x0 = j.x0 > sc[0] ? j.x0 : sc[0], j.x1 = j.x1 < sc[0] + sc[2] ? j.x1 : sc[0] + sc[2];
+		j.y0 = j.y0 > sc[1] ? j.y0 : sc[1], j.y1 = j.y1 < sc[1] + sc[3] ? j.y1 : sc[1] + sc[3];
+	}
+	/* texture: what the shader's texture0 samples, clamped, one level */
+	GLuint tex = 0;
+	GLint minf = 0, magf = 0;
+	if (textured) {
+		GLint unit = -1, active = GL_TEXTURE0, bound = 0, sampler = 0, ws = 0, wt = 0, base = 0, sw[4] = {0};
+		glGetUniformiv((GLuint)prog, prog_loc[prog].tex0, &unit);
+		if (unit < 0 || unit >= UNITS || (tex = unit_held[unit]) == 0 || tex == (GLuint)att) {
+			return fast_no(NO_TEX);
+		}
+		glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+		glActiveTexture(GL_TEXTURE0 + (GLenum)unit);
+		glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+		glGetIntegerv(GL_SAMPLER_BINDING, &sampler);
+		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &minf);
+		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, &magf);
+		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, &ws);
+		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, &wt);
+		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, &base);
+		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, &sw[0]);
+		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, &sw[1]);
+		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, &sw[2]);
+		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, &sw[3]);
+		glActiveTexture((GLenum)active);
+		if ((GLuint)bound != tex || sampler != 0 || ws != GL_CLAMP_TO_EDGE || wt != GL_CLAMP_TO_EDGE || base != 0 ||
+		    sw[0] != GL_RED || sw[1] != GL_GREEN || sw[2] != GL_BLUE || sw[3] != GL_ALPHA ||
+		    (minf != GL_NEAREST && minf != GL_LINEAR) || (magf != GL_NEAREST && magf != GL_LINEAR)) {
+			return fast_no(NO_TEX);
+		}
+	}
+	fst.kind[kind]++;
+	if (fast_mode == 0 || (fast_mode == 2 && (fast_verified >= 400 || fast_pend.buf != NULL))) {
+		return 2;
+	}
+	struct fp_img dst = {0}, src = {0};
+	if (fp_map_tex((GLuint)att, fast_mode == 1, &dst) != 0) {
+		return fast_no(NO_MAP);
+	}
+	if (dst.fmt == FP_A8 || (textured && fp_map_tex(tex, 0, &src) != 0)) {
+		fp_unmap(&dst);
+		return fast_no(NO_MAP);
+	}
+	if (textured) {
+		float rx = fabsf(ub - ua) * (float)src.w / (xb - xa), ry = fabsf(vb - va) * (float)src.h / (yb - ya);
+		j.linear = ((rx > 1.0f || ry > 1.0f) ? minf : magf) == GL_LINEAR;
+	}
+	j.x0 = j.x0 > 0 ? j.x0 : 0, j.x1 = j.x1 < dst.w ? j.x1 : dst.w;
+	j.y0 = j.y0 > 0 ? j.y0 : 0, j.y1 = j.y1 < dst.h ? j.y1 : dst.h;
+	if (fast_mode == 1) {
+		fp_run(&j, &dst, textured ? &src : NULL, NULL, 0);
+	} else if (j.x1 > j.x0 && j.y1 > j.y0) {
+		/* verify: the expected pixels of the rectangle plus a one-pixel border */
+		int bx = j.x0 > 0 ? j.x0 - 1 : 0, by = j.y0 > 0 ? j.y0 - 1 : 0;
+		int bw = (j.x1 < dst.w ? j.x1 + 1 : dst.w) - bx, bh = (j.y1 < dst.h ? j.y1 + 1 : dst.h) - by;
+		uint8_t *buf = malloc((size_t)bw * (size_t)bh * 4);
+		if (buf != NULL) {
+			for (int y = 0; y < bh; y++) {
+				for (int x = 0; x < bw; x++) {
+					fp_read_rgba(&dst, bx + x, by + y, buf + ((size_t)y * (size_t)bw + (size_t)x) * 4);
+				}
+			}
+			fp_run(&j, &dst, textured ? &src : NULL, buf + ((size_t)(j.y0 - by) * (size_t)bw + (size_t)(j.x0 - bx)) * 4,
+			    bw * 4);
+			fast_pend.buf = buf, fast_pend.bx = bx, fast_pend.by = by, fast_pend.bw = bw, fast_pend.bh = bh;
+			fast_pend.x0 = j.x0, fast_pend.y0 = j.y0, fast_pend.x1 = j.x1, fast_pend.y1 = j.y1;
+			fast_pend.kind = kind, fast_pend.tex = (GLuint)att;
+		}
+	}
+	if (textured) {
+		fp_unmap(&src);
+	}
+	fp_unmap(&dst);
+	return fast_mode == 1 ? 1 : 2;
+}
+
+/* SGLFAST=2: after softpipe drew, compare with what the fast path computed */
+static void
+fast_verify(void)
+{
+	struct fp_img dst = {0};
+	int bad = 0, maxd = 0, fx = -1, fy = -1;
+	uint8_t want[4] = {0}, got[4] = {0};
+	fast_verified++;
+	if (fp_map_tex(fast_pend.tex, 0, &dst) == 0) {
+		for (int y = 0; y < fast_pend.bh; y++) {
+			for (int x = 0; x < fast_pend.bw; x++) {
+				uint8_t g[4];
+				const uint8_t *w = fast_pend.buf + ((size_t)y * (size_t)fast_pend.bw + (size_t)x) * 4;
+				fp_read_rgba(&dst, fast_pend.bx + x, fast_pend.by + y, g);
+				int d = 0;
+				for (int k = 0; k < 4; k++) {
+					int v = abs((int)w[k] - (int)g[k]);
+					d = v > d ? v : d;
+				}
+				maxd = d > maxd ? d : maxd;
+				if (d > 2 && bad++ == 0) {
+					fx = fast_pend.bx + x, fy = fast_pend.by + y;
+					memcpy(want, w, 4);
+					memcpy(got, g, 4);
+				}
+			}
+		}
+		fp_unmap(&dst);
+	}
+	if (bad == 0) {
+		fst.ok++;
+	} else {
+		fst.bad++;
+		if (fast_bad_logged++ < 60) {
+			sweet_drm_log("sweetgl: fastverify kind %d rect %d,%d-%d,%d: %d px differ (max %d), first %d,%d "
+			    "want %02x%02x%02x%02x got %02x%02x%02x%02x", fast_pend.kind, fast_pend.x0, fast_pend.y0,
+			    fast_pend.x1, fast_pend.y1, bad, maxd, fx, fy, want[0], want[1], want[2], want[3], got[0], got[1],
+			    got[2], got[3]);
+		}
+	}
+	free(fast_pend.buf);
+	fast_pend.buf = NULL;
+}
+
+static uint64_t fs_ms(uint64_t abs);
+
+/* every 10 s, with the flush statistics */
+static void
+fast_log(void)
+{
+	sweet_drm_log("sweetgl: fast mode %d: %u draws; fill %u copy %u tint %u atint %u opaque %u alpha %u: %llu ms in "
+	    "softpipe, %llu ms here; not: kind %u mode %u state %u blend %u array %u shape %u tex %u fb %u map %u; "
+	    "verify ok %u bad %u", fast_mode, fst.draws, fst.kind[FPK_FILL], fst.kind[FPK_COPY], fst.kind[FPK_TINT],
+	    fst.kind[FPK_ATINT], fst.kind[FPK_OPAQUE], fst.kind[FPK_ALPHA], fs_ms(fst.eligible_abs), fs_ms(fst.fast_abs),
+	    fst.no[NO_KIND], fst.no[NO_MODE], fst.no[NO_STATE], fst.no[NO_BLEND], fst.no[NO_ARRAY], fst.no[NO_SHAPE],
+	    fst.no[NO_TEX], fst.no[NO_FB], fst.no[NO_MAP], fst.ok, fst.bad);
+	memset(&fst, 0, sizeof(fst));
+}
+
+/*
  * Per-frame cost, always on: time spent in the app's draws (softpipe
  * rasterizes inside them, sometimes in the next draw) split by framebuffer
  * and program, plus binds and clears. A frame whose draws and finish take
@@ -978,8 +1474,19 @@ sgl_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 	SGL_CUR(rctx);
 	draw_prep(mode, count);
 	uint64_t t0 = mach_absolute_time();
-	glDrawArrays(mode, first, count);
-	fs_draw(mach_absolute_time() - t0, count);
+	GLint prog = 0;
+	glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
+	int fp = fast_draw(prog, mode, count, 0, 0, NULL, first);
+	if (fp != 1) {
+		glDrawArrays(mode, first, count);
+	}
+	uint64_t dt = mach_absolute_time() - t0;
+	fst.eligible_abs += fp == 2 ? dt : 0;
+	fst.fast_abs += fp == 1 ? dt : 0;
+	if (fast_pend.buf != NULL) {
+		fast_verify();
+	}
+	fs_draw(dt, count);
 	SGL_POST(65);
 }
 
@@ -989,8 +1496,19 @@ sgl_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void
 	SGL_CUR(rctx);
 	draw_prep(mode, count);
 	uint64_t t0 = mach_absolute_time();
-	glDrawElements(mode, count, type, indices);
-	fs_draw(mach_absolute_time() - t0, count);
+	GLint prog = 0;
+	glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
+	int fp = fast_draw(prog, mode, count, 1, type, indices, 0);
+	if (fp != 1) {
+		glDrawElements(mode, count, type, indices);
+	}
+	uint64_t dt = mach_absolute_time() - t0;
+	fst.eligible_abs += fp == 2 ? dt : 0;
+	fst.fast_abs += fp == 1 ? dt : 0;
+	if (fast_pend.buf != NULL) {
+		fast_verify();
+	}
+	fs_draw(dt, count);
 	SGL_POST(67);
 }
 
@@ -1023,6 +1541,7 @@ sgl_LinkProgramARB(void *rctx, GLhandleARB program)
 	if (ok) {
 		rect_link(H(program));
 		fbfetch_link(H(program));
+		fast_link(H(program));
 	}
 	if (dump_shaders) {
 		GLuint sh[4] = {0};
@@ -1153,6 +1672,7 @@ flush_stats(uint64_t t0, uint64_t t1)
 		sweet_drm_log("sweetgl: %.1f flushes/s, finish avg %llu us max %llu us, between %llu us",
 		    n * 1e9 / span, wait * tb.numer / tb.denom / 1000 / n, wait_max * tb.numer / tb.denom / 1000,
 		    cpu * tb.numer / tb.denom / 1000 / n);
+		fast_log();
 		window = t1;
 		n = wait = wait_max = cpu = 0;
 	}
@@ -2050,6 +2570,8 @@ sweetgl_eagl_install(void)
 {
 	const char *e = getenv("SWEETGL_GLERR");
 	sgl_check_errors = e && e[0] == '1';
+	const char *fm = getenv("SGLFAST");
+	fast_mode = fm != NULL && fm[0] >= '0' && fm[0] <= '2' ? fm[0] - '0' : 0;
 	const char *t = getenv("SWEETGL_TRACE");
 	trace_left = t && t[0] == '1' ? 20000 : 0;
 	dump_shaders = trace_left > 0;
