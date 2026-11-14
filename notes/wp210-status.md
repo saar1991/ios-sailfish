@@ -95,3 +95,18 @@ The changes come from the iOS boot in the trace image, not from our install.
 - The metadata check is not bypassed by editing its hashes.
 - Keep backups (PC and `/data/local/tmp/sweetgl-check.*`) until a new install is verified working.
 - The install script copy in `scripts/install-sweetgl-diag-22ec055.sh` is the one that ran (SHA-256 `e0c8df12…`).
+
+## Update 2026-11-14 09:45
+
+- Log cfa49be2 (first boot with 22ec055): no copy errors (91 upload/attach lines, all err 0).
+  Three 0x502 errors, each on the FIRST fbfetch draw of programs 19, 21, 27 (fb 1 / texture 1);
+  draws 2-9 of the same programs have no error. glValidateProgram log is empty for all three.
+  User reports the UI is even slower with tracing on; video testing dropped for now.
+- Build d17061a (fbfetch trace limit 12 -> 200 per program): 17208160 bytes, fits.
+  Allocation SHA-256 08cc1bf0…; installed with `install-sweetgl-diag-d17061a.sh` (bbccaa85…): INSTALL VERIFIED.
+  Replaced 22ec055 (552d50d6…).
+- After the 22ec055 boot, five catalog blocks changed: the usual four plus 121448308 (catalog node 19204,
+  which holds the sweetgl.dylib record). Diffing that node against the earlier dump: only /usr/lib/dyld's
+  access date changed. sweetgl.dylib record unchanged (17208704 bytes, 122729397 x 4202).
+- Every iOS boot changes the catalog blocks, so the check needs refreshing each time. Idea: make the
+  script verify the shim's catalog record directly instead of whole-block hashes.
