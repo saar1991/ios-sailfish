@@ -1,4 +1,4 @@
-# WP210 iOS port: status notes (updated 2026-11-14 16:55)
+# WP210 iOS port: status notes (updated 2026-11-14 17:15)
 
 Working notes so the state survives session resets. Times are local
 (Asia/Jerusalem) unless stated. The newest state is at the top; the older
@@ -45,7 +45,9 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | 41be079 | per-frame stats (`slow frame` lines); per-draw tracing removed | 17208272 | `13e97388…` | yes, then replaced |
 | 75b34d3 | per-draw list for the first 4 frames of 2 s or more | 17208480 | `da79097d…` | **yes, current** |
 | e98dfef | CPU fast paths (`SGLFAST`), stripped build | - | - | CI failed: implicit declaration of `fast_shader` |
-| bb529ae | forward declaration of `fast_shader` | pending | | next to build |
+| bb529ae | forward declaration of `fast_shader`; stripped build | 16274576 | `f7c8d02b…` | script sent (`OLD=da79097d…`), not yet installed |
+
+bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
 The install scripts that were sent for each build are in `notes/scripts/install-sweetgl-diag-<commit>.sh`. Their metadata hashes are the values at the time of that install.
 
@@ -191,8 +193,8 @@ fastboot flash boot_a wp210-boot-X.img && fastboot set_active a && fastboot rebo
 ## Files in this branch
 
 - `notes/scripts/`:
-  - install scripts for BGRA, 0x502, 22ec055, d17061a, fedeca3, 41be079 and 75b34d3
-  - `check-metadata-readonly.sh` (latest version: hashes from the last check before the 75b34d3 install)
+  - install scripts for BGRA, 0x502, 22ec055, d17061a, fedeca3, 41be079, 75b34d3 and bb529ae
+  - `check-metadata-readonly.sh` (latest version: the same 9 hashes as the 75b34d3 and bb529ae install scripts)
 - `notes/tools/`:
   - `pull-sweetlog.bat`
   - `resolve-callers.sh`

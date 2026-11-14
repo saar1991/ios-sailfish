@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # READ-ONLY. Compares the nine iOS catalog blocks with the expected hashes
-# used by install-sweetgl-diag-0x502.sh and prints MATCH or DIFFERS for each.
+# used by install-sweetgl-diag-bb529ae.sh and prints MATCH or DIFFERS for each.
 # It never writes to /dev/block. Scratch files go in a new directory under
 # /data/local/tmp, which is kept for review.
 umask 077
@@ -30,11 +30,11 @@ while read -r block count expected; do
         DIFF=$((DIFF + 1))
     fi
 done <<'METADATA'
-119713536 1 375144d1ed6a6e785884181dc81549741f120dc49ab29b03acaec4be15f041ed
-119897218 1 0ee79de8cb89b8dd2fa61a889a556db4f7c45746e0bb8a76e80d123a74127eb9
+119713536 1 64e38b823604099cbd0e79eedf7f5156e81ea49e180caee669e3d05f01192469
+119897218 1 b833aadffd9335831f8c9f84decd7d529ba779685164d5b8206ff4e33de4bde9
 121450324 2 467d21737003d9850f6397a6ae3a7c89bb6970b2fcd6d394c6e26b7e5c15ddfc
 121450322 2 2380f94acf92bae547722bad5f85a53b66a5dab6f3d7f5467b804d195f005770
-119897220 6 52b9acff7c9f86a03f347d01c4ed7bfe7acee9376329a44d6a3f86f34efcbc89
+119897220 6 1ec1ca843e3198e6130e3373fa7eacc76de736f6494695b94c2cdb5e55ba492a
 121448304 2 f1374e3dd8df716a89ae4db945775ce3db98c7c18cb6a95e711f5fce7eab2963
 119897768 2 84718b5ea33a118644a989d36201fafbf848282d81afb57ecb7e575a0438ee71
 121448452 2 4a857befe9e3a12b0db676f885c76d0c8f6c5003ccf518f9e00116feb3e41d53
