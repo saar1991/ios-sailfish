@@ -1423,18 +1423,21 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	struct fp_img dst = {0}, src = {0};
 	uint64_t tm0 = mach_absolute_time();
 	if (fp_map_tex((GLuint)att, !check, &dst) != 0) {
-		FAST_DETAIL(NO_MAP, "map prog %d kind %d: target texture %d", prog, kind, att);
+		FAST_DETAIL(NO_MAP, "map prog %d kind %d: target texture %d (why %d, format %u)", prog, kind, att, fp_map_why,
+		    fp_map_format);
 		return fast_no(NO_MAP);
 	}
 	if (dst.fmt == FP_A8 || (textured && fp_map_tex(tex, 0, &src) != 0)) {
-		FAST_DETAIL(NO_MAP, "map prog %d kind %d: target format %d, source texture %u", prog, kind, dst.fmt, tex);
+		FAST_DETAIL(NO_MAP, "map prog %d kind %d: target format %d, source texture %u (why %d, format %u)", prog, kind,
+		    dst.fmt, tex, fp_map_why, fp_map_format);
 		fp_unmap(&dst);
 		return fast_no(NO_MAP);
 	}
 	struct fp_img nimg = {0};
 	if (ntex != 0) {
 		if (fp_map_tex(ntex, 0, &nimg) != 0 || nimg.w <= 0 || nimg.h <= 0) {
-			FAST_DETAIL(NO_MAP, "map prog %d kind %d: noise texture %u", prog, kind, ntex);
+			FAST_DETAIL(NO_MAP, "map prog %d kind %d: noise texture %u (why %d, format %u)", prog, kind, ntex, fp_map_why,
+			    fp_map_format);
 			if (textured) {
 				fp_unmap(&src);
 			}

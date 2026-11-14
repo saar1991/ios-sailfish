@@ -14,6 +14,7 @@
 #include "state_tracker/st_context.h"
 #include "main/texobj.h"
 #include "util/u_inlines.h"
+#include "util/format/u_format.h"
 
 #include "fastpath.h"
 
@@ -38,38 +39,72 @@ fmt_of(enum pipe_format f)
 	}
 }
 
+int fp_map_why;
+unsigned fp_map_format;
+
+static int
+map_fail(int why)
+{
+	fp_map_why = why;
+	return -1;
+}
+
 int
 fp_map_tex(unsigned tex, int write, struct fp_img *m)
 {
 	struct gl_context *ctx = _mesa_get_current_context();
+	memset(m, 0, sizeof(*m));
+	fp_map_format = 0;
 	if (ctx == NULL || ctx->st == NULL || tex == 0) {
-		return -1;
+		return map_fail(FPM_CONTEXT);
 	}
 	struct gl_texture_object *obj = _mesa_lookup_texture(ctx, tex);
 	if (obj == NULL || obj->Target != GL_TEXTURE_2D || obj->pt == NULL) {
-		return -1;
+		return map_fail(FPM_OBJECT);
 	}
 	struct gl_texture_image *img = obj->Image[0][0];
 	struct pipe_resource *res = obj->pt;
+	fp_map_format = (unsigned)res->format;
 	/* the image must already live in the resource the draw will use */
-	if (img == NULL || img->pt != res || res->nr_samples > 1 || res->array_size > 1 ||
+	if (img == NULL || img->pt != res) {
+		return map_fail(FPM_IMAGE);
+	}
+	if (res->nr_samples > 1 || res->array_size > 1 ||
 	    (res->target != PIPE_TEXTURE_2D && res->target != PIPE_TEXTURE_RECT)) {
-		return -1;
+		return map_fail(FPM_LAYOUT);
 	}
 	int fmt = fmt_of(res->format);
-	if (fmt == FP_NONE) {
-		return -1;
+	size_t npx = (size_t)res->width0 * (size_t)res->height0;
+	if (fmt == FP_NONE && (write || npx > (1u << 20) || util_format_is_compressed(res->format) ||
+	    util_format_is_pure_integer(res->format) || util_format_is_depth_or_stencil(res->format))) {
+		return map_fail(FPM_FORMAT);
 	}
 	struct pipe_context *pipe = ctx->st->pipe;
 	struct pipe_transfer *xfer = NULL;
 	void *p = pipe_texture_map_3d(pipe, res, 0, PIPE_MAP_READ | (write ? PIPE_MAP_WRITE : 0), 0, 0, 0,
 	    res->width0, res->height0, 1, &xfer);
 	if (p == NULL || xfer == NULL) {
-		return -1;
+		return map_fail(FPM_MAP);
 	}
-	m->ptr = p;
 	m->w = (int)res->width0;
 	m->h = (int)res->height0;
+	if (fmt == FP_NONE) {
+		/* another plain format, read only: an RGBA copy for this draw */
+		uint8_t *copy = malloc(npx * 4);
+		if (copy == NULL) {
+			pipe_texture_unmap(pipe, xfer);
+			return map_fail(FPM_MEMORY);
+		}
+		util_format_unpack_rgba_8unorm_rect(res->format, copy, (unsigned)m->w * 4, p, xfer->stride, (unsigned)m->w,
+		    (unsigned)m->h);
+		pipe_texture_unmap(pipe, xfer);
+		m->ptr = copy;
+		m->own = copy;
+		m->stride = m->w * 4;
+		m->fmt = FP_RGBA;
+		return 0;
+	}
+	m->ptr = p;
 	m->stride = (int)xfer->stride;
 	m->fmt = fmt;
 	m->xfer = xfer;
@@ -83,6 +118,8 @@ fp_unmap(struct fp_img *m)
 	if (m->xfer != NULL && ctx != NULL && ctx->st != NULL) {
 		pipe_texture_unmap(ctx->st->pipe, m->xfer);
 	}
+	free(m->own);
+	m->own = NULL;
 	m->xfer = NULL;
 	m->ptr = NULL;
 }

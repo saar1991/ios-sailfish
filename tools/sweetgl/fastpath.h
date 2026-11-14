@@ -44,6 +44,7 @@ struct fp_img {
 	uint8_t *ptr;
 	int w, h, stride, fmt;
 	void *xfer;
+	void *own;              /* converted copy (read-only maps of other formats), freed by fp_unmap */
 };
 
 struct fp_job {
@@ -64,7 +65,14 @@ struct fp_job {
 	float nu0, nud, nv0, nvd, nscale;
 };
 
-/* GL texture name, level 0 layer 0: 0 on success */
+/*
+ * GL texture name, level 0 layer 0: 0 on success. Read-only maps of other
+ * plain formats (up to 1M pixels) come back as an RGBA copy. On failure
+ * fp_map_why says why (FPM_) and fp_map_format holds the pipe format.
+ */
+enum { FPM_OK, FPM_CONTEXT, FPM_OBJECT, FPM_IMAGE, FPM_LAYOUT, FPM_FORMAT, FPM_MAP, FPM_MEMORY };
+extern int fp_map_why;
+extern unsigned fp_map_format;
 int fp_map_tex(unsigned tex, int write, struct fp_img *m);
 void fp_unmap(struct fp_img *m);
 void fp_read_rgba(const struct fp_img *m, int x, int y, uint8_t rgba[4]);
