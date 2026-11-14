@@ -1,4 +1,4 @@
-# WP210 iOS port: status notes (updated 2026-11-14 17:20)
+# WP210 iOS port: status notes (updated 2026-11-14 17:45)
 
 Working notes so the state survives session resets. Times are local
 (Asia/Jerusalem) unless stated. The newest state is at the top; the older
@@ -15,7 +15,7 @@ notes are kept under "History" at the end.
 
 ## Phone state now
 
-- **Shim installed:** build **75b34d3** (`da79097dd34d6bab4f1bc407ff0f92fb44ce62aa00fe5c2d371035115202a03a`) as of the last confirmed install. It replaced 41be079 (`13e97388…`).
+- **Shim installed:** build **bb529ae** (`f7c8d02b2fcfd1d3c3e06997d8f0d4f8319c8f4c88e8208ea997a0462c180793`), confirmed at 17:25 by the read-only hash check. It replaced 75b34d3 (`da79097d…`).
   - **bb529ae, 17:13:** the refreshed script (`0c6a3d2d…`) printed `CHECK PASSED`. It is **not yet confirmed** whether `--install` was run before the next reboot; no `INSTALL VERIFIED` output was seen.
   - **Settle it with a read-only check from Android:**
     `adb shell "su -c '/data/adb/magisk/busybox dd if=/dev/block/sdc bs=4096 skip=122729397 count=4202 iflag=direct 2>/dev/null | sha256sum'"`
@@ -51,7 +51,8 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | 41be079 | per-frame stats (`slow frame` lines); per-draw tracing removed | 17208272 | `13e97388…` | yes, then replaced |
 | 75b34d3 | per-draw list for the first 4 frames of 2 s or more | 17208480 | `da79097d…` | **yes, current** |
 | e98dfef | CPU fast paths (`SGLFAST`), stripped build | - | - | CI failed: implicit declaration of `fast_shader` |
-| bb529ae | forward declaration of `fast_shader`; stripped build | 16274576 | `f7c8d02b…` | script sent (`OLD=da79097d…`), not yet installed |
+| bb529ae | forward declaration of `fast_shader`; stripped build | 16274576 | `f7c8d02b…` | **yes, current** |
+| 14f179d | fast-path diagnostics: time per reject reason, top 6 programs, reject details (logging only) | | | pushed, to build |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -184,6 +185,22 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - `sweetgl: fastverify kind … rect … px differ …`
 - **Checked locally** (bb529ae): all of `eagl.c` and `fastpath.c` compile with stand-in Apple headers. The two Mesa calls (`_mesa_get_current_context`, `_mesa_lookup_texture`) exist in Mesa e24dc5bd, and the 7 new GL calls are GL 2.0 core functions.
 
+## Verify run (log fde81b55, bb529ae, `SGLFAST=2`, 17:20)
+
+- **Verification:** all 400 checked draws match softpipe (within 2 per channel, 1-pixel border included), 0 bad.
+- **Qualifying draws:** 3224 of 12140 (27%): copy 2785, alpha 420, opaque 19. They took **57.7 s** of softpipe time, about 30% of the slow-frame draw time (188 s).
+- **Fill, tint and alpha-tint: 0 draws qualify.** The shaders are classified correctly (programs 3, 7, 17), so the colour or index arrays are the likely cause. They are probably among the 19% `array` rejects; build 14f179d logs the details.
+- **Reject counts:** kind 6017 (50%), array 2342, blend 475, mode 62, tex 20, map 5. State, shape and fb: 0.
+- **Costliest programs in the per-draw lists:**
+  - program 5 (copy): 47%
+  - program 9 (darken blend with backdrop fetch, plus noise): 12%
+  - program 19 (backdrop mix): 8%
+  - programs 7 (tint) and 3 (fill): 7% each
+  - program 21 (tint plus noise): 6%
+  - program 15 (copy plus noise): 4%
+- **Programs:** all of them share vertex shader 1. Programs 15 and 21 are the copy and tint shaders plus CA's noise dither (`texture2DProj` of a noise texture). Programs 9, 11 and 19 read the backdrop.
+- **Frames:** 30 slow frames, median 2.4 s, maximum 32 s (verify adds work for the first 400 draws). The previous run had a median of 2.3 s.
+
 ## Next steps
 
 1. **Done:** the bb529ae build is checked, and the install script is refreshed and passed `--check` (17:13).
@@ -193,10 +210,9 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
    - pull that log
    - run the read-only shim hash check above
      - if it shows `da79097d…`: run `--check` and the read-only metadata check, refresh the hashes, then `--install` until `INSTALL VERIFIED`
-3. **Verify run:**
-   - `adb reboot bootloader`
-   - `fastboot flash boot_a wp210-boot-fast2.img`, `fastboot set_active a`, `fastboot reboot`
-   - let the automated test finish, then pull the log Check the qualifying counts, the reasons draws don't qualify, and whether there are any `fastverify` mismatches.
+3. **Verify run: done, clean** (see above).
+3a. **Speed run with bb529ae:** a boot image from `args-fast1.txt`; no install needed. Also watch the screen for corruption: the CPU path now writes its own pixels, which verify mode never did.
+3b. **Diagnostic build 14f179d:** CI, then install. It tells why fill and tint are rejected and where the remaining time goes. Check the qualifying counts, the reasons draws don't qualify, and whether there are any `fastverify` mismatches.
 4. **Speed run.** Only if the verify run is clean, boot with `args-fast1.txt` and compare the `slow frame` and `WP210 AUTO` numbers with cbf8881a.
 5. **Later:**
    - run the fast path on several A78 cores
