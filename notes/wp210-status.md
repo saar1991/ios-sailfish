@@ -1,4 +1,4 @@
-# WP210 iOS port: status notes (updated 2026-11-14 20:30)
+# WP210 iOS port: status notes (updated 2026-11-14 20:50)
 
 Working notes so the state survives session resets. Times are local
 (Asia/Jerusalem) unless stated. The newest state is at the top; the older
@@ -61,8 +61,9 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | 14f179d | fast-path diagnostics: time per reject reason, top 6 programs, reject details (logging only) | 16275200 | `b1059f33…` | yes, then replaced |
 | eed85c5 | half-float colours (fill, tint, alpha-tint), straight and mixed alpha blending, fast rows (memcpy for 1:1 copies), dispatch_apply over cores, map/pixel timing, program log at link | 16275584 | `141eb8a7…` | yes, then replaced |
 | 57394b7, e0ea1da | copy+noise and tint+noise kinds, atop blend, whole-pixel edges, clamped blends; SGLFAST=1 self-checks first | 16275808 | `f2f7b4b4…` | yes, then replaced |
-| a09c1a7 | softpipe's column coverage rule instead of whole-pixel edges | 16275792 | `b8bf661b…` | **yes, current** (about 20:10) |
-| 27eb0f3 | turned textures (u along y), shape reject reasons | 16275872 | `da8d58c3…` | script sent (`OLD=b8bf661b…`) |
+| a09c1a7 | softpipe's column coverage rule instead of whole-pixel edges | 16275792 | `b8bf661b…` | yes, then replaced |
+| 27eb0f3 | turned textures (u along y), shape reject reasons | 16275872 | `da8d58c3…` | **yes, current** (about 20:30) |
+| (next) | map failure reasons; RGBA copy for sources in other formats | | | pushed, to build |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -270,6 +271,21 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## 27eb0f3 run (log ec68489c, `SGLFAST=1`, about 20:32): 2.09 frames/s
+
+- **Self-check:** 455 draws matched, none differed.
+- **Test window:** 2.09 frames/s (1.28 before the fast path, 1.60 with a09c1a7). Slow frames averaged 2.7 s; 24/30 steps drew a frame.
+- **Turned textures fixed every shape reject:** 0, was 41 s.
+- **Fast path:** 21248 draws, 28.2 s (map/flush 11.9 s, pixels 16.3 s).
+- **Rejects:** kind 75.8 s, **map 39.8 s**.
+- **The map rejects are the noise copy** (program 17 in this boot, 29% of the time, kind 7). Mapping its 256x1 gradient source failed. The commit after 27eb0f3 logs why and converts other plain formats to an RGBA copy.
+- **Next costs:**
+  - program 5 (copy, almost all fast): 18%
+  - **program 23** (`color*s0*s1.a`, nine-slices of 54 indices): 13%. The next fast-path target: needs several rects per draw, a second texture and a second texcoord.
+  - program 13 (alpha-tint with darken over the backdrop): 11%
+  - program 11 (copy with darken plus noise over the backdrop): 6%
+  - programs 45, 35 and 25
 
 ## a09c1a7 run (log 215a7147, `SGLFAST=1`, about 20:10): best so far
 

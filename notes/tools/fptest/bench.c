@@ -6,6 +6,10 @@
 struct gl_context; struct gl_texture_object;
 struct gl_context *_mesa_get_current_context(void) { return NULL; }
 struct gl_texture_object *_mesa_lookup_texture(struct gl_context *c, unsigned id) { (void)c; (void)id; return NULL; }
+struct util_format_description;
+const struct util_format_description *util_format_description(int f) { (void)f; return 0; }
+_Bool util_format_is_pure_integer(int f) { (void)f; return 0; }
+void util_format_unpack_rgba_8unorm_rect(int f, void *d, unsigned ds, const void *s, unsigned ss, unsigned w, unsigned h) { (void)f; (void)d; (void)ds; (void)s; (void)ss; (void)w; (void)h; }
 typedef struct dispatch_queue_s *dispatch_queue_t;
 dispatch_queue_t dispatch_get_global_queue(long a, unsigned long b) { (void)a; (void)b; return NULL; }
 void dispatch_apply_f(size_t n, dispatch_queue_t q, void *ctx, void (*work)(void *, size_t)) { (void)q; for (size_t i = 0; i < n; i++) work(ctx, i); }
