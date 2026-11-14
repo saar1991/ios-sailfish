@@ -27,6 +27,7 @@ enum fp_kind {
 	FPK_ATINTDK,    /* color * texture.a over the framebuffer with CA's darkenSover */
 	FPK_COPYDKN,    /* texture over the framebuffer with darkenSover, then the noise dither */
 	FPK_MASK,       /* color * texture * texture1.a (masked layers, nine-slices) */
+	FPK_LUMC,       /* CA's luminanceCurve of the framebuffer pixel (no texture) */
 	FPK_COUNT
 };
 
@@ -37,6 +38,7 @@ enum fp_blend {
 	FPB_STRAIGHT,   /* SRC_ALPHA, ONE_MINUS_SRC_ALPHA / SRC_ALPHA, ONE_MINUS_SRC_ALPHA */
 	FPB_MIXED,      /* SRC_ALPHA, ONE_MINUS_SRC_ALPHA / ONE, ONE_MINUS_SRC_ALPHA */
 	FPB_ATOP,       /* DST_ALPHA, ONE_MINUS_SRC_ALPHA / DST_ALPHA, ONE_MINUS_SRC_ALPHA */
+	FPB_DSTOUT,     /* ZERO, ONE_MINUS_SRC_ALPHA / ZERO, ONE_MINUS_SRC_ALPHA */
 	FPB_COUNT
 };
 
@@ -63,6 +65,8 @@ struct fp_job {
 	const struct fp_img *src2;
 	float u2a, u2b, v2a, v2b;
 	int swap2, linear2;
+	/* FPK_LUMC: the curve's coefficients (function_arg) and the vertex colour's alpha, unquantized */
+	float farg[4], falpha;
 	int linear;             /* filter for this scale: 0 nearest, 1 linear (clamp to edge) */
 	uint8_t color[4];       /* RGBA */
 	/*

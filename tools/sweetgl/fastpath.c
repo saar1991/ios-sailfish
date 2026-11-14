@@ -325,6 +325,11 @@ blend(int mode, const uint8_t s[4], const uint8_t dc[4], uint8_t r[4])
 			r[k] = lerp8(s[k], s[3], dc[k], ia);
 		}
 		break;
+	case FPB_DSTOUT:
+		for (int k = 0; k < 4; k++) {
+			r[k] = mul8(dc[k], ia);
+		}
+		break;
 	case FPB_ATOP:
 		for (int k = 0; k < 4; k++) {
 			r[k] = lerp8(s[k], dc[3], dc[k], ia);
@@ -421,10 +426,23 @@ fp_row(const struct fp_rows *R, int y)
 		}
 		int darken = j->kind == FPK_ATINTDK || j->kind == FPK_COPYDKN;
 		uint8_t dc[4];
-		if (darken || j->blend != FPB_NONE) {
+		if (darken || j->kind == FPK_LUMC || j->blend != FPB_NONE) {
 			px_rgba(d, dst->fmt, dc);
 		}
-		if (darken) {
+		if (j->kind == FPK_LUMC) {
+			/* luminanceCurve(D, p, a): x = curve(luma(D)); vec4(mix(D.rgb, vec3(x), a), D.a), in float */
+			float D[4];
+			for (int k = 0; k < 4; k++) {
+				D[k] = (float)dc[k] / 255.0f;
+			}
+			float xl = D[0] * 0.2125f + D[1] * 0.7154f + D[2] * 0.0721f;
+			xl = clampf(((j->farg[0] * xl + j->farg[1]) * xl + j->farg[2]) * xl + j->farg[3], 0.0f, 1.0f);
+			for (int k = 0; k < 3; k++) {
+				float c = D[k] * (1.0f - j->falpha) + xl * j->falpha;
+				s[k] = (uint8_t)(clampf(c, 0.0f, 1.0f) * 255.0f + 0.5f);
+			}
+			s[3] = dc[3];
+		} else if (darken) {
 			/*
 			 * CA's darkenSover(S, D) with D the framebuffer before the draw:
 			 * y = luma(D); S *= y^4; R = D * (1 - S.a) + S. Then the dither
