@@ -150,11 +150,12 @@ mul8(int a, int b)
 	return (uint8_t)((a * b + 127) / 255);
 }
 
-/* a*b + c*d over 255, rounded once (softpipe blends in float, then rounds) */
+/* a*b + c*d over 255, rounded once and clamped (softpipe blends in float, clamps, rounds) */
 static inline uint8_t
 lerp8(int a, int b, int c, int d)
 {
-	return (uint8_t)((a * b + c * d + 127) / 255);
+	int v = (a * b + c * d + 127) / 255;
+	return (uint8_t)(v > 255 ? 255 : v);
 }
 
 int fp_threads = 1;
@@ -168,7 +169,17 @@ struct fp_rows {
 	const int *cols, *rows;
 	int cols_plain;         /* no column filtering: one texel a pixel across */
 	int cols_ident;         /* and consecutive: texel cols[0] + x */
+	const int *ncols, *nrows;       /* noise texel per column / row */
 };
+
+/* index of coordinate u in n texels, nearest, repeat */
+static int
+wrap_nearest(float u, int n)
+{
+	float f = floorf(u * (float)n);
+	long i = (long)f % n;
+	return (int)(i < 0 ? i + n : i);
+}
 
 /* shader output for texel t (RGBA) */
 static inline void
@@ -179,9 +190,11 @@ shade(const struct fp_job *j, const uint8_t t[4], uint8_t s[4])
 		memcpy(s, j->color, 4);
 		break;
 	case FPK_COPY:
+	case FPK_COPYN:
 		memcpy(s, t, 4);
 		break;
 	case FPK_TINT:
+	case FPK_TINTN:
 		for (int k = 0; k < 4; k++) {
 			s[k] = mul8(j->color[k], t[k]);
 		}
@@ -215,6 +228,11 @@ blend(int mode, const uint8_t s[4], const uint8_t dc[4], uint8_t r[4])
 	case FPB_STRAIGHT:
 		for (int k = 0; k < 4; k++) {
 			r[k] = lerp8(s[k], s[3], dc[k], ia);
+		}
+		break;
+	case FPB_ATOP:
+		for (int k = 0; k < 4; k++) {
+			r[k] = lerp8(s[k], dc[3], dc[k], ia);
 		}
 		break;
 	case FPB_MIXED:
@@ -304,6 +322,19 @@ fp_row(const struct fp_rows *R, int y)
 			}
 		}
 		shade(j, t, s);
+		if (R->ncols != NULL) {
+			/* CA's dither, in float like the shader */
+			uint8_t nz[4];
+			px_rgba(j->noise->ptr + (size_t)R->nrows[y] * (size_t)j->noise->stride +
+			    (size_t)R->ncols[x] * (size_t)bpp(j->noise->fmt), j->noise->fmt, nz);
+			float a = (float)s[3] / 255.0f;
+			for (int k = 0; k < 3; k++) {
+				float n = ((float)nz[k] / 255.0f - 0.5f) * j->nscale;
+				float c = (float)s[k] / 255.0f + n * a;
+				c = c < 0.0f ? 0.0f : c > a ? a : c;
+				s[k] = (uint8_t)(c * 255.0f + 0.5f);
+			}
+		}
 		if (j->blend != FPB_NONE) {
 			uint8_t dc[4];
 			px_rgba(d, dst->fmt, dc);
@@ -365,6 +396,21 @@ fp_run(const struct fp_job *j, struct fp_img *dst, const struct fp_img *src, uin
 		}
 		R.cols = cols, R.rows = rows, R.sb = bpp(src->fmt);
 	}
+	int *ntab = NULL;
+	if (j->noise != NULL) {
+		ntab = malloc(sizeof(int) * (size_t)(w + h));
+		if (ntab == NULL) {
+			free(cols);
+			return;
+		}
+		for (int i = 0; i < w; i++) {
+			ntab[i] = wrap_nearest(j->nu0 + j->nud * ((float)(j->x0 + i) + 0.5f), j->noise->w);
+		}
+		for (int i = 0; i < h; i++) {
+			ntab[w + i] = wrap_nearest(j->nv0 + j->nvd * ((float)(j->y0 + i) + 0.5f), j->noise->h);
+		}
+		R.ncols = ntab, R.nrows = ntab + w;
+	}
 	size_t chunks = ((size_t)h + FP_CHUNK - 1) / FP_CHUNK;
 	if (fp_threads && (size_t)w * (size_t)h >= 65536 && chunks > 1) {
 		dispatch_apply_f(chunks, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), &R, fp_chunk);
@@ -373,5 +419,6 @@ fp_run(const struct fp_job *j, struct fp_img *dst, const struct fp_img *src, uin
 			fp_chunk(&R, i);
 		}
 	}
+	free(ntab);
 	free(cols);
 }

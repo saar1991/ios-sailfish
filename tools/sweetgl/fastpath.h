@@ -22,6 +22,8 @@ enum fp_kind {
 	FPK_ATINT,      /* color * texture.a */
 	FPK_OPAQUE,     /* vec4(texture.rgb, 1) */
 	FPK_ALPHA,      /* vec4(texture.a) */
+	FPK_COPYN,      /* texture, then CA's noise dither */
+	FPK_TINTN,      /* color * texture, then CA's noise dither */
 	FPK_COUNT
 };
 
@@ -31,6 +33,7 @@ enum fp_blend {
 	FPB_PREMUL,     /* ONE, ONE_MINUS_SRC_ALPHA / ONE, ONE_MINUS_SRC_ALPHA */
 	FPB_STRAIGHT,   /* SRC_ALPHA, ONE_MINUS_SRC_ALPHA / SRC_ALPHA, ONE_MINUS_SRC_ALPHA */
 	FPB_MIXED,      /* SRC_ALPHA, ONE_MINUS_SRC_ALPHA / ONE, ONE_MINUS_SRC_ALPHA */
+	FPB_ATOP,       /* DST_ALPHA, ONE_MINUS_SRC_ALPHA / DST_ALPHA, ONE_MINUS_SRC_ALPHA */
 	FPB_COUNT
 };
 
@@ -51,6 +54,13 @@ struct fp_job {
 	float ua, ub, va, vb;   /* texture coordinates at xa, xb and ya, yb */
 	int linear;             /* filter for this scale: 0 nearest, 1 linear (clamp to edge) */
 	uint8_t color[4];       /* RGBA */
+	/*
+	 * Noise kinds: rgb = clamp(rgb + (noise.rgb - .5) * nscale * a, 0, a), noise
+	 * read nearest with repeat at u = nu0 + nud * (x + .5), v = nv0 + nvd * (y + .5)
+	 * (window pixel x, y)
+	 */
+	const struct fp_img *noise;
+	float nu0, nud, nv0, nvd, nscale;
 };
 
 /* GL texture name, level 0 layer 0: 0 on success */
