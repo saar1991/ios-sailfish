@@ -207,7 +207,13 @@ struct fp_rows {
 	int cols_plain;         /* no column filtering: one texel a pixel across */
 	int cols_ident;         /* and consecutive: texel cols[0] + x */
 	const int *ncols, *nrows;       /* noise texel per column / row */
-	const int *cols2, *rows2;       /* FPK_MASK: the mask texture's tables */
+	const int *cols2, *rows2;       /* FPK_MASK, FPK_MIXBD: the second texture's tables */
+	/*
+	 * Shape kinds: the shape's per-column and per-row terms (it is a sum of
+	 * one term from each axis) for columns from shx0 and rows from shy0
+	 */
+	const float *shA, *shB;
+	int shx0, shy0;
 };
 
 static inline float
@@ -356,6 +362,49 @@ blend(int mode, const uint8_t s[4], const uint8_t dc[4], uint8_t r[4])
 	}
 }
 
+/*
+ * CA's supercircleImage and circleImage (GL renderer helper functions):
+ *   super:  uv = max(abs(uv) * 1.199 - .199, 0); d = pow(uv.x, 2.68) + pow(uv.y, 2.68)
+ *   circle: d = max(dot(uv, uv), 1e-4); d = d * inversesqrt(d)
+ * then w = max(fwidth(d), 1e-4); l = clamp((w * .5 + (1 - d)) / w, 0, 1).
+ * d is a sum of a term of the coordinate along x and one along y; the
+ * terms are tabled per column and row. fwidth as softpipe computes it:
+ * coarse, from the 2x2 quad at even x and y (top left, top right, bottom
+ * left), d evaluated there like at any pixel.
+ */
+static inline float
+shape_term(int kind, float c)
+{
+	if (kind == FPK_CIRCLE) {
+		return c * c;
+	}
+	float a = fabsf(c) * 1.199f - 0.199f;
+	return powf(a > 0.0f ? a : 0.0f, 2.68f);
+}
+
+static inline float
+shape_d(int kind, float sum)
+{
+	if (kind != FPK_CIRCLE) {
+		return sum;
+	}
+	float d = sum > 1e-4f ? sum : 1e-4f;
+	return d * (1.0f / sqrtf(d));
+}
+
+static inline float
+shape_value(const struct fp_rows *R, int X, int Y)
+{
+	const int kind = R->j->kind == FPK_MASKSUP ? FPK_SUPER : R->j->kind;
+	const float *A = R->shA - R->shx0, *B = R->shB - R->shy0;
+	int qx = X & ~1, qy = Y & ~1;
+	float tl = shape_d(kind, A[qx] + B[qy]), tr = shape_d(kind, A[qx + 1] + B[qy]);
+	float bl = shape_d(kind, A[qx] + B[qy + 1]), d = shape_d(kind, A[X] + B[Y]);
+	float w = fabsf(tr - tl) + fabsf(bl - tl);
+	w = w > 1e-4f ? w : 1e-4f;
+	return clampf((w * 0.5f + (1.0f - d)) / w, 0.0f, 1.0f);
+}
+
 static void
 fp_row(const struct fp_rows *R, int y)
 {
@@ -432,7 +481,7 @@ fp_row(const struct fp_rows *R, int y)
 		}
 		int darken = j->kind == FPK_ATINTDK || j->kind == FPK_COPYDKN;
 		uint8_t dc[4];
-		int backdrop = j->kind == FPK_LUMC || j->kind == FPK_CM4 || j->kind == FPK_CM3;
+		int backdrop = j->kind == FPK_LUMC || j->kind == FPK_CM4 || j->kind == FPK_CM3 || j->kind == FPK_MIXBD;
 		if (darken || backdrop || j->blend != FPB_NONE) {
 			px_rgba(d, dst->fmt, dc);
 		}
@@ -487,6 +536,23 @@ fp_row(const struct fp_rows *R, int y)
 			for (int k = 0; k < 4; k++) {
 				float c = clampf(Rf[k], 0.0f, 1.0f);
 				s[k] = (uint8_t)(c * 255.0f + 0.5f);
+			}
+		} else if (j->kind == FPK_SUPER || j->kind == FPK_CIRCLE || j->kind == FPK_MASKSUP) {
+			/* color * vec4(l) (* s0), in float like the shader */
+			float l = shape_value(R, j->x0 + x, j->y0 + y);
+			for (int k = 0; k < 4; k++) {
+				float c = ((float)j->color[k] / 255.0f) * l;
+				c = j->kind == FPK_MASKSUP ? ((float)j->color[k] / 255.0f) * ((float)t[k] / 255.0f) * l : c;
+				s[k] = (uint8_t)(clampf(c, 0.0f, 1.0f) * 255.0f + 0.5f);
+			}
+		} else if (j->kind == FPK_MIXBD) {
+			/* mix(s1, d0, s0.a), in float */
+			uint8_t t2[4];
+			fetch(j->src2, R->cols2, R->rows2, j->swap2, x, y, t2);
+			float a = (float)t[3] / 255.0f;
+			for (int k = 0; k < 4; k++) {
+				float c = ((float)t2[k] / 255.0f) * (1.0f - a) + ((float)dc[k] / 255.0f) * a;
+				s[k] = (uint8_t)(clampf(c, 0.0f, 1.0f) * 255.0f + 0.5f);
 			}
 		} else if (j->kind == FPK_MASK) {
 			/* color * s0 * s1.a in float, like the shader */
@@ -565,9 +631,33 @@ fp_run(const struct fp_job *j, struct fp_img *dst, const struct fp_img *src, uin
 		}
 		R.cols = cols, R.rows = rows, R.sb = bpp(src->fmt);
 	}
+	float *shtab = NULL;
+	if (j->kind == FPK_SUPER || j->kind == FPK_CIRCLE || j->kind == FPK_MASKSUP) {
+		/* terms for columns x0 & ~1 .. x1 and rows y0 & ~1 .. y1 (the quads' far pixels included) */
+		const int kind = j->kind == FPK_MASKSUP ? FPK_SUPER : j->kind, two = j->kind == FPK_MASKSUP;
+		const float ua = two ? j->u2a : j->ua, ub = two ? j->u2b : j->ub, va = two ? j->v2a : j->va,
+		    vb = two ? j->v2b : j->vb;
+		const int swap = two ? j->swap2 : j->swap, sx0 = j->x0 & ~1, sy0 = j->y0 & ~1;
+		const int nx = j->x1 - sx0 + 1, ny = j->y1 - sy0 + 1;
+		if ((shtab = malloc(sizeof(float) * (size_t)(nx + ny))) == NULL) {
+			free(cols);
+			return;
+		}
+		/* the coordinate along x: u (v when turned), along y: v (u) */
+		float xa0 = swap ? va : ua, xa1 = swap ? vb : ub, ya0 = swap ? ua : va, ya1 = swap ? ub : vb;
+		float dx = (xa1 - xa0) / (j->xb - j->xa), dy = (ya1 - ya0) / (j->yb - j->ya);
+		for (int i = 0; i < nx; i++) {
+			shtab[i] = shape_term(kind, xa0 + ((float)(sx0 + i) + 0.5f - j->xa) * dx);
+		}
+		for (int i = 0; i < ny; i++) {
+			shtab[nx + i] = shape_term(kind, ya0 + ((float)(sy0 + i) + 0.5f - j->ya) * dy);
+		}
+		R.shA = shtab, R.shB = shtab + nx, R.shx0 = sx0, R.shy0 = sy0;
+	}
 	int *mtab = NULL;
-	if (j->kind == FPK_MASK) {
+	if (j->kind == FPK_MASK || j->kind == FPK_MIXBD) {
 		if (j->src2 == NULL || src == NULL || (mtab = malloc(sizeof(int) * 3 * (size_t)(w + h))) == NULL) {
+			free(shtab);
 			free(cols);
 			return;
 		}
@@ -579,6 +669,7 @@ fp_run(const struct fp_job *j, struct fp_img *dst, const struct fp_img *src, uin
 		ntab = malloc(sizeof(int) * (size_t)(w + h));
 		if (ntab == NULL) {
 			free(mtab);
+			free(shtab);
 			free(cols);
 			return;
 		}
@@ -600,5 +691,6 @@ fp_run(const struct fp_job *j, struct fp_img *dst, const struct fp_img *src, uin
 	}
 	free(ntab);
 	free(mtab);
+	free(shtab);
 	free(cols);
 }

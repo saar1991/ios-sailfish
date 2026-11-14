@@ -900,8 +900,20 @@ static uint8_t fast_off[FPK_COUNT][FPB_COUNT];   /* differed from softpipe: not 
 	"lowpvec3c=gl_FragData[0].rgb+n*gl_FragData[0].a;gl_FragData[0].rgb=clamp(c,0.,gl_FragData[0].a);}"
 #define FAST_NOISE_SIZE 32.0f
 #define FAST_COLORED(k) ((k) == FPK_FILL || (k) == FPK_TINT || (k) == FPK_ATINT || (k) == FPK_TINTN || (k) == FPK_ATINTDK || \
-	(k) == FPK_MASK || (k) == FPK_LUMC)
-#define FAST_TEXTURED(k) ((k) != FPK_FILL && (k) != FPK_LUMC && (k) != FPK_CM4 && (k) != FPK_CM3)
+	(k) == FPK_MASK || (k) == FPK_LUMC || (k) == FPK_SUPER || (k) == FPK_CIRCLE || (k) == FPK_MASKSUP)
+/* samples texture0 */
+#define FAST_TEXTURED(k) ((k) != FPK_FILL && (k) != FPK_LUMC && (k) != FPK_CM4 && (k) != FPK_CM3 && (k) != FPK_SUPER && \
+	(k) != FPK_CIRCLE)
+/* uses texcoord0 (texture0, or a shape of it) */
+#define FAST_COORDS(k) (FAST_TEXTURED(k) || (k) == FPK_SUPER || (k) == FPK_CIRCLE)
+/* uses texcoord1, and samples texture1 with it */
+#define FAST_COORDS1(k) ((k) == FPK_MASK || (k) == FPK_MASKSUP || (k) == FPK_MIXBD)
+#define FAST_TEXTURED1(k) ((k) == FPK_MASK || (k) == FPK_MIXBD)
+/* CA's shape helpers, whitespace removed (checked in the whole source like darkenSover) */
+#define FAST_SUPER_FN "lowpvec4supercircleImage(highpvec2uv){highpfloatd,w;uv=max(abs(uv)*1.199-vec2(0.199),0.0);" \
+	"d=pow(uv.x,2.68)+pow(uv.y,2.68);w=max(fwidth(d),1e-4);mediumpfloatl=clamp((w*.5+(1.-d))/w,0.,1.);returnvec4(l);}"
+#define FAST_CIRCLE_FN "lowpvec4circleImage(mediumpvec2uv){highpfloatd,w,s;d=max(dot(uv,uv),1e-4);d=d*inversesqrt(d);" \
+	"w=max(fwidth(d),1e-4);mediumpfloatl=clamp((w*.5+(1.-d))/w,0.,1.);returnvec4(l);}"
 #define FAST_LUMC_FN "lowpvec4luminanceCurve(lowpvec4s0,lowpvec4p,lowpfloata){lowpfloatx=dot(s0.rgb,vec3(.2125,.7154,.0721));" \
 	"x=clamp((((p.x*x)+p.y)*x+p.z)*x+p.w,0.0,1.0);returnvec4(mix(s0.rgb,vec3(x,x,x),a),s0.a);}"
 #define FAST_NOISY(k) ((k) == FPK_COPYN || (k) == FPK_TINTN || (k) == FPK_COPYDKN)
@@ -936,6 +948,12 @@ fast_shader(GLuint shader, const char *src)
 		    "s0.b*color_matrix[2]+s0.a*color_matrix[3],s0.a);}",
 		[FPK_CM3] = "{" FAST_FB "lowpvec4s0=d0;gl_FragData[0]=vec4(s0.r*color_matrix[0]+s0.g*color_matrix[1]+"
 		    "s0.b*color_matrix[2],s0.a);}",
+		[FPK_SUPER] = "{lowpvec4s0=supercircleImage(texcoord0_0);gl_FragData[0]=color*s0;}",
+		[FPK_CIRCLE] = "{lowpvec4s0=circleImage(texcoord0_0);gl_FragData[0]=color*s0;}",
+		[FPK_MASKSUP] = "{lowpvec4s0=texture2D(texture0,texcoord0_0);lowpvec4s1=supercircleImage(texcoord1_0);"
+		    "gl_FragData[0]=color*s0*s1.a;}",
+		[FPK_MIXBD] = "{" FAST_FB "lowpvec4s0=texture2D(texture0,texcoord0_0);lowpvec4s1=texture2D(texture1,texcoord1_0);"
+		    "gl_FragData[0]=mix(s1,d0,s0.a);}",
 	};
 	if (shader >= PROG_MAX) {
 		return;
@@ -946,6 +964,15 @@ fast_shader(GLuint shader, const char *src)
 	    strstr(src, "texcoord0_0 = vertex_texcoord0 * texmat0.xy + texmat0.zw;") != NULL) {
 		shader_kind[shader] = FAST_VS;
 		return;
+	}
+	/* vertex shaders of other kinds (the blur's): whole, for the blur kind next */
+	static int unknown_vs_left = 16;
+	if (!dump_shaders && unknown_vs_left > 0 && strstr(src, "gl_Position") != NULL) {
+		unknown_vs_left--;
+		sweet_drm_log("sweetgl: unknown vs %u source (%zu bytes):", shader, strlen(src));
+		for (size_t i = 0, l = strlen(src); i < l && i < 2400; i += 400) {
+			sweet_drm_log("sweetgl:   | %.400s", src + i);
+		}
 	}
 	/* main's body, whatever its parameter list ("(void)" or "()") */
 	const char *m = strstr(src, "void main");
@@ -990,7 +1017,9 @@ fast_shader(GLuint shader, const char *src)
 		}
 	}
 	free(unclamped);
-	if (shader_kind[shader] == FPK_ATINTDK || shader_kind[shader] == FPK_COPYDKN || shader_kind[shader] == FPK_LUMC) {
+	const int sk = shader_kind[shader];
+	if (sk == FPK_ATINTDK || sk == FPK_COPYDKN || sk == FPK_LUMC || sk == FPK_SUPER || sk == FPK_CIRCLE ||
+	    sk == FPK_MASKSUP) {
 		/* and darkenSover / luminanceCurve must be CA's: the whole source, whitespace removed */
 		size_t l = strlen(src);
 		char *all = malloc(l + 1), *o = all;
@@ -1003,7 +1032,8 @@ fast_shader(GLuint shader, const char *src)
 			*o = 0;
 		}
 		if (all == NULL ||
-		    strstr(all, shader_kind[shader] == FPK_LUMC ? FAST_LUMC_FN : FAST_DARKEN_FN) == NULL) {
+		    strstr(all, sk == FPK_LUMC ? FAST_LUMC_FN : sk == FPK_SUPER || sk == FPK_MASKSUP ? FAST_SUPER_FN :
+		    sk == FPK_CIRCLE ? FAST_CIRCLE_FN : FAST_DARKEN_FN) == NULL) {
 			shader_kind[shader] = 0;
 		}
 		free(all);
@@ -1082,19 +1112,20 @@ fast_link(GLuint program)
 			}
 		}
 	}
-	if (fs == FPK_MASK && (prog_loc[program].tc1 < 0 || prog_loc[program].texmat1 < 0 || prog_loc[program].tex1 < 0)) {
+	if (FAST_COORDS1(fs) && (prog_loc[program].tc1 < 0 || prog_loc[program].texmat1 < 0 ||
+	    (FAST_TEXTURED1(fs) && prog_loc[program].tex1 < 0))) {
 		return;
 	}
 	int clamped = fsh < PROG_MAX && shader_clamp[fsh];
 	if (clamped && prog_loc[program].carg < 0) {
 		return;
 	}
-	int colored = FAST_COLORED(fs), textured = FAST_TEXTURED(fs);
+	int colored = FAST_COLORED(fs), textured = FAST_TEXTURED(fs), coords = FAST_COORDS(fs);
 	if (FAST_NOISY(fs) && (prog_loc[program].tex1 < 0 || prog_loc[program].texmatw < 0 || prog_loc[program].nscale < 0)) {
 		return;
 	}
 	if (prog_loc[program].pos < 0 || prog_loc[program].matrix < 0 || (colored && prog_loc[program].color < 0) ||
-	    (textured && (prog_loc[program].tc0 < 0 || prog_loc[program].texmat0 < 0 || prog_loc[program].tex0 < 0))) {
+	    (coords && (prog_loc[program].tc0 < 0 || prog_loc[program].texmat0 < 0)) || (textured && prog_loc[program].tex0 < 0)) {
 		return;
 	}
 	prog_kind[program] = (uint8_t)fs;
@@ -1252,7 +1283,7 @@ fast_tex(GLint prog, GLint loc, GLint att, int kind, GLenum wrap, int nearest_on
 /* what one rectangle of a draw needs from its 6 vertices, before the textures are mapped */
 struct fast_in {
 	GLint prog;
-	int kind, colored, textured, masked;
+	int kind, colored, textured, coords, masked, mtextured;     /* masked: texcoord1 used */
 	const struct fast_attr *ap, *ac, *at, *at1;
 	const GLfloat *M, *tm, *tm1;
 	const GLint *vp;
@@ -1297,7 +1328,7 @@ fast_rect(const struct fast_in *in, const int idx[6], struct fp_job *j)
 				return NO_SHAPE;
 			}
 		}
-		if (in->textured) {
+		if (in->coords) {
 			fast_attr_read(in->at, idx[i], t);
 			tu[i] = t[0] * in->tm[0] + in->tm[2];
 			tv[i] = t[1] * in->tm[1] + in->tm[3];
@@ -1357,7 +1388,7 @@ fast_rect(const struct fast_in *in, const int idx[6], struct fp_job *j)
 	}
 	memset(j, 0, sizeof(*j));
 	j->kind = kind, j->xa = xa, j->xb = xb, j->ya = ya, j->yb = yb;
-	if (in->textured) {
+	if (in->coords) {
 		/* u from one axis and v from the other: as drawn, or turned (u follows y) */
 		float uv[4];
 		if (fast_uv(cx, cy, tu, tv, 0, uv) == 0) {
@@ -1599,14 +1630,15 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	/* vertices */
 	struct fast_attr ap, ac, at, at1;
 	struct fast_in in = {.prog = prog, .kind = kind, .colored = FAST_COLORED(kind), .textured = FAST_TEXTURED(kind),
-	    .masked = kind == FPK_MASK, .ap = &ap, .ac = &ac, .at = &at, .at1 = &at1};
+	    .coords = FAST_COORDS(kind), .masked = FAST_COORDS1(kind), .mtextured = FAST_TEXTURED1(kind), .ap = &ap,
+	    .ac = &ac, .at = &at, .at1 = &at1};
 	const char *an = NULL;
 	const struct fast_attr *bad = NULL;
 	if (fast_attr_get(prog_loc[prog].pos, &ap)) {
 		an = "position", bad = &ap;
 	} else if (in.colored && fast_attr_get(prog_loc[prog].color, &ac)) {
 		an = "color", bad = &ac;
-	} else if (in.textured && fast_attr_get(prog_loc[prog].tc0, &at)) {
+	} else if (in.coords && fast_attr_get(prog_loc[prog].tc0, &at)) {
 		an = "texcoord0", bad = &at;
 	} else if (in.masked && fast_attr_get(prog_loc[prog].tc1, &at1)) {
 		an = "texcoord1", bad = &at1;
@@ -1619,7 +1651,7 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	}
 	GLfloat M[16], tm[4] = {1, 1, 0, 0}, tmm[4] = {1, 1, 0, 0};
 	glGetUniformfv((GLuint)prog, prog_loc[prog].matrix, M);
-	if (in.textured) {
+	if (in.coords) {
 		glGetUniformfv((GLuint)prog, prog_loc[prog].texmat0, tm);
 	}
 	if (in.masked) {
@@ -1666,7 +1698,7 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	if (in.textured && fast_tex(prog, prog_loc[prog].tex0, att, kind, GL_CLAMP_TO_EDGE, 0, "tex", &tex, &minf, &magf) != 0) {
 		return fast_no(NO_TEX);
 	}
-	if (in.masked &&
+	if (in.mtextured &&
 	    fast_tex(prog, prog_loc[prog].tex1, att, kind, GL_CLAMP_TO_EDGE, 0, "mask", &mtex, &mminf, &mmagf) != 0) {
 		return fast_no(NO_TEX);
 	}
@@ -1707,7 +1739,7 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		FAST_DETAIL(NO_MAP, "map prog %d kind %d: source texture %u (why %d, format %u)", prog, kind, tex, fp_map_why,
 		    fp_map_format);
 		mapped = 0;
-	} else if (in.masked && fp_map_tex(mtex, 0, &mimg) != 0) {
+	} else if (in.mtextured && fp_map_tex(mtex, 0, &mimg) != 0) {
 		FAST_DETAIL(NO_MAP, "map prog %d kind %d: mask texture %u (why %d, format %u)", prog, kind, mtex, fp_map_why,
 		    fp_map_format);
 		mapped = 0;
@@ -1732,7 +1764,7 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		if (in.textured) {
 			j->linear = fast_linear(j->ua, j->ub, j->va, j->vb, j->swap, j, &src, minf, magf);
 		}
-		if (in.masked) {
+		if (in.mtextured) {
 			j->src2 = &mimg;
 			j->linear2 = fast_linear(j->u2a, j->u2b, j->v2a, j->v2b, j->swap2, j, &mimg, mminf, mmagf);
 		}
@@ -1882,9 +1914,10 @@ fast_log(void)
 	    fst.no[NO_KIND], fst.no[NO_MODE], fst.no[NO_STATE], fst.no[NO_BLEND], fst.no[NO_ARRAY], fst.no[NO_SHAPE],
 	    fst.no[NO_TEX], fst.no[NO_FB], fst.no[NO_MAP]);
 	sweet_drm_log("sweetgl: fast here: map %llu ms, pixels %llu ms; blend none %u premul %u straight %u mixed %u atop %u "
-	    "dstout %u add %u",
+	    "dstout %u add %u; super %u circle %u masksup %u mixbd %u",
 	    fs_ms(fst.map_abs), fs_ms(fst.run_abs), fst.blend[FPB_NONE], fst.blend[FPB_PREMUL], fst.blend[FPB_STRAIGHT],
-	    fst.blend[FPB_MIXED], fst.blend[FPB_ATOP], fst.blend[FPB_DSTOUT], fst.blend[FPB_ADD]);
+	    fst.blend[FPB_MIXED], fst.blend[FPB_ATOP], fst.blend[FPB_DSTOUT], fst.blend[FPB_ADD], fst.kind[FPK_SUPER],
+	    fst.kind[FPK_CIRCLE], fst.kind[FPK_MASKSUP], fst.kind[FPK_MIXBD]);
 	sweet_drm_log("sweetgl: fast not, ms: kind %llu mode %llu state %llu blend %llu array %llu shape %llu tex %llu fb %llu "
 	    "map %llu", fs_ms(fst.no_abs[NO_KIND]), fs_ms(fst.no_abs[NO_MODE]), fs_ms(fst.no_abs[NO_STATE]),
 	    fs_ms(fst.no_abs[NO_BLEND]), fs_ms(fst.no_abs[NO_ARRAY]), fs_ms(fst.no_abs[NO_SHAPE]), fs_ms(fst.no_abs[NO_TEX]),

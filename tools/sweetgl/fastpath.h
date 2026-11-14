@@ -30,6 +30,10 @@ enum fp_kind {
 	FPK_LUMC,       /* CA's luminanceCurve of the framebuffer pixel (no texture) */
 	FPK_CM4,        /* the framebuffer pixel through color_matrix (4 vec3 rows: r, g, b, a), alpha kept */
 	FPK_CM3,        /* the same with 3 rows (no alpha term) */
+	FPK_SUPER,      /* color * CA's supercircleImage(texcoord0) (icon shapes, antialiased by fwidth) */
+	FPK_CIRCLE,     /* color * CA's circleImage(texcoord0) */
+	FPK_MASKSUP,    /* color * texture * supercircleImage(texcoord1).a (masked icons) */
+	FPK_MIXBD,      /* mix(texture1, framebuffer, texture.a) */
 	FPK_COUNT
 };
 
@@ -64,7 +68,10 @@ struct fp_job {
 	int swap;               /* the texture turned: u follows window y, v follows x */
 	int tclamp;             /* texture coordinates clamped to [cu0, cu1] x [cv0, cv1] first */
 	float cu0, cu1, cv0, cv1;
-	/* FPK_MASK: the mask texture and its own coordinates, like ua..vb, swap and linear */
+	/*
+	 * FPK_MASK, FPK_MIXBD: the second texture and its own coordinates, like
+	 * ua..vb, swap and linear. FPK_MASKSUP: the coordinates only (no texture)
+	 */
 	const struct fp_img *src2;
 	float u2a, u2b, v2a, v2b;
 	int swap2, linear2;
