@@ -40,6 +40,7 @@ static void fill_img(struct fp_img *m, int w, int h, int fmt) {
 		p[3] = (uint8_t)a; for (int k = 0; k < 3; k++) p[k] = (uint8_t)(p[k] * a / 255); }
 }
 static void read_rgba(const struct fp_img *m, int x, int y, uint8_t c[4]) { fp_read_rgba(m, x, y, c); }
+static int dc_of(const struct fp_img *m, int x, int y, int k) { uint8_t c[4]; fp_read_rgba(m, x, y, c); return c[k]; }
 int main(void) {
 	int fails = 0, cases = 0, fast_rows = 0, swaps = 0; long maxd_new = 0;
 	const int fmts[4] = {FP_BGRA, FP_RGBA, FP_BGRX, FP_RGBX};
@@ -51,10 +52,10 @@ int main(void) {
 		fill_img(&src, sw, sh, sfmt); fill_img(&d1, dw, dh, dfmt);
 		d2 = d1; d2.ptr = malloc((size_t)d1.stride * dh); memcpy(d2.ptr, d1.ptr, (size_t)d1.stride * dh);
 		struct fp_job j = {0};
-		j.kind = 1 + (int)(rnd() % 8); j.linear = (int)(rnd() % 2);
+		j.kind = 1 + (int)(rnd() % 10); j.linear = (int)(rnd() % 2);
 		int blendm = (int)(rnd() % 5); j.blend = blendm;
 		struct fp_img nz = {0}; int nw = 16 << (rnd() % 2);
-		if (j.kind >= 7) { fill_img(&nz, nw, nw, FP_RGBA); j.noise = &nz; j.nscale = (float)(rnd() % 100) / 400.f; j.nud = 1.f / nw; j.nu0 = (float)(rnd() % 64) / nw; j.nvd = -1.f / nw; j.nv0 = (float)(rnd() % 64) / nw; }
+		if (j.kind == 7 || j.kind == 8 || j.kind == 10) { fill_img(&nz, nw, nw, FP_RGBA); j.noise = &nz; j.nscale = (float)(rnd() % 100) / 400.f; j.nud = 1.f / nw; j.nu0 = (float)(rnd() % 64) / nw; j.nvd = -1.f / nw; j.nv0 = (float)(rnd() % 64) / nw; }
 		for (int k = 0; k < 4; k++) j.color[k] = (uint8_t)rnd();
 		int x0 = (int)(rnd() % dw), y0 = (int)(rnd() % dh), x1 = x0 + 1 + (int)(rnd() % (dw - x0)), y1 = y0 + 1 + (int)(rnd() % (dh - y0));
 		j.x0 = x0; j.y0 = y0; j.x1 = x1; j.y1 = y1;
@@ -91,7 +92,7 @@ int main(void) {
 			if (bad && fails++ < 10) printf("MISMATCH it %d kind %d blend %d sfmt %d dfmt %d out %d linear %d rect %d,%d-%d,%d\n", it, j.kind, j.blend, sfmt, dfmt, use_out, j.linear, x0, y0, x1, y1);
 		} else {
 			/* reference: old loop for the shader output (no blend) into an RGBA buffer, then float blend */
-			struct fp_job js = j; js.blend = 0; js.noise = NULL; if (js.kind == 7) js.kind = FPK_COPY; if (js.kind == 8) js.kind = FPK_TINT;
+			struct fp_job js = j; js.blend = 0; js.noise = NULL; if (js.kind == 7 || js.kind == 9 || js.kind == 10) js.kind = FPK_COPY; if (js.kind == 8) js.kind = FPK_TINT;
 			uint8_t *sh_out = calloc((size_t)w * h, 4);
 			struct fp_img dr = d1; dr.fmt = FP_RGBA;   /* shader output without the X-format alpha */
 			old_fp_run(&js, &dr, sp, sh_out, w * 4);
@@ -101,7 +102,21 @@ int main(void) {
 				uint8_t s[4], dc[4], got[4]; memcpy(s, sh_out + (y * w + x) * 4, 4);
 				read_rgba(&d1, x0 + x, y0 + y, dc);
 				if (use_out) memcpy(got, o2 + (y * w + x) * 4, 4); else read_rgba(&d2, x0 + x, y0 + y, got);
-				if (j.kind >= 7) {
+				if (j.kind == 9 || j.kind == 10) {
+					/* darkenSover over the framebuffer (dc), from the texel t = s (copy output) */
+					float S[4], D[4], Rf[4];
+					for (int k = 0; k < 4; k++) { D[k] = dc_of(&d1, x0 + x, y0 + y, k) / 255.f; S[k] = j.kind == 9 ? (j.color[k] / 255.f) * (s[3] / 255.f) : s[k] / 255.f; }
+					float lum = D[0] * .2125f + D[1] * .7154f + D[2] * .0721f, y4 = (lum * lum) * (lum * lum);
+					for (int k = 0; k < 4; k++) Rf[k] = D[k] * (1 - S[3] * y4) + S[k] * y4;
+					if (j.kind == 10) {
+						int px = x0 + x, py = y0 + y;
+						double u = j.nu0 + (double)j.nud * (px + 0.5), v = j.nv0 + (double)j.nvd * (py + 0.5);
+						long ix = (long)floor(u * nw) % nw, iy = (long)floor(v * nw) % nw; if (ix < 0) ix += nw; if (iy < 0) iy += nw;
+						uint8_t n4[4]; read_rgba(&nz, (int)ix, (int)iy, n4);
+						for (int k = 0; k < 3; k++) { float c = Rf[k] + (n4[k] / 255.f - .5f) * j.nscale * Rf[3]; Rf[k] = c < 0 ? 0 : c > Rf[3] ? Rf[3] : c; }
+					}
+					for (int k = 0; k < 4; k++) { float c = Rf[k] < 0 ? 0 : Rf[k] > 1 ? 1 : Rf[k]; s[k] = (uint8_t)(c * 255.f + .5f); }
+				} else if (j.kind >= 7) {
 					int px = x0 + x, py = y0 + y;
 					double u = j.nu0 + (double)j.nud * (px + 0.5), v = j.nv0 + (double)j.nvd * (py + 0.5);
 					long ix = (long)floor(u * nw) % nw, iy = (long)floor(v * nw) % nw; if (ix < 0) ix += nw; if (iy < 0) iy += nw;
