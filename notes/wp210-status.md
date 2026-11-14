@@ -1,4 +1,4 @@
-# WP210 iOS port: status notes (updated 2026-11-14 21:45)
+# WP210 iOS port: status notes (updated 2026-11-14 22:10)
 
 Working notes so the state survives session resets. Times are local
 (Asia/Jerusalem) unless stated. The newest state is at the top; the older
@@ -64,8 +64,9 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | a09c1a7 | softpipe's column coverage rule instead of whole-pixel edges | 16275792 | `b8bf661b…` | yes, then replaced |
 | 27eb0f3 | turned textures (u along y), shape reject reasons | 16275872 | `da8d58c3…` | yes, then replaced |
 | 92e026d | map failure reasons; RGBA copy for sources in other formats | 16275936 | `577d72ae…` | yes, then replaced |
-| 3a1708a | darken-over-backdrop kinds, clamped texcoords | 16276064 | `a6f61661…` | **yes, current** (about 21:12) |
-| f7ea6b1 | multi-rect draws, mask kind, check budget 10, summary in two lines | 16292624 | `142cccbf…` | script sent (`OLD=a6f61661…`) |
+| 3a1708a | darken-over-backdrop kinds, clamped texcoords | 16276064 | `a6f61661…` | yes, then replaced |
+| f7ea6b1 | multi-rect draws, mask kind, check budget 10, summary in two lines | 16292624 | `142cccbf…` | **yes, current** (about 21:35) |
+| (next) | nine-slice pairing, mipmaps when not minified, luminanceCurve, dst-out | | | pushed, to build |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -273,6 +274,22 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## f7ea6b1 run (log aebf997c, `SGLFAST=1`, about 21:36): fastest frames so far
+
+- **Self-check:** no draw differed.
+- **Test window:** slow frames 1.43 s on average (1.9-2.2 s before), median of all 0.85 s (1.6-1.7 s), worst 4.9 s (9.5-25 s before); **29/30 steps** drew a frame. Frames/s 1.86; the count follows how much is animating, so frame times are the better measure.
+- **The mask kind** (program 13, 27% of the time) qualified for 14 of 10289 draws:
+  - its mask texture is LINEAR_MIPMAP_LINEAR (tex rejects, 13.5 s)
+  - its nine-slices' 6-index groups are not one rectangle each (shape rejects, 11.3 s)
+- **Also:**
+  - program 5 copies sometimes blend ZERO / ONE_MINUS_SRC_ALPHA (dst-out)
+  - program 29 (luminanceCurve over the backdrop) is 14%
+- **Next build:**
+  - nine-slice triangle pairing
+  - mipmapped textures taken when not minified
+  - luminanceCurve kind
+  - dst-out blend
 
 ## 3a1708a run (log 518ec7c1, `SGLFAST=1`, about 21:14)
 

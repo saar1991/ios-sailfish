@@ -52,8 +52,9 @@ int main(void) {
 		fill_img(&src, sw, sh, sfmt); fill_img(&d1, dw, dh, dfmt);
 		d2 = d1; d2.ptr = malloc((size_t)d1.stride * dh); memcpy(d2.ptr, d1.ptr, (size_t)d1.stride * dh);
 		struct fp_job j = {0};
-		j.kind = 1 + (int)(rnd() % 11); j.linear = (int)(rnd() % 2);
-		int blendm = (int)(rnd() % 5); j.blend = blendm;
+		j.kind = 1 + (int)(rnd() % 12); j.linear = (int)(rnd() % 2);
+		int blendm = (int)(rnd() % 6); j.blend = blendm;
+		if (j.kind == FPK_LUMC) { for (int k = 0; k < 4; k++) j.farg[k] = (float)((int)(rnd() % 400) - 200) / 100.f; j.falpha = (float)(rnd() % 256) / 255.f; }
 		struct fp_img nz = {0}; int nw = 16 << (rnd() % 2);
 		if (j.kind == 7 || j.kind == 8 || j.kind == 10) { fill_img(&nz, nw, nw, FP_RGBA); j.noise = &nz; j.nscale = (float)(rnd() % 100) / 400.f; j.nud = 1.f / nw; j.nu0 = (float)(rnd() % 64) / nw; j.nvd = -1.f / nw; j.nv0 = (float)(rnd() % 64) / nw; }
 		for (int k = 0; k < 4; k++) j.color[k] = (uint8_t)rnd();
@@ -74,7 +75,7 @@ int main(void) {
 			j.u2a = (float)(rnd() % 1000) / 1000.f; j.u2b = (float)(rnd() % 1000) / 1000.f;
 			j.v2a = (float)(rnd() % 1000) / 1000.f; j.v2b = (float)(rnd() % 1000) / 1000.f;
 		}
-		const struct fp_img *sp = j.kind == FPK_FILL ? NULL : &src;
+		const struct fp_img *sp = j.kind == FPK_FILL || j.kind == FPK_LUMC ? NULL : &src;
 		int w = x1 - x0, h = y1 - y0;
 		uint8_t *o1 = NULL, *o2 = NULL; int use_out = rnd() % 4 == 0;
 		if (use_out) { o1 = calloc((size_t)w * h, 4); o2 = calloc((size_t)w * h, 4); }
@@ -100,7 +101,7 @@ int main(void) {
 			if (bad && fails++ < 10) printf("MISMATCH it %d kind %d blend %d sfmt %d dfmt %d out %d linear %d rect %d,%d-%d,%d\n", it, j.kind, j.blend, sfmt, dfmt, use_out, j.linear, x0, y0, x1, y1);
 		} else {
 			/* reference: old loop for the shader output (no blend) into an RGBA buffer, then float blend */
-			struct fp_job js = j; js.blend = 0; js.noise = NULL; if (js.kind == 7 || js.kind == 9 || js.kind == 10 || js.kind == FPK_MASK) js.kind = FPK_COPY; if (js.kind == 8) js.kind = FPK_TINT;
+			struct fp_job js = j; js.blend = 0; js.noise = NULL; if (js.kind == 7 || js.kind == 9 || js.kind == 10 || js.kind == FPK_MASK) js.kind = FPK_COPY; if (js.kind == FPK_LUMC) js.kind = FPK_FILL; if (js.kind == 8) js.kind = FPK_TINT;
 			uint8_t *mk_out = NULL;
 			if (j.kind == FPK_MASK) {
 				/* the mask's texels through the old loop: a copy of src2 with the mask coordinates */
@@ -118,7 +119,13 @@ int main(void) {
 				uint8_t s[4], dc[4], got[4]; memcpy(s, sh_out + (y * w + x) * 4, 4);
 				read_rgba(&d1, x0 + x, y0 + y, dc);
 				if (use_out) memcpy(got, o2 + (y * w + x) * 4, 4); else read_rgba(&d2, x0 + x, y0 + y, got);
-				if (j.kind == FPK_MASK) {
+				if (j.kind == FPK_LUMC) {
+					float D[4]; for (int k = 0; k < 4; k++) D[k] = dc_of(&d1, x0 + x, y0 + y, k) / 255.f;
+					float xl = D[0] * .2125f + D[1] * .7154f + D[2] * .0721f;
+					xl = ((j.farg[0] * xl + j.farg[1]) * xl + j.farg[2]) * xl + j.farg[3]; xl = xl < 0 ? 0 : xl > 1 ? 1 : xl;
+					for (int k = 0; k < 3; k++) { float c = D[k] * (1 - j.falpha) + xl * j.falpha; c = c < 0 ? 0 : c > 1 ? 1 : c; s[k] = (uint8_t)(c * 255.f + .5f); }
+					s[3] = (uint8_t)dc_of(&d1, x0 + x, y0 + y, 3);
+				} else if (j.kind == FPK_MASK) {
 					float ma = mk_out[(y * w + x) * 4 + 3] / 255.f;
 					for (int k = 0; k < 4; k++) { float c = (j.color[k] / 255.f) * (s[k] / 255.f) * ma; c = c < 0 ? 0 : c > 1 ? 1 : c; s[k] = (uint8_t)(c * 255.f + .5f); }
 				} else if (j.kind == 9 || j.kind == 10) {
@@ -150,6 +157,7 @@ int main(void) {
 					if (blendm == FPB_NONE) r = sf;
 					else if (blendm == FPB_PREMUL) r = sf + df * (1 - sa);
 					else if (blendm == FPB_ATOP) r = sf * da + df * (1 - sa);
+					else if (blendm == FPB_DSTOUT) r = df * (1 - sa);
 					else if (k < 3 || blendm == FPB_STRAIGHT) r = sf * sa + df * (1 - sa); else r = sf + df * (1 - sa);
 					if (r > 1) r = 1;
 					int want = (int)(r * 255.f + 0.5f);
