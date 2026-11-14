@@ -65,6 +65,9 @@ static bool dump_shaders;       /* SWEETGL_TRACE=1: every shader source, no limi
 
 #define TRACE(...) do { if (trace_left > 0) { trace_left--; sweet_drm_log("sweetgl: trace " __VA_ARGS__); } } while (0)
 
+/* fast paths (defined further down): the shader classifier runs in ShaderSource */
+static void fast_shader(GLuint shader, const char *src);
+
 
 /* ponytail: linear table of contexts; backboardd makes one or two */
 #define MAX_CTX 32
