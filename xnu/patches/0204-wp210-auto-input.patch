@@ -1,0 +1,130 @@
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -948,6 +948,113 @@
+ 	}
+ }
+ 
++/*
++ * Scripted input test, boot-arg wp210auto=SECS (default 0 = off). SECS
++ * seconds after touch polling is started, a thread plays a fixed sequence
++ * three times: an idle step, Home presses, swipes and a tap on the first
++ * dock icon, through sweet_hid_touch/sweet_hid_key like the real drivers
++ * (finger 0: do not touch the screen meanwhile). Per step it logs
++ *   WP210 AUTO r=R s=S NAME t=T first_ms=F frames=N last_ms=L
++ * T: start of the step (wp210_lat_us clock, as the WP210 LAT lines);
++ * F: first backboardd frame swap after T (-1: none); N: swaps during the
++ * step; L: the last swap of the step, i.e. when the animation settled.
++ * Times are from T, so they include the gesture itself (swipe ~210 ms).
++ */
++extern uint64_t sweet_fb_stat_swaps;
++static int wp210_auto_chan;
++
++static void
++wp210_auto_sleep(uint32_t ms)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&wp210_auto_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static void
++wp210_auto_swipe(int x0, int y0, int x1, int y1)
++{
++	const int steps = 12;
++	for (int i = 0; i <= steps; ++i) {
++		sweet_hid_touch(0, 1, x0 + (x1 - x0) * i / steps, y0 + (y1 - y0) * i / steps);
++		wp210_auto_sleep(16);
++	}
++	sweet_hid_touch(0, 0, x1, y1);
++}
++
++enum { WP210_AUTO_IDLE, WP210_AUTO_HOME, WP210_AUTO_SWIPE, WP210_AUTO_TAP };
++
++struct wp210_auto_step {
++	const char *name;
++	int kind;
++	int x0, y0, x1, y1;
++	uint32_t ms;
++};
++
++/* Touch coordinates are SweetHIDTouch's 1080 x 1920 (the 750 x 1334 screen x 1.44). */
++static const struct wp210_auto_step wp210_auto_script[] = {
++	{"idle", WP210_AUTO_IDLE, 0, 0, 0, 0, 4000},
++	{"home", WP210_AUTO_HOME, 0, 0, 0, 0, 3000},
++	{"swipe_left", WP210_AUTO_SWIPE, 900, 960, 180, 960, 3000},
++	{"swipe_right", WP210_AUTO_SWIPE, 180, 960, 900, 960, 3000},
++	{"spotlight_down", WP210_AUTO_SWIPE, 540, 700, 540, 1200, 3000},
++	{"home", WP210_AUTO_HOME, 0, 0, 0, 0, 3000},
++	{"tap_dock1", WP210_AUTO_TAP, 135, 1783, 0, 0, 6000},
++	{"home", WP210_AUTO_HOME, 0, 0, 0, 0, 4000},
++	{"cc_up", WP210_AUTO_SWIPE, 540, 1915, 540, 1100, 3000},
++	{"home", WP210_AUTO_HOME, 0, 0, 0, 0, 3000},
++};
++
++static void
++wp210_auto_thread(void *arg, wait_result_t result)
++{
++	const unsigned nsteps = sizeof(wp210_auto_script) / sizeof(wp210_auto_script[0]);
++	(void)result;
++	wp210_auto_sleep((uint32_t)(uintptr_t)arg * 1000u);
++	printf("WP210 AUTO: start\n");
++	for (int r = 1; r <= 3; ++r) {
++		for (unsigned s = 0; s < nsteps; ++s) {
++			const struct wp210_auto_step *st = &wp210_auto_script[s];
++			uint64_t t0 = wp210_lat_us();
++			uint64_t f0 = *(volatile uint64_t *)&sweet_fb_stat_swaps;
++			switch (st->kind) {
++			case WP210_AUTO_HOME:
++				sweet_hid_key(KEY_HOME, 1);
++				wp210_auto_sleep(80);
++				sweet_hid_key(KEY_HOME, 0);
++				break;
++			case WP210_AUTO_SWIPE:
++				wp210_auto_swipe(st->x0, st->y0, st->x1, st->y1);
++				break;
++			case WP210_AUTO_TAP:
++				sweet_hid_touch(0, 1, st->x0, st->y0);
++				wp210_auto_sleep(80);
++				sweet_hid_touch(0, 0, st->x0, st->y0);
++				break;
++			default:
++				break;
++			}
++			uint64_t seen = f0, first = 0, last = 0, now;
++			while ((now = wp210_lat_us()) - t0 < (uint64_t)st->ms * 1000u) {
++				uint64_t f = *(volatile uint64_t *)&sweet_fb_stat_swaps;
++				if (f != seen) {
++					if (first == 0) {
++						first = now;
++					}
++					last = now;
++					seen = f;
++				}
++				wp210_auto_sleep(5);
++			}
++			printf("WP210 AUTO r=%d s=%u %s t=%llu first_ms=%lld frames=%llu last_ms=%lld\n", r, s, st->name,
++			    (unsigned long long)t0, first ? (long long)((first - t0) / 1000u) : -1LL,
++			    (unsigned long long)(seen - f0), last ? (long long)((last - t0) / 1000u) : -1LL);
++		}
++	}
++	printf("WP210 AUTO: done\n");
++}
++
+ static void
+ wp210_tp_start(void)
+ {
+@@ -967,6 +1074,13 @@
+ 	if (kernel_thread_start(tp >= 2 ? wp210_touch_thread : wp210_tp_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
++	int autosecs = 0;
++	(void)PE_parse_boot_argn("wp210auto", &autosecs, sizeof(autosecs));
++	if (tp >= 2 && autosecs > 0 &&
++	    kernel_thread_start(wp210_auto_thread, (void *)(uintptr_t)autosecs, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++		printf("WP210 AUTO: scripted input in %d s\n", autosecs);
++	}
+ }
+ 
+ void
