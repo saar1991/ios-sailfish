@@ -1,4 +1,4 @@
-# WP210 iOS port: status notes (updated 2026-11-14 22:10)
+# WP210 iOS port: status notes (updated 2026-11-14 22:30)
 
 Working notes so the state survives session resets. Times are local
 (Asia/Jerusalem) unless stated. The newest state is at the top; the older
@@ -65,8 +65,9 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | 27eb0f3 | turned textures (u along y), shape reject reasons | 16275872 | `da8d58c3…` | yes, then replaced |
 | 92e026d | map failure reasons; RGBA copy for sources in other formats | 16275936 | `577d72ae…` | yes, then replaced |
 | 3a1708a | darken-over-backdrop kinds, clamped texcoords | 16276064 | `a6f61661…` | yes, then replaced |
-| f7ea6b1 | multi-rect draws, mask kind, check budget 10, summary in two lines | 16292624 | `142cccbf…` | **yes, current** (about 21:35) |
-| 9a67231 | nine-slice pairing, mipmaps when not minified, luminanceCurve, dst-out | 16292736 | `14dd9a0c…` | script sent (`OLD=142cccbf…`) |
+| f7ea6b1 | multi-rect draws, mask kind, check budget 10, summary in two lines | 16292624 | `142cccbf…` | yes, then replaced |
+| 9a67231 | nine-slice pairing, mipmaps when not minified, luminanceCurve, dst-out | 16292736 | `14dd9a0c…` | **yes, current** (about 21:57) |
+| (next) | flat nine-slice cells, ONE/ONE blend, colour matrix over the backdrop | | | pushed, to build |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -274,6 +275,30 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## 9a67231 run (log 18eee082, `SGLFAST=1`, about 21:58): 3.39 frames/s
+
+- **Self-check:** no draw differed.
+- **Test window:** 3.39 frames/s (2.65x the 1.28 before the fast path). Slow frames 1.37 s on average, median of all 0.85 s, worst 6.5 s; the first frame after a step took **0.76 s** on average (best); 26/30 steps drew a frame.
+- **Masked nine-slices:** 6027 of 10487 draws now run here. Some nine-slices failed to pair (18 triangles): cells of zero width or height.
+- **Other kinds:**
+  - luminanceCurve: 45 draws
+  - ONE/ONE (additive) blends: rejected (programs 25, 7)
+  - colour matrix over the backdrop: programs 31 (4 rows, 5%) and 51 (3 rows, 4%)
+  - also left: supercircle masks (63) and blur programs (71, 91, 59)
+- **Next build:** flat cells skipped in pairing, the ONE/ONE blend, and the colour-matrix kinds.
+
+## Display: black bars (question at 21:56)
+
+- **Cause:** the panel is 1080 x 2412 (NT37705 FHD+, `goodix,panel-max-x/y` and `tpd-resolution` in the device tree), about 20:9. iOS runs as an iPhone 8 at 750 x 1334 (16:9), scaled to the panel's width (1080 x 1921). That leaves about 245 pixels black at the top and bottom.
+- **Options:**
+  - render iOS taller: the native way, but costs more pixels and needs a size the iPhone 8 doesn't have
+  - stretch vertically: distorts the image
+  - zoom: crops the sides
+- **Other iPhones:**
+  - **iPhone X** (A11 like the iPhone 8, iOS 16, 1125 x 2436): about 37-pixel bars, but 2.7x the pixels, no Home button (gestures), and a different IPSW and device tree
+  - XS/XR and later: arm64e userland (pointer authentication), which the WP210's Cortex-A78/A55 cores lack (only the A78C variant adds it). Not practical.
+- **Decision for now:** keep the iPhone 8 and its bars until rendering is several times faster.
 
 ## f7ea6b1 run (log aebf997c, `SGLFAST=1`, about 21:36): fastest frames so far
 

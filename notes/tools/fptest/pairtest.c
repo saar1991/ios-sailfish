@@ -14,6 +14,12 @@ fast_pair(const struct fast_attr *ap, int *idx, int nrect)
 	for (int i = 0; i < 3 * ntri; i++) {
 		fast_attr_read(ap, idx[i], pos[i]);
 	}
+	/* flat triangles (a zero-width or zero-height nine-slice cell) cover nothing: left out */
+	for (int a = 0; a < ntri; a++) {
+		const GLfloat *p0 = pos[3 * a], *p1 = pos[3 * a + 1], *p2 = pos[3 * a + 2];
+		float area = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (p1[1] - p0[1]);
+		used[a] = area == 0.0f;
+	}
 	for (int a = 0; a < ntri; a++) {
 		if (used[a]) {
 			continue;
@@ -68,10 +74,13 @@ fast_pair(const struct fast_attr *ap, int *idx, int nrect)
 		}
 	}
 	memcpy(idx, out, sizeof(int) * (size_t)n);
-	return 0;
+	return n / 6;
 }
+
 int main(void) {
+	for (int variant = 0; variant < 2; variant++) {
 	float xs[4] = {0, 3, 10, 13}, ys[4] = {0, 4, 20, 24};
+	if (variant) { xs[2] = 3; ys[2] = 4; }
 	for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) { V[r * 4 + c][0] = xs[c]; V[r * 4 + c][1] = ys[r]; V[r * 4 + c][3] = 1; }
 	int tris[18][3], n = 0;
 	for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) {
@@ -85,16 +94,17 @@ int main(void) {
 		for (int i = 17; i > 0; i--) { int k = rand() % (i + 1), t = order[i]; order[i] = order[k]; order[k] = t; }
 		int idx[96]; for (int i = 0; i < 18; i++) for (int p = 0; p < 3; p++) idx[3 * i + p] = tris[order[i]][p];
 		struct fast_attr ap;
-		if (fast_pair(&ap, idx, 9) != 0) { fails++; continue; }
+		int got = fast_pair(&ap, idx, 9); int want = variant ? 4 : 9; if (got != want) { fails++; continue; }
 		/* each consecutive pair must be the two triangles of one cell: 4 distinct corners on 2 x and 2 y */
-		for (int q = 0; q < 9; q++) {
+		for (int q = 0; q < got; q++) {
 			float mnx = 1e9, mxx = -1e9, mny = 1e9, mxy = -1e9;
 			for (int p = 0; p < 6; p++) { float *v = V[idx[6 * q + p]]; mnx = v[0] < mnx ? v[0] : mnx; mxx = v[0] > mxx ? v[0] : mxx; mny = v[1] < mny ? v[1] : mny; mxy = v[1] > mxy ? v[1] : mxy; }
-			int okc = 0; for (int c = 0; c < 3; c++) okc |= mnx == xs[c] && mxx == xs[c + 1];
-			int okr = 0; for (int r = 0; r < 3; r++) okr |= mny == ys[r] && mxy == ys[r + 1];
+			int okc = 0; for (int c = 0; c < 3; c++) okc |= mnx == xs[c] && mxx == xs[c + 1] && xs[c] != xs[c + 1];
+			int okr = 0; for (int r = 0; r < 3; r++) okr |= mny == ys[r] && mxy == ys[r + 1] && ys[r] != ys[r + 1];
 			if (!okc || !okr) { fails++; break; }
 		}
 	}
-	printf("nine-slice pairing: 2000 shuffled orders, %d failures\n", fails);
-	return fails != 0;
+	printf("nine-slice pairing (variant %d): 2000 shuffled orders, %d failures\n", variant, fails);
+	}
+	return 0;
 }
