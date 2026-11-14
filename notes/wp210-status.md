@@ -18,11 +18,11 @@ notes are kept under "History" at the end.
 
 ## Phone state now
 
-- **Shim installed:** build **eed85c5** (`141eb8a740fff9ce625f4ddfb611305cc8375c09abb414ccd6b73624af1a5d3a`), `INSTALL VERIFIED` at 18:23 with `install-sweetgl-diag-eed85c5.sh` (`678140a8…`, field-level catalog check, passed with no hash refresh).
-  - It replaced 14f179d (`b1059f33…`), whose backup is `/data/local/tmp/sweetgl-check.1MxbYq/before.bin`.
+- **Shim installed:** build **e0ea1da** (`f2f7b4b4edfd025d6c1802bf9a744e893a4a2baa08bfc731bf26c719466d3604`), `INSTALL VERIFIED` at 19:46 (field-level check passed).
+  - It replaced eed85c5 (`141eb8a7…`), whose backup is `/data/local/tmp/sweetgl-check.9BMeTY/before.bin`.
   - Check what's installed, read-only, from Android:
     `adb shell "su -c '/data/adb/magisk/busybox dd if=/dev/block/sdc bs=4096 skip=122729397 count=4202 iflag=direct 2>/dev/null | sha256sum'"`
-- **boot_a:** `wp210-boot-fast2.img` (`SGLFAST=2`, verify), flashed and booted at 18:23 for the eed85c5 verify run. Before that boot_a held `fast1` (runs at 17:34 and 17:50).
+- **boot_a:** `wp210-boot-fast1.img` (`SGLFAST=1`, which self-checks since e0ea1da), flashed again at 19:46 for the e0ea1da run.
 - **Boot images in `C:\Users\artzi123\Downloads\wp210-shim`:**
   - `wp210-boot-fast2.img`: verify mode, 7442432 bytes, built 17:17
   - `wp210-boot-fast1.img`: speed run
@@ -59,8 +59,8 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | e98dfef | CPU fast paths (`SGLFAST`), stripped build | - | - | CI failed: implicit declaration of `fast_shader` |
 | bb529ae | forward declaration of `fast_shader`; stripped build | 16274576 | `f7c8d02b…` | yes, then replaced |
 | 14f179d | fast-path diagnostics: time per reject reason, top 6 programs, reject details (logging only) | 16275200 | `b1059f33…` | yes, then replaced |
-| eed85c5 | half-float colours (fill, tint, alpha-tint), straight and mixed alpha blending, fast rows (memcpy for 1:1 copies), dispatch_apply over cores, map/pixel timing, program log at link | 16275584 | `141eb8a7…` | **yes, current** (18:23) |
-| 57394b7, e0ea1da | copy+noise and tint+noise kinds, atop blend, whole-pixel edges, clamped blends; SGLFAST=1 self-checks first | 16275808 | `f2f7b4b4…` | script sent (`OLD=141eb8a7…`) |
+| eed85c5 | half-float colours (fill, tint, alpha-tint), straight and mixed alpha blending, fast rows (memcpy for 1:1 copies), dispatch_apply over cores, map/pixel timing, program log at link | 16275584 | `141eb8a7…` | yes, then replaced |
+| 57394b7, e0ea1da | copy+noise and tint+noise kinds, atop blend, whole-pixel edges, clamped blends; SGLFAST=1 self-checks first | 16275808 | `f2f7b4b4…` | **yes, current** (19:46) |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
