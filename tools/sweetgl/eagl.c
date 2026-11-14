@@ -132,7 +132,7 @@ sgl_post(int slot)
 	}
 	GLenum e = glGetError();
 	unsigned k = e - GL_INVALID_ENUM;
-	if (e != GL_NO_ERROR && (k >= 8 || logged[slot][k] < 3)) {
+	if (e != GL_NO_ERROR && (k >= 8 || logged[slot][k] < 200)) {
 		if (k < 8) {
 			logged[slot][k]++;
 		}
@@ -970,6 +970,14 @@ fbfetch_bind(GLint prog)
 		glUniform2f(fbfetch_scale[prog] - 1, w > 0 ? 1.0f / (GLfloat)w : 1.0f, h > 0 ? 1.0f / (GLfloat)h : 1.0f);
 	}
 	_mesa_TextureBarrierNV();
+	/* SWEETGL_GLERR: an error here comes from the setup above, not from the app's draw */
+	if (sgl_check_errors) {
+		static int setup_logged;
+		GLenum se = glGetError();
+		if (se != GL_NO_ERROR && setup_logged++ < 50) {
+			sweet_drm_log("sweetgl: fbfetch setup err %#x prog %d", se, prog);
+		}
+	}
 	/* SWEETGL_TRACE: the first draws of each fbfetch program, wherever they happen */
 	static uint8_t traced[PROG_MAX];
 	if (trace_left > 0 && traced[prog] < 200) {
