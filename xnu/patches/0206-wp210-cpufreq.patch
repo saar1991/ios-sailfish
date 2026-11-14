@@ -1,0 +1,104 @@
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -522,6 +522,93 @@
+  * ms), backboardd swaps/s and the swap gaps, touch moves, and SWEET TOP
+  * (per-process CPU, 100% = one CPU busy).
+  */
++/*
++ * WP210 (MT6896) CPU clocks, boot-arg wp210cpumhz=MHZ (with sweetperf=2).
++ * The bootloader leaves the cores at ~1000 MHz (A55), ~1390 MHz (A78) and
++ * ~490 MHz (prime A78) and nothing changes them under iOS. The phone's DT
++ * describes "mediatek,cpufreq-hw": three performance domains in CSRAM at
++ * 0x11bc10 (cpu0-3), 0x11bd30 (cpu4-6) and 0x11be50 (cpu7), the layout of
++ * Linux drivers/cpufreq/mediatek-cpufreq-hw.c: frequency table at +0x0
++ * (32 words, MHz in bits 11:0, ends where a value repeats), enable +0x84,
++ * performance state (table index) +0x88, hardware state +0x8c. The CPU
++ * power firmware (MCUPM) sets the clock and voltage for the index written.
++ * Always logged: each domain's registers and table. With MHZ > 0, each
++ * domain is set to its highest table entry <= MHZ, as Linux does (enable,
++ * wait for the hardware state, write the index). No thermal limit exists
++ * under iOS, so keep MHZ moderate.
++ */
++#define WP210_CPUFREQ_PA        0x0011b000u
++static const uint32_t wp210_cpufreq_dom[3] = {0xc10, 0xd30, 0xe50};
++
++static void
++wp210_cpufreq(void)
++{
++	int cap = 0;
++	(void)PE_parse_boot_argn("wp210cpumhz", &cap, sizeof(cap));
++	vm_offset_t base = ml_io_map(WP210_CPUFREQ_PA, 0x1000);
++	if (base == 0) {
++		printf("SWEET CPUFREQ: map failed\n");
++		return;
++	}
++	for (int d = 0; d < 3; d++) {
++		volatile uint32_t *r = (volatile uint32_t *)(base + wp210_cpufreq_dom[d]);
++		uint32_t mhz[32];
++		int n = 0;
++		char line[300];
++		int m = 0;
++		for (; n < 32; n++) {
++			mhz[n] = r[n] & 0xfffu;
++			if (n > 0 && mhz[n] == mhz[n - 1]) {
++				break;
++			}
++			m += snprintf(line + m, sizeof(line) - m, " %u", mhz[n]);
++		}
++		printf("SWEET CPUFREQ: domain %d enable %#x state %u hw %#x latency %#x table%s\n", d,
++		    r[0x84 / 4], r[0x88 / 4], r[0x8c / 4], r[0x110 / 4], line);
++	}
++	if (cap <= 0) {
++		return;
++	}
++	perf_wait(3);	/* let the log above reach the UFS ring first */
++	for (int d = 0; d < 3; d++) {
++		volatile uint32_t *r = (volatile uint32_t *)(base + wp210_cpufreq_dom[d]);
++		int best = -1;
++		uint32_t prev = 0xffffffffu;
++		for (int i = 0; i < 32; i++) {
++			uint32_t f = r[i] & 0xfffu;
++			if (i > 0 && f == prev) {
++				break;
++			}
++			prev = f;
++			if (f != 0 && f <= (uint32_t)cap && (best < 0 || f > (r[best] & 0xfffu))) {
++				best = i;
++			}
++		}
++		if (best < 0) {
++			printf("SWEET CPUFREQ: domain %d: no table entry <= %d MHz, unchanged\n", d, cap);
++			continue;
++		}
++		r[0x84 / 4] = 1;
++		__asm__ volatile ("dsb sy" ::: "memory");
++		int ok = 0;
++		for (int t = 0; t < 1000 && !ok; t++) {
++			ok = r[0x8c / 4] & 1;
++			if (!ok) {
++				delay(100);
++			}
++		}
++		if (!ok) {
++			printf("SWEET CPUFREQ: domain %d: hardware not enabled (hw %#x), unchanged\n", d, r[0x8c / 4]);
++			continue;
++		}
++		r[0x88 / 4] = (uint32_t)best;
++		__asm__ volatile ("dsb sy" ::: "memory");
++		delay(2000);
++		printf("SWEET CPUFREQ: domain %d -> index %d (%u MHz), state %u hw %#x\n", d, best,
++		    r[best] & 0xfffu, r[0x88 / 4], r[0x8c / 4]);
++	}
++}
++
+ #define PERF_SAFE_CPUS 8
+ 
+ static void
+@@ -533,6 +620,7 @@
+ 	if (ncpu > PERF_SAFE_CPUS) {
+ 		ncpu = PERF_SAFE_CPUS;
+ 	}
++	wp210_cpufreq();
+ 	for (int c = 0; c < ncpu; c++) {
+ 		uint64_t midr, mpidr;
+ 		thread_bind(cpu_to_processor(c));
