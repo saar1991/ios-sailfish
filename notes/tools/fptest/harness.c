@@ -39,7 +39,7 @@ static void read_rgba(const struct fp_img *m, int x, int y, uint8_t c[4]) { fp_r
 int main(void) {
 	int fails = 0, cases = 0, fast_rows = 0; long maxd_new = 0;
 	const int fmts[4] = {FP_BGRA, FP_RGBA, FP_BGRX, FP_RGBX};
-	for (int it = 0; it < 6000; it++) {
+	for (int it = 0; it < 20000; it++) {
 		struct fp_img src = {0}, d1 = {0}, d2 = {0};
 		int sw = 1 + rnd() % 90, sh = 1 + rnd() % 90, dw = 1 + rnd() % 100, dh = 1 + rnd() % 100;
 		int sfmt = rnd() % 6 == 0 ? FP_A8 : fmts[rnd() % 4], dfmt = fmts[rnd() % 4];
@@ -47,8 +47,10 @@ int main(void) {
 		fill_img(&src, sw, sh, sfmt); fill_img(&d1, dw, dh, dfmt);
 		d2 = d1; d2.ptr = malloc((size_t)d1.stride * dh); memcpy(d2.ptr, d1.ptr, (size_t)d1.stride * dh);
 		struct fp_job j = {0};
-		j.kind = 1 + (int)(rnd() % 6); j.linear = (int)(rnd() % 2);
-		int blendm = (int)(rnd() % 4); j.blend = blendm;
+		j.kind = 1 + (int)(rnd() % 8); j.linear = (int)(rnd() % 2);
+		int blendm = (int)(rnd() % 5); j.blend = blendm;
+		struct fp_img nz = {0}; int nw = 16 << (rnd() % 2);
+		if (j.kind >= 7) { fill_img(&nz, nw, nw, FP_RGBA); j.noise = &nz; j.nscale = (float)(rnd() % 100) / 400.f; j.nud = 1.f / nw; j.nu0 = (float)(rnd() % 64) / nw; j.nvd = -1.f / nw; j.nv0 = (float)(rnd() % 64) / nw; }
 		for (int k = 0; k < 4; k++) j.color[k] = (uint8_t)rnd();
 		int x0 = (int)(rnd() % dw), y0 = (int)(rnd() % dh), x1 = x0 + 1 + (int)(rnd() % (dw - x0)), y1 = y0 + 1 + (int)(rnd() % (dh - y0));
 		j.x0 = x0; j.y0 = y0; j.x1 = x1; j.y1 = y1;
@@ -64,7 +66,7 @@ int main(void) {
 		uint8_t *o1 = NULL, *o2 = NULL; int use_out = rnd() % 4 == 0;
 		if (use_out) { o1 = calloc((size_t)w * h, 4); o2 = calloc((size_t)w * h, 4); }
 		cases++;
-		if (blendm <= 1) {
+		if (blendm <= 1 && j.kind <= 6) {
 			old_fp_run(&j, &d1, sp, o1, w * 4);
 			fp_threads = (int)(rnd() % 2);
 			fp_run(&j, &d2, sp, o2, w * 4);
@@ -72,7 +74,7 @@ int main(void) {
 			if (bad && fails++ < 10) printf("MISMATCH it %d kind %d blend %d sfmt %d dfmt %d out %d linear %d rect %d,%d-%d,%d\n", it, j.kind, j.blend, sfmt, dfmt, use_out, j.linear, x0, y0, x1, y1);
 		} else {
 			/* reference: old loop for the shader output (no blend) into an RGBA buffer, then float blend */
-			struct fp_job js = j; js.blend = 0;
+			struct fp_job js = j; js.blend = 0; js.noise = NULL; if (js.kind == 7) js.kind = FPK_COPY; if (js.kind == 8) js.kind = FPK_TINT;
 			uint8_t *sh_out = calloc((size_t)w * h, 4);
 			struct fp_img dr = d1; dr.fmt = FP_RGBA;   /* shader output without the X-format alpha */
 			old_fp_run(&js, &dr, sp, sh_out, w * 4);
@@ -82,10 +84,22 @@ int main(void) {
 				uint8_t s[4], dc[4], got[4]; memcpy(s, sh_out + (y * w + x) * 4, 4);
 				read_rgba(&d1, x0 + x, y0 + y, dc);
 				if (use_out) memcpy(got, o2 + (y * w + x) * 4, 4); else read_rgba(&d2, x0 + x, y0 + y, got);
+				if (j.kind >= 7) {
+					int px = x0 + x, py = y0 + y;
+					double u = j.nu0 + (double)j.nud * (px + 0.5), v = j.nv0 + (double)j.nvd * (py + 0.5);
+					long ix = (long)floor(u * nw) % nw, iy = (long)floor(v * nw) % nw; if (ix < 0) ix += nw; if (iy < 0) iy += nw;
+					uint8_t n4[4]; read_rgba(&nz, (int)ix, (int)iy, n4);
+					float a = s[3] / 255.f;
+					for (int k = 0; k < 3; k++) { float c = s[k] / 255.f + (n4[k] / 255.f - .5f) * j.nscale * a; c = c < 0 ? 0 : c > a ? a : c; s[k] = (uint8_t)(c * 255.f + .5f); }
+				}
 				float sa = s[3] / 255.f;
 				for (int k = 0; k < 4; k++) {
 					float sf = s[k] / 255.f, df = dc[k] / 255.f, r;
-					if (k < 3 || blendm == FPB_STRAIGHT) r = sf * sa + df * (1 - sa); else r = sf + df * (1 - sa);
+					float da = dc[3] / 255.f;
+					if (blendm == FPB_NONE) r = sf;
+					else if (blendm == FPB_PREMUL) r = sf + df * (1 - sa);
+					else if (blendm == FPB_ATOP) r = sf * da + df * (1 - sa);
+					else if (k < 3 || blendm == FPB_STRAIGHT) r = sf * sa + df * (1 - sa); else r = sf + df * (1 - sa);
 					if (r > 1) r = 1;
 					int want = (int)(r * 255.f + 0.5f);
 					if ((dfmt == FP_BGRX || dfmt == FP_RGBX) && k == 3) want = 255;
@@ -95,7 +109,7 @@ int main(void) {
 			}
 			free(sh_out);
 		}
-		free(src.ptr); free(d1.ptr); free(d2.ptr); free(o1); free(o2);
+		free(src.ptr); free(d1.ptr); free(d2.ptr); free(o1); free(o2); free(nz.ptr);
 	}
 	(void)fast_rows;
 	printf("cases %d fails %d max blend diff %ld\n", cases, fails, maxd_new);

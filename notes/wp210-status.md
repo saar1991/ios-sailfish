@@ -1,4 +1,4 @@
-# WP210 iOS port: status notes (updated 2026-11-14 18:40)
+# WP210 iOS port: status notes (updated 2026-11-14 19:35)
 
 Working notes so the state survives session resets. Times are local
 (Asia/Jerusalem) unless stated. The newest state is at the top; the older
@@ -60,6 +60,7 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | bb529ae | forward declaration of `fast_shader`; stripped build | 16274576 | `f7c8d02b…` | yes, then replaced |
 | 14f179d | fast-path diagnostics: time per reject reason, top 6 programs, reject details (logging only) | 16275200 | `b1059f33…` | yes, then replaced |
 | eed85c5 | half-float colours (fill, tint, alpha-tint), straight and mixed alpha blending, fast rows (memcpy for 1:1 copies), dispatch_apply over cores, map/pixel timing, program log at link | 16275584 | `141eb8a7…` | **yes, current** (18:23) |
+| (next) | copy+noise and tint+noise kinds, atop blend, whole-pixel edges, clamped blends | | | pushed, to build |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -267,6 +268,19 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## Speed run (log 4b54b84f, eed85c5, `SGLFAST=1`, about 19:05): first real gain
+
+- **Frame rate in the test window:** 1.49 frames/s, against 1.28-1.30 in all earlier runs (+15%).
+- **Slow frames in the test window:** 29, totalling 92.6 s, so 3.2 s on average (4.6 s before). The worst frame was 10.7 s (earlier runs: 14-25 s).
+- **Responsiveness:** in test round 3, 9 of 10 steps produced a frame (earlier runs: 1-3).
+- **Fast path:** 13612 draws in 14 s (map/flush 3.0 s, pixels 10.8 s), about 1 ms a draw.
+- **softpipe for the rest:** 124 s (kind 111 s, blend 11 s).
+- **Next build (commit after eed85c5):**
+  - copy + noise and tint + noise
+  - atop blending
+  - whole-pixel edges only
+  - clamped blends
 
 ## Verify run (log d6cfddf3, eed85c5, `SGLFAST=2`, 18:23)
 
