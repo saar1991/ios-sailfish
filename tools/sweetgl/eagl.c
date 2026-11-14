@@ -852,9 +852,11 @@ sgl_PixelStorei(void *rctx, GLenum pname, GLint param)
  * shader and a fill / copy / tinted-copy fragment shader, no blending or
  * premultiplied "over", clamp-to-edge nearest or linear sampling of level 0.
  * SGLFAST (environment): 0 or unset, only count the draws that qualify;
- * 1, draw them on the CPU instead of softpipe; 2, verify: compute them,
- * let softpipe draw, compare (with a one-pixel border), the first 60 draws
- * of each shader kind and blend mode. A trailing s (1s, 2s) keeps the
+ * 1, draw them on the CPU instead of softpipe, after checking the first 60
+ * of each shader kind and blend mode against softpipe (a kind and blend
+ * that differs stays with softpipe); 2, verify only: compute them, let
+ * softpipe draw, compare (with a one-pixel border), the first 60 draws of
+ * each shader kind and blend mode. A trailing s (1s, 2s) keeps the
  * pixel loop on one thread.
  * Counts and times every 10 s with the flush statistics.
  */
@@ -889,6 +891,7 @@ static struct {
 	GLuint tex;
 } fast_pend;
 static uint32_t fast_verified[FPK_COUNT][FPB_COUNT], fast_bad_logged;
+static uint8_t fast_off[FPK_COUNT][FPB_COUNT];   /* differed from softpipe: not drawn here any more */
 #define FAST_VERIFY_EACH 60
 
 /* CA's dither block after the colour (NOISE_SIZE 32 in its vertex shader) */
@@ -1387,12 +1390,19 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	}
 	fst.kind[kind]++;
 	fst.blend[blend]++;
-	if (fast_mode == 0 || (fast_mode == 2 && (fast_verified[kind][blend] >= FAST_VERIFY_EACH || fast_pend.buf != NULL))) {
+	/*
+	 * Checked draws: all of them in mode 2 (up to the budget), and in mode 1
+	 * the first FAST_VERIFY_EACH of each kind and blend; a kind and blend
+	 * that ever differs from softpipe goes back to softpipe for good.
+	 */
+	int check = fast_mode == 2 || fast_verified[kind][blend] < FAST_VERIFY_EACH;
+	if (fast_mode == 0 || fast_off[kind][blend] ||
+	    (check && (fast_verified[kind][blend] >= FAST_VERIFY_EACH || fast_pend.buf != NULL))) {
 		return 2;
 	}
 	struct fp_img dst = {0}, src = {0};
 	uint64_t tm0 = mach_absolute_time();
-	if (fp_map_tex((GLuint)att, fast_mode == 1, &dst) != 0) {
+	if (fp_map_tex((GLuint)att, !check, &dst) != 0) {
 		FAST_DETAIL(NO_MAP, "map prog %d kind %d: target texture %d", prog, kind, att);
 		return fast_no(NO_MAP);
 	}
@@ -1420,7 +1430,7 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	j.x0 = j.x0 > 0 ? j.x0 : 0, j.x1 = j.x1 < dst.w ? j.x1 : dst.w;
 	j.y0 = j.y0 > 0 ? j.y0 : 0, j.y1 = j.y1 < dst.h ? j.y1 : dst.h;
 	uint64_t tm1 = mach_absolute_time();
-	if (fast_mode == 1) {
+	if (!check) {
 		fp_run(&j, &dst, textured ? &src : NULL, NULL, 0);
 	} else if (j.x1 > j.x0 && j.y1 > j.y0) {
 		/* verify: the expected pixels of the rectangle plus a one-pixel border */
@@ -1450,7 +1460,7 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	fp_unmap(&dst);
 	fst.map_abs += tm1 - tm0 + mach_absolute_time() - tm2;
 	fst.run_abs += tm2 - tm1;
-	return fast_mode == 1 ? 1 : 2;
+	return check ? 2 : 1;
 }
 
 /* SGLFAST=2: after softpipe drew, compare with what the fast path computed */
@@ -1486,6 +1496,11 @@ fast_verify(void)
 		fst.ok++;
 	} else {
 		fst.bad++;
+		if (!fast_off[fast_pend.kind][fast_pend.blend]) {
+			fast_off[fast_pend.kind][fast_pend.blend] = 1;
+			sweet_drm_log("sweetgl: fast kind %d blend %d differs from softpipe: softpipe draws it from now on",
+			    fast_pend.kind, fast_pend.blend);
+		}
 		if (fast_bad_logged++ < 60) {
 			sweet_drm_log("sweetgl: fastverify kind %d blend %d rect %d,%d-%d,%d: %d px differ (max %d), first %d,%d "
 			    "want %02x%02x%02x%02x got %02x%02x%02x%02x", fast_pend.kind, fast_pend.blend, fast_pend.x0, fast_pend.y0,
