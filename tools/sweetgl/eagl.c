@@ -104,23 +104,6 @@ sgl_unsupported(int slot, const char *name)
 	}
 }
 
-/*
- * SWEETGL_GLERR: the current program's validation message after a
- * GL_INVALID_OPERATION. Only glValidateProgram changes state (its status).
- */
-static void
-diag_invalid_op(int slot)
-{
-	GLint prog = 0, len = 0;
-	char log[512] = "";
-	glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
-	if (prog > 0) {
-		glValidateProgram((GLuint)prog);
-		glGetProgramInfoLog((GLuint)prog, sizeof log, &len, log);
-	}
-	sweet_drm_log("sweetgl: diag %d p%d %.300s", slot, prog, log);
-}
-
 void
 sgl_post(int slot)
 {
@@ -137,9 +120,6 @@ sgl_post(int slot)
 			logged[slot][k]++;
 		}
 		sweet_drm_log("sweetgl: GL error %#x after slot %d %s", e, slot, sgl_slot_names[slot]);
-		if (sgl_check_errors && e == GL_INVALID_OPERATION && k < 8 && logged[slot][k] <= 3) {
-			diag_invalid_op(slot);
-		}
 	}
 }
 
@@ -626,40 +606,6 @@ copy_refresh(int u, int *active)
 	    IOSurfaceGetBytesPerRow(s), "refresh");
 }
 
-/*
- * SWEETGL_TRACE: samplers of the current program whose texture has no level
- * 0 (unbound or never filled), once per program/unit/texture.
- */
-static void
-trace_empty_samplers(GLint prog)
-{
-	static uint32_t seen[4096];
-	GLint n = 0;
-	glGetProgramiv(prog, GL_ACTIVE_UNIFORMS, &n);
-	for (GLint i = 0; i < n; i++) {
-		char name[64];
-		GLint size = 0;
-		GLenum type = 0;
-		glGetActiveUniform(prog, i, sizeof(name), NULL, &size, &type, name);
-		if (type != GL_SAMPLER_2D) {
-			continue;
-		}
-		GLint unit = 0, tex = 0, w = 0, active = GL_TEXTURE0;
-		glGetUniformiv(prog, glGetUniformLocation(prog, name), &unit);
-		glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
-		glActiveTexture(GL_TEXTURE0 + unit);
-		glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex);
-		glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
-		glActiveTexture(active);
-		uint32_t key = (uint32_t)prog << 20 ^ (uint32_t)unit << 16 ^ (uint32_t)tex;
-		if (w > 0 || seen[key % 4096] == key + 1) {
-			continue;
-		}
-		seen[key % 4096] = key + 1;
-		TRACE("empty sampler: program %d %s unit %d tex %d", prog, name, unit, tex);
-	}
-}
-
 extern void _mesa_TextureBarrierNV(void);
 
 /*
@@ -714,204 +660,8 @@ feedback_barrier(GLint prog)
 	}
 }
 
-/* SWEETGL_TRACE: the draw's state and the program's non-sampler uniforms */
-static void
-trace_draw_state(GLint prog, GLenum mode, GLsizei count)
-{
-	GLint v[16] = {0};
-	GLboolean m[4] = {0};
-	v[0] = glIsEnabled(GL_BLEND);
-	glGetIntegerv(GL_BLEND_SRC_RGB, &v[1]);
-	glGetIntegerv(GL_BLEND_DST_RGB, &v[2]);
-	glGetIntegerv(GL_BLEND_SRC_ALPHA, &v[3]);
-	glGetIntegerv(GL_BLEND_DST_ALPHA, &v[4]);
-	v[10] = glIsEnabled(GL_SCISSOR_TEST);
-	glGetBooleanv(GL_COLOR_WRITEMASK, m);
-	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &v[11]);
-	GLint vp[4] = {0}, sc[4] = {0};
-	glGetIntegerv(GL_VIEWPORT, vp);
-	glGetIntegerv(GL_SCISSOR_BOX, sc);
-	char samp[64] = "";
-	for (int u = 0, k = 0; u < 15 && prog < PROG_MAX && k < 56; u++) {
-		if (prog_units[prog] & 1u << u) {
-			k += snprintf(samp + k, sizeof(samp) - (size_t)k, " u%d=%u", u, unit_held[u]);
-		}
-	}
-	GLint fbtex = 0;
-	if (v[11] != 0) {
-		glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-		    GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &fbtex);
-	}
-	TRACE("draw prog %d samples%s into %d tex %u %u %u mode %#x n %d fb %d vp %d,%d %dx%d blend %d %#x/%#x %#x/%#x scissor %d %d,%d %dx%d "
-	    "mask %d%d%d%d", prog, samp, fbtex, unit_held[0], unit_held[1], unit_held[2], mode, count, v[11], vp[0], vp[1], vp[2], vp[3],
-	    v[0], v[1], v[2], v[3], v[4], v[10], sc[0], sc[1], sc[2], sc[3], m[0], m[1], m[2], m[3]);
-	char line[400];
-	size_t len = 0;
-	GLint n = 0;
-	glGetProgramiv(prog, GL_ACTIVE_UNIFORMS, &n);
-	for (GLint i = 0; i < n && len < sizeof(line) - 80; i++) {
-		char name[64];
-		GLint size = 0;
-		GLenum type = 0;
-		glGetActiveUniform(prog, i, sizeof(name), NULL, &size, &type, name);
-		int k = type == GL_FLOAT ? 1 : type == GL_FLOAT_VEC2 ? 2 : type == GL_FLOAT_VEC3 ? 3 :
-		    type == GL_FLOAT_VEC4 ? 4 : type == GL_FLOAT_MAT4 ? 16 : 0;
-		if (k == 0 || strncmp(name, "texmat", 6) == 0 || strcmp(name, "mvp") == 0) {
-			continue;
-		}
-		char *br = strchr(name, '[');
-		if (br != NULL) {
-			*br = 0;
-		}
-		len += (size_t)snprintf(line + len, sizeof(line) - len, " %s=", name);
-		for (GLint e = 0; e < size && e < 8; e++) {
-			char el[80];
-			GLfloat f[16] = {0};
-			snprintf(el, sizeof(el), size > 1 ? "%s[%d]" : "%s", name, e);
-			glGetUniformfv(prog, glGetUniformLocation(prog, el), f);
-			for (int j = 0; j < k && len < sizeof(line) - 12; j++) {
-				len += (size_t)snprintf(line + len, sizeof(line) - len, "%s%.3g", j ? "," : e ? ";" : "", f[j]);
-			}
-		}
-	}
-	if (len > 0) {
-		TRACE("  uniforms%s", line);
-	}
-}
-
-/* SWEETGL_TRACE: mean RGBA and a 24x4 luma thumbnail of the scissor box (or viewport) */
-static void
-trace_region(const char *when)
-{
-	GLint vp[4] = {0}, r[4];
-	glGetIntegerv(GL_VIEWPORT, vp);
-	memcpy(r, vp, sizeof(r));
-	if (glIsEnabled(GL_SCISSOR_TEST)) {
-		GLint sc[4] = {0};
-		glGetIntegerv(GL_SCISSOR_BOX, sc);
-		GLint x0 = sc[0] > vp[0] ? sc[0] : vp[0], y0 = sc[1] > vp[1] ? sc[1] : vp[1];
-		GLint x1 = sc[0] + sc[2] < vp[0] + vp[2] ? sc[0] + sc[2] : vp[0] + vp[2];
-		GLint y1 = sc[1] + sc[3] < vp[1] + vp[3] ? sc[1] + sc[3] : vp[1] + vp[3];
-		r[0] = x0, r[1] = y0, r[2] = x1 - x0, r[3] = y1 - y0;
-	}
-	if (r[2] <= 0 || r[3] <= 0 || (size_t)r[2] * (size_t)r[3] > 250000) {
-		TRACE("  %s %d,%d %dx%d", when, r[0], r[1], r[2], r[3]);
-		return;
-	}
-	size_t w = (size_t)r[2], h = (size_t)r[3];
-	uint8_t *px = malloc(w * h * 4);
-	if (px == NULL) {
-		return;
-	}
-	glReadPixels(r[0], r[1], r[2], r[3], GL_RGBA, GL_UNSIGNED_BYTE, px);
-	uint64_t sum[4] = {0};
-	for (size_t i = 0; i < w * h * 4; i++) {
-		sum[i % 4] += px[i];
-	}
-	char thumb[4 * 25 + 1];
-	for (int cy = 0; cy < 4; cy++) {
-		for (int cx = 0; cx < 24; cx++) {
-			size_t x0 = w * cx / 24, x1 = w * (cx + 1) / 24, y0 = h * (3 - cy) / 4, y1 = h * (4 - cy) / 4;
-			uint64_t a = 0, l = 0, cnt = 0;
-			for (size_t y = y0; y < y1; y++) {
-				for (size_t x = x0; x < x1; x++) {
-					const uint8_t *q = px + (y * w + x) * 4;
-					a += q[3];
-					l += (q[0] * 54u + q[1] * 183u + q[2] * 19u) >> 8;
-					cnt++;
-				}
-			}
-			thumb[cy * 25 + cx] = cnt == 0 || a == 0 ? ' ' : (char)('0' + l * 9 / (cnt * 255));
-		}
-		thumb[cy * 25 + 24] = '/';
-	}
-	thumb[4 * 25 - 1] = 0;
-	size_t n = w * h;
-	TRACE("  %s %d,%d %dx%d mean %02x%02x%02x%02x |%s|", when, r[0], r[1], r[2], r[3], (unsigned)(sum[0] / n),
-	    (unsigned)(sum[1] / n), (unsigned)(sum[2] / n), (unsigned)(sum[3] / n), thumb);
-	free(px);
-}
-
-/* after a new draw state (trace): what the viewport now holds */
-static void
-trace_draw_result(GLint prog)
-{
-	(void)prog;
-	trace_region("after");
-}
-
-/* SWEETGL_TRACE: an attribute of the draw's first vertices (client arrays) or its constant value */
-static void
-trace_attrib(GLint prog, const char *name, GLenum itype, const void *indices, GLint first)
-{
-	GLint loc = glGetAttribLocation(prog, name), on = 0;
-	if (loc < 0) {
-		return;
-	}
-	glGetVertexAttribiv(loc, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &on);
-	if (!on) {
-		GLfloat f[4] = {0};
-		glGetVertexAttribfv(loc, GL_CURRENT_VERTEX_ATTRIB, f);
-		TRACE("  %s constant %.3g,%.3g,%.3g,%.3g", name, f[0], f[1], f[2], f[3]);
-		return;
-	}
-	GLint size = 0, type = 0, stride = 0, norm = 0, buf = 0;
-	void *ptr = NULL;
-	glGetVertexAttribiv(loc, GL_VERTEX_ATTRIB_ARRAY_SIZE, &size);
-	glGetVertexAttribiv(loc, GL_VERTEX_ATTRIB_ARRAY_TYPE, &type);
-	glGetVertexAttribiv(loc, GL_VERTEX_ATTRIB_ARRAY_STRIDE, &stride);
-	glGetVertexAttribiv(loc, GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, &norm);
-	glGetVertexAttribiv(loc, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &buf);
-	glGetVertexAttribPointerv(loc, GL_VERTEX_ATTRIB_ARRAY_POINTER, &ptr);
-	char line[480];
-	size_t len = (size_t)snprintf(line, sizeof(line), "  %s size %d type %#x norm %d stride %d buf %d ptr %p:", name, size,
-	    type, norm, stride, buf, ptr);
-	for (int v = 0; v < 8 && ptr != NULL && buf == 0; v++) {
-		GLint idx = first + v;
-		if (indices != NULL) {
-			idx = itype == GL_UNSIGNED_SHORT ? ((const GLushort *)indices)[v] :
-			      itype == GL_UNSIGNED_BYTE ? ((const GLubyte *)indices)[v] : (GLint)((const GLuint *)indices)[v];
-		}
-		int esz = type == GL_FLOAT ? 4 : type == GL_UNSIGNED_SHORT || type == GL_SHORT || type == GL_HALF_FLOAT ? 2 : 1;
-		const uint8_t *e = (const uint8_t *)ptr + (size_t)idx * (size_t)(stride ? stride : size * esz);
-		len += (size_t)snprintf(line + len, sizeof(line) - len, " [%d]", idx);
-		for (int c = 0; c < size && len < sizeof(line) - 16; c++) {
-			if (type == GL_FLOAT) {
-				len += (size_t)snprintf(line + len, sizeof(line) - len, " %.4g", ((const float *)e)[c]);
-			} else if (type == GL_HALF_FLOAT) {
-				__fp16 h;
-				memcpy(&h, e + 2 * c, 2);
-				len += (size_t)snprintf(line + len, sizeof(line) - len, " %.4g", (double)h);
-			} else if (esz == 2) {
-				len += (size_t)snprintf(line + len, sizeof(line) - len, " %04x", ((const uint16_t *)e)[c]);
-			} else {
-				len += (size_t)snprintf(line + len, sizeof(line) - len, " %02x", e[c]);
-			}
-		}
-	}
-	TRACE("%s", line);
-}
-
-static void
-trace_vertex_color(GLint prog, GLenum itype, const void *indices, GLint first)
-{
-	trace_attrib(prog, "vertex_position", itype, indices, first);
-	trace_attrib(prog, "vertex_color", itype, indices, first);
-	trace_attrib(prog, "vertex_texcoord0", itype, indices, first);
-	GLfloat t[4] = {0};
-	GLint loc = glGetUniformLocation(prog, "texmat0");
-	if (loc >= 0) {
-		glGetUniformfv(prog, loc, t);
-		TRACE("  texmat0 %.4g,%.4g,%.4g,%.4g", t[0], t[1], t[2], t[3]);
-	}
-}
-
-static void trace_region(const char *when);
-static void trace_draw_state(GLint prog, GLenum mode, GLsizei count);
-
 /* sampler and scale locations + 1 of programs with an fbfetch shader (0: none) */
 static GLint fbfetch_sampler[PROG_MAX], fbfetch_scale[PROG_MAX];
-static bool fbfetch_pending;    /* trace the region after this draw */
 
 static void
 fbfetch_link(GLuint program)
@@ -983,15 +733,6 @@ fbfetch_bind(GLint prog)
 		if (se != GL_NO_ERROR && setup_logged++ < 50) {
 			sweet_drm_log("sweetgl: fbfetch setup err %#x prog %d", se, prog);
 		}
-	}
-	/* SWEETGL_TRACE: the first draws of each fbfetch program, wherever they happen */
-	static uint8_t traced[PROG_MAX];
-	if (trace_left > 0 && traced[prog] < 200) {
-		traced[prog]++;
-		TRACE("fbfetch draw %d of prog %d: fb %d texture %d %dx%d", traced[prog], prog, fb, att, w, h);
-		trace_draw_state(prog, 0, 0);
-		trace_region("before");
-		fbfetch_pending = true;
 	}
 }
 
@@ -1099,16 +840,97 @@ sgl_PixelStorei(void *rctx, GLenum pname, GLint param)
 	SGL_POST(195);
 }
 
+/*
+ * Per-frame cost, always on: time spent in the app's draws (softpipe
+ * rasterizes inside them, sometimes in the next draw) split by framebuffer
+ * and program, plus binds and clears. A frame whose draws and finish take
+ * 250 ms or more is logged, at most 400 times:
+ *   sweetgl: slow frame N: T ms (draws D ms, finish F ms) wall W ms, C draws,
+ *   B fbs (S ms not into the presented one), K binds, L clears, top prog P M ms (Q progs)
+ */
+#define FS_FBS 16
+#define FS_PROGS 64
+static struct {
+	uint64_t draw_abs;
+	uint32_t draws, binds, clears;
+	int nfb, nprog;
+	GLuint fb[FS_FBS];
+	uint64_t fb_abs[FS_FBS];
+	GLint prog[FS_PROGS];
+	uint64_t prog_abs[FS_PROGS];
+} fs;
+static GLuint fs_cur_fb;
+static uint64_t fs_start;
+static uint32_t fs_frame, fs_logged;
+
+static uint64_t
+fs_ms(uint64_t abs)
+{
+	static mach_timebase_info_data_t tb;
+	if (tb.denom == 0) {
+		mach_timebase_info(&tb);
+	}
+	return abs * tb.numer / tb.denom / 1000000;
+}
+
+static void
+fs_draw(uint64_t dt)
+{
+	GLint prog = 0;
+	int i;
+	glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
+	fs.draws++;
+	fs.draw_abs += dt;
+	for (i = 0; i < fs.nfb && fs.fb[i] != fs_cur_fb; i++) {
+	}
+	if (i == fs.nfb && i < FS_FBS) {
+		fs.fb[fs.nfb++] = fs_cur_fb;
+	}
+	if (i < fs.nfb) {
+		fs.fb_abs[i] += dt;
+	}
+	for (i = 0; i < fs.nprog && fs.prog[i] != prog; i++) {
+	}
+	if (i == fs.nprog && i < FS_PROGS) {
+		fs.prog[fs.nprog++] = prog;
+	}
+	if (i < fs.nprog) {
+		fs.prog_abs[i] += dt;
+	}
+}
+
+static void
+fs_end(uint64_t finish_abs, uint64_t now)
+{
+	uint64_t total = fs.draw_abs + finish_abs, presented = 0;
+	int top = 0;
+	fs_frame++;
+	if (fs_ms(total) >= 250 && fs_logged < 400) {
+		fs_logged++;
+		for (int i = 0; i < fs.nfb; i++) {
+			presented = fs.fb[i] == fs_cur_fb ? fs.fb_abs[i] : presented;
+		}
+		for (int i = 1; i < fs.nprog; i++) {
+			top = fs.prog_abs[i] > fs.prog_abs[top] ? i : top;
+		}
+		sweet_drm_log("sweetgl: slow frame %u: %llu ms (draws %llu ms, finish %llu ms) wall %llu ms, %u draws, "
+		    "%d fbs (%llu ms not into the presented one), %u binds, %u clears, top prog %d %llu ms (%d progs)",
+		    fs_frame, fs_ms(total), fs_ms(fs.draw_abs), fs_ms(finish_abs), fs_start ? fs_ms(now - fs_start) : 0,
+		    fs.draws, fs.nfb, fs_ms(fs.draw_abs - presented), fs.binds, fs.clears,
+		    fs.nprog ? fs.prog[top] : 0, fs.nprog ? fs_ms(fs.prog_abs[top]) : 0, fs.nprog);
+	}
+	memset(&fs, 0, sizeof(fs));
+	fs_start = now;
+}
+
 void
 sgl_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 {
 	SGL_CUR(rctx);
 	draw_prep(mode, count);
+	uint64_t t0 = mach_absolute_time();
 	glDrawArrays(mode, first, count);
-	if (fbfetch_pending) {
-		fbfetch_pending = false;
-		trace_region("after");
-	}
+	fs_draw(mach_absolute_time() - t0);
 	SGL_POST(65);
 }
 
@@ -1117,11 +939,9 @@ sgl_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void
 {
 	SGL_CUR(rctx);
 	draw_prep(mode, count);
+	uint64_t t0 = mach_absolute_time();
 	glDrawElements(mode, count, type, indices);
-	if (fbfetch_pending) {
-		fbfetch_pending = false;
-		trace_region("after");
-	}
+	fs_draw(mach_absolute_time() - t0);
 	SGL_POST(67);
 }
 
@@ -1196,6 +1016,7 @@ sgl_Clear(void *rctx, GLbitfield mask)
 {
 	SGL_CUR(rctx);
 	glClear(mask);
+	fs.clears++;
 	SGL_POST(10);
 }
 
@@ -1204,6 +1025,10 @@ sgl_BindFramebufferEXT(void *rctx, GLenum target, GLuint framebuffer)
 {
 	SGL_CUR(rctx);
 	glBindFramebuffer(target, framebuffer);
+	if (target != GL_READ_FRAMEBUFFER && framebuffer != fs_cur_fb) {
+		fs.binds++;
+		fs_cur_fb = framebuffer;
+	}
 	SGL_POST(672);
 }
 
@@ -1290,7 +1115,9 @@ sgl_Flush(void *rctx)
 	SGL_CUR(rctx);
 	uint64_t t0 = mach_absolute_time();
 	glFinish();
-	flush_stats(t0, mach_absolute_time());
+	uint64_t t1 = mach_absolute_time();
+	flush_stats(t0, t1);
+	fs_end(t1 - t0, t1);
 }
 
 void
