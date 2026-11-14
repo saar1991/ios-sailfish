@@ -865,8 +865,20 @@ static struct {
 enum { NO_KIND, NO_MODE, NO_STATE, NO_BLEND, NO_ARRAY, NO_SHAPE, NO_TEX, NO_FB, NO_MAP, NO_COUNT };
 static struct {
 	uint32_t draws, kind[FPK_COUNT], no[NO_COUNT], ok, bad;
-	uint64_t eligible_abs, fast_abs;
+	uint64_t eligible_abs, fast_abs, no_abs[NO_COUNT];
 } fst;
+/* per program over the 10 s window: draws, qualifying draws, time, reasons seen (bit per NO_) */
+static struct {
+	uint32_t draws, fast;
+	uint16_t no;
+	uint64_t abs;
+} fpr[PROG_MAX];
+static int fast_why;            /* reason of the last fast_no */
+/* the first rejects of these reasons are logged with their details */
+static int fast_detail_left[NO_COUNT] = {[NO_ARRAY] = 40, [NO_BLEND] = 20, [NO_TEX] = 20, [NO_MODE] = 10,
+    [NO_SHAPE] = 10, [NO_STATE] = 10, [NO_FB] = 10, [NO_MAP] = 10};
+#define FAST_DETAIL(why, ...) do { if (fast_detail_left[why] > 0) { fast_detail_left[why]--; \
+	sweet_drm_log("sweetgl: fast no " __VA_ARGS__); } } while (0)
 static struct {
 	uint8_t *buf;
 	int bx, by, bw, bh, x0, y0, x1, y1, kind;
@@ -953,14 +965,13 @@ fast_link(GLuint program)
 
 struct fast_attr {
 	const uint8_t *p;
-	GLint on, size, type, stride, norm;
+	GLint on, size, type, stride, norm, buf;
 	GLfloat cur[4];
 };
 
 static int
 fast_attr_get(GLint loc, struct fast_attr *a)
 {
-	GLint buf = 0;
 	void *ptr = NULL;
 	memset(a, 0, sizeof(*a));
 	glGetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &a->on);
@@ -968,14 +979,14 @@ fast_attr_get(GLint loc, struct fast_attr *a)
 		glGetVertexAttribfv((GLuint)loc, GL_CURRENT_VERTEX_ATTRIB, a->cur);
 		return 0;
 	}
-	glGetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &buf);
+	glGetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &a->buf);
 	glGetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_SIZE, &a->size);
 	glGetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_TYPE, &a->type);
 	glGetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_STRIDE, &a->stride);
 	glGetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, &a->norm);
 	glGetVertexAttribPointerv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_POINTER, &ptr);
 	a->p = ptr;
-	return buf != 0 || ptr == NULL || a->size < 1 || a->size > 4 ||
+	return a->buf != 0 || ptr == NULL || a->size < 1 || a->size > 4 ||
 	       (a->type != GL_FLOAT && a->type != GL_UNSIGNED_BYTE) ? -1 : 0;
 }
 
@@ -1003,6 +1014,7 @@ static int
 fast_no(int why)
 {
 	fst.no[why]++;
+	fast_why = why;
 	return 0;
 }
 
@@ -1029,6 +1041,8 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		GLint eb = 0;
 		glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &eb);
 		if (eb != 0 || itype != GL_UNSIGNED_SHORT || indices == NULL) {
+			FAST_DETAIL(NO_ARRAY, "array prog %d kind %d: elements buffer %d type %#x indices %s mode %#x n %d", prog, kind,
+			    eb, itype, indices != NULL ? "set" : "null", mode, count);
 			return fast_no(NO_ARRAY);
 		}
 	}
@@ -1043,12 +1057,15 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		}
 		idx[0] = v[0], idx[1] = v[1], idx[2] = v[2], idx[3] = v[1], idx[4] = v[2], idx[5] = v[3];
 	} else {
+		FAST_DETAIL(NO_MODE, "mode prog %d kind %d: mode %#x n %d elements %d", prog, kind, mode, count, elements);
 		return fast_no(NO_MODE);
 	}
 	GLboolean cm[4] = {0};
 	glGetBooleanv(GL_COLOR_WRITEMASK, cm);
 	if (!cm[0] || !cm[1] || !cm[2] || !cm[3] || glIsEnabled(GL_DEPTH_TEST) || glIsEnabled(GL_STENCIL_TEST) ||
 	    glIsEnabled(GL_CULL_FACE) || glIsEnabled(GL_RASTERIZER_DISCARD) || glIsEnabled(GL_SAMPLE_ALPHA_TO_COVERAGE)) {
+		FAST_DETAIL(NO_STATE, "state prog %d kind %d: mask %d%d%d%d depth %d stencil %d cull %d", prog, kind, cm[0], cm[1],
+		    cm[2], cm[3], glIsEnabled(GL_DEPTH_TEST), glIsEnabled(GL_STENCIL_TEST), glIsEnabled(GL_CULL_FACE));
 		return fast_no(NO_STATE);
 	}
 	int blend = 0;
@@ -1062,6 +1079,8 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &f[5]);
 		if (f[0] != GL_ONE || f[1] != GL_ONE_MINUS_SRC_ALPHA || f[2] != GL_ONE || f[3] != GL_ONE_MINUS_SRC_ALPHA ||
 		    f[4] != GL_FUNC_ADD || f[5] != GL_FUNC_ADD) {
+			FAST_DETAIL(NO_BLEND, "blend prog %d kind %d: src %#x dst %#x srca %#x dsta %#x eq %#x %#x", prog, kind, f[0],
+			    f[1], f[2], f[3], f[4], f[5]);
 			return fast_no(NO_BLEND);
 		}
 		blend = 1;
@@ -1069,11 +1088,13 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	GLint fb = 0, type = 0, att = 0, lvl = 0, db = 0;
 	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fb);
 	if (fb == 0) {
+		FAST_DETAIL(NO_FB, "fb prog %d kind %d: window framebuffer", prog, kind);
 		return fast_no(NO_FB);
 	}
 	glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
 	    GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &type);
 	if (type != GL_TEXTURE) {
+		FAST_DETAIL(NO_FB, "fb prog %d kind %d: fb %d attachment type %#x", prog, kind, fb, type);
 		return fast_no(NO_FB);
 	}
 	glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
@@ -1082,13 +1103,25 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	    GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL, &lvl);
 	glGetIntegerv(GL_DRAW_BUFFER0, &db);
 	if (att <= 0 || lvl != 0 || db != GL_COLOR_ATTACHMENT0) {
+		FAST_DETAIL(NO_FB, "fb prog %d kind %d: fb %d texture %d level %d draw buffer %#x", prog, kind, fb, att, lvl, db);
 		return fast_no(NO_FB);
 	}
 	/* vertices */
 	struct fast_attr ap, ac, at;
 	int colored = kind == FPK_FILL || kind == FPK_TINT || kind == FPK_ATINT, textured = kind != FPK_FILL;
-	if (fast_attr_get(prog_loc[prog].pos, &ap) || (colored && fast_attr_get(prog_loc[prog].color, &ac)) ||
-	    (textured && fast_attr_get(prog_loc[prog].tc0, &at))) {
+	const char *an = NULL;
+	const struct fast_attr *bad = NULL;
+	if (fast_attr_get(prog_loc[prog].pos, &ap)) {
+		an = "position", bad = &ap;
+	} else if (colored && fast_attr_get(prog_loc[prog].color, &ac)) {
+		an = "color", bad = &ac;
+	} else if (textured && fast_attr_get(prog_loc[prog].tc0, &at)) {
+		an = "texcoord0", bad = &at;
+	}
+	if (an != NULL) {
+		FAST_DETAIL(NO_ARRAY, "array prog %d kind %d: %s buffer %d size %d type %#x stride %d norm %d pointer %s, "
+		    "mode %#x n %d elements %d", prog, kind, an, bad->buf, bad->size, bad->type, bad->stride, bad->norm,
+		    bad->p != NULL ? "set" : "null", mode, count, elements);
 		return fast_no(NO_ARRAY);
 	}
 	GLfloat M[16], tm[4] = {1, 1, 0, 0};
@@ -1109,6 +1142,7 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		float cw = M[3] * p[0] + M[7] * p[1] + M[11] * p[2] + M[15] * p[3];
 		if (!(cw > 0.0f) || !isfinite(cx) || !isfinite(cy) || !isfinite(cz) || fabsf(cz) > cw ||
 		    (i > 0 && !fast_near(cw, w0, 1e-6f * w0))) {
+			FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: vertex %d clip %g,%g,%g,%g", prog, kind, i, cx, cy, cz, cw);
 			return fast_no(NO_SHAPE);
 		}
 		w0 = cw;
@@ -1213,6 +1247,8 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		GLint unit = -1, active = GL_TEXTURE0, bound = 0, sampler = 0, ws = 0, wt = 0, base = 0, sw[4] = {0};
 		glGetUniformiv((GLuint)prog, prog_loc[prog].tex0, &unit);
 		if (unit < 0 || unit >= UNITS || (tex = unit_held[unit]) == 0 || tex == (GLuint)att) {
+			FAST_DETAIL(NO_TEX, "tex prog %d kind %d: unit %d texture %u target %d", prog, kind, unit,
+			    unit >= 0 && unit < UNITS ? unit_held[unit] : 0, att);
 			return fast_no(NO_TEX);
 		}
 		glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
@@ -1232,6 +1268,9 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		if ((GLuint)bound != tex || sampler != 0 || ws != GL_CLAMP_TO_EDGE || wt != GL_CLAMP_TO_EDGE || base != 0 ||
 		    sw[0] != GL_RED || sw[1] != GL_GREEN || sw[2] != GL_BLUE || sw[3] != GL_ALPHA ||
 		    (minf != GL_NEAREST && minf != GL_LINEAR) || (magf != GL_NEAREST && magf != GL_LINEAR)) {
+			FAST_DETAIL(NO_TEX, "tex prog %d kind %d: texture %u bound %d sampler %d wrap %#x %#x base %d swizzle %#x %#x "
+			    "%#x %#x filter %#x %#x", prog, kind, tex, bound, sampler, ws, wt, base, sw[0], sw[1], sw[2], sw[3], minf,
+			    magf);
 			return fast_no(NO_TEX);
 		}
 	}
@@ -1241,9 +1280,11 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	}
 	struct fp_img dst = {0}, src = {0};
 	if (fp_map_tex((GLuint)att, fast_mode == 1, &dst) != 0) {
+		FAST_DETAIL(NO_MAP, "map prog %d kind %d: target texture %d", prog, kind, att);
 		return fast_no(NO_MAP);
 	}
 	if (dst.fmt == FP_A8 || (textured && fp_map_tex(tex, 0, &src) != 0)) {
+		FAST_DETAIL(NO_MAP, "map prog %d kind %d: target format %d, source texture %u", prog, kind, dst.fmt, tex);
 		fp_unmap(&dst);
 		return fast_no(NO_MAP);
 	}
@@ -1326,6 +1367,21 @@ fast_verify(void)
 
 static uint64_t fs_ms(uint64_t abs);
 
+/* a draw's time (softpipe's, or ours) by outcome and by program */
+static void
+fast_account(GLint prog, int fp, uint64_t dt)
+{
+	fst.eligible_abs += fp == 2 ? dt : 0;
+	fst.fast_abs += fp == 1 ? dt : 0;
+	fst.no_abs[fast_why] += fp == 0 ? dt : 0;
+	if (prog > 0 && prog < PROG_MAX) {
+		fpr[prog].draws++;
+		fpr[prog].fast += fp != 0;
+		fpr[prog].no |= fp == 0 ? (uint16_t)(1u << fast_why) : 0;
+		fpr[prog].abs += dt;
+	}
+}
+
 /* every 10 s, with the flush statistics */
 static void
 fast_log(void)
@@ -1336,6 +1392,24 @@ fast_log(void)
 	    fst.kind[FPK_ATINT], fst.kind[FPK_OPAQUE], fst.kind[FPK_ALPHA], fs_ms(fst.eligible_abs), fs_ms(fst.fast_abs),
 	    fst.no[NO_KIND], fst.no[NO_MODE], fst.no[NO_STATE], fst.no[NO_BLEND], fst.no[NO_ARRAY], fst.no[NO_SHAPE],
 	    fst.no[NO_TEX], fst.no[NO_FB], fst.no[NO_MAP], fst.ok, fst.bad);
+	sweet_drm_log("sweetgl: fast not, ms: kind %llu mode %llu state %llu blend %llu array %llu shape %llu tex %llu fb %llu "
+	    "map %llu", fs_ms(fst.no_abs[NO_KIND]), fs_ms(fst.no_abs[NO_MODE]), fs_ms(fst.no_abs[NO_STATE]),
+	    fs_ms(fst.no_abs[NO_BLEND]), fs_ms(fst.no_abs[NO_ARRAY]), fs_ms(fst.no_abs[NO_SHAPE]), fs_ms(fst.no_abs[NO_TEX]),
+	    fs_ms(fst.no_abs[NO_FB]), fs_ms(fst.no_abs[NO_MAP]));
+	/* the 6 programs that took the most time; reasons as bits: 1 kind 2 mode 4 state 8 blend 16 array ... */
+	for (int r = 0; r < 6; r++) {
+		int best = 0;
+		for (int p = 1; p < PROG_MAX; p++) {
+			best = fpr[p].abs > fpr[best].abs ? p : best;
+		}
+		if (best == 0 || fpr[best].abs == 0) {
+			break;
+		}
+		sweet_drm_log("sweetgl: fast prog %d kind %d: %llu ms, %u draws, %u qualify, not %#x", best, prog_kind[best],
+		    fs_ms(fpr[best].abs), fpr[best].draws, fpr[best].fast, fpr[best].no);
+		fpr[best].abs = 0;
+	}
+	memset(fpr, 0, sizeof(fpr));
 	memset(&fst, 0, sizeof(fst));
 }
 
@@ -1484,8 +1558,7 @@ sgl_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 		glDrawArrays(mode, first, count);
 	}
 	uint64_t dt = mach_absolute_time() - t0;
-	fst.eligible_abs += fp == 2 ? dt : 0;
-	fst.fast_abs += fp == 1 ? dt : 0;
+	fast_account(prog, fp, dt);
 	if (fast_pend.buf != NULL) {
 		fast_verify();
 	}
@@ -1506,8 +1579,7 @@ sgl_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void
 		glDrawElements(mode, count, type, indices);
 	}
 	uint64_t dt = mach_absolute_time() - t0;
-	fst.eligible_abs += fp == 2 ? dt : 0;
-	fst.fast_abs += fp == 1 ? dt : 0;
+	fast_account(prog, fp, dt);
 	if (fast_pend.buf != NULL) {
 		fast_verify();
 	}
