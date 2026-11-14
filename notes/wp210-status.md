@@ -1,4 +1,4 @@
-# WP210 iOS port: status notes (updated 2026-11-14 19:35)
+# WP210 iOS port: status notes (updated 2026-11-14 20:00)
 
 Working notes so the state survives session resets. Times are local
 (Asia/Jerusalem) unless stated. The newest state is at the top; the older
@@ -61,6 +61,7 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | 14f179d | fast-path diagnostics: time per reject reason, top 6 programs, reject details (logging only) | 16275200 | `b1059f33…` | yes, then replaced |
 | eed85c5 | half-float colours (fill, tint, alpha-tint), straight and mixed alpha blending, fast rows (memcpy for 1:1 copies), dispatch_apply over cores, map/pixel timing, program log at link | 16275584 | `141eb8a7…` | yes, then replaced |
 | 57394b7, e0ea1da | copy+noise and tint+noise kinds, atop blend, whole-pixel edges, clamped blends; SGLFAST=1 self-checks first | 16275808 | `f2f7b4b4…` | **yes, current** (19:46) |
+| a09c1a7 | softpipe's column coverage rule instead of whole-pixel edges | | | pushed, to build |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -268,6 +269,14 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## e0ea1da run (log a685589a, `SGLFAST=1` self-checking, 19:46)
+
+- **Self-check:** 365 draws checked, none differed.
+- **The whole-pixel edge rule was far too strict:** 81 s of draws rejected as shape. These were scaled and moving layers with edges like x 2.11-831.44.
+  - Copies qualified for only 2942 of 6667 draws; the noise copy (program 9, classified correctly as kind 7) and atop qualified for 0.
+  - Test window: 1.35 frames/s, slow frames 4.0 s on average, worst 7.3 s. This is not comparable with 4b54b84f because of the rejects.
+- **Cause and fix (a09c1a7):** softpipe (`sp_setup.c`, half-pixel centres) covers rows from `ceil(y - 0.5)` but columns from `(int)(x + 0.5)`, each up to the far edge's value, exclusive. That differs from `ceil(x - 0.5)` only when an edge is exactly on a half pixel, which was the sliver (right edge 739.5). The fast path now uses softpipe's column rule, without the whole-pixel restriction.
 
 ## Speed run (log 4b54b84f, eed85c5, `SGLFAST=1`, about 19:05): first real gain
 
