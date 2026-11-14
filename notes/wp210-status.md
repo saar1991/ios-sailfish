@@ -63,7 +63,7 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | 57394b7, e0ea1da | copy+noise and tint+noise kinds, atop blend, whole-pixel edges, clamped blends; SGLFAST=1 self-checks first | 16275808 | `f2f7b4b4…` | yes, then replaced |
 | a09c1a7 | softpipe's column coverage rule instead of whole-pixel edges | 16275792 | `b8bf661b…` | yes, then replaced |
 | 27eb0f3 | turned textures (u along y), shape reject reasons | 16275872 | `da8d58c3…` | **yes, current** (about 20:30) |
-| (next) | map failure reasons; RGBA copy for sources in other formats | | | pushed, to build |
+| 92e026d | map failure reasons; RGBA copy for sources in other formats | 16275936 | `577d72ae…` | script sent (`OLD=da8d58c3…`) |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
