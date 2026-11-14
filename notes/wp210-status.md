@@ -60,7 +60,7 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | bb529ae | forward declaration of `fast_shader`; stripped build | 16274576 | `f7c8d02b…` | yes, then replaced |
 | 14f179d | fast-path diagnostics: time per reject reason, top 6 programs, reject details (logging only) | 16275200 | `b1059f33…` | yes, then replaced |
 | eed85c5 | half-float colours (fill, tint, alpha-tint), straight and mixed alpha blending, fast rows (memcpy for 1:1 copies), dispatch_apply over cores, map/pixel timing, program log at link | 16275584 | `141eb8a7…` | **yes, current** (18:23) |
-| (next) | copy+noise and tint+noise kinds, atop blend, whole-pixel edges, clamped blends | | | pushed, to build |
+| 57394b7, e0ea1da | copy+noise and tint+noise kinds, atop blend, whole-pixel edges, clamped blends; SGLFAST=1 self-checks first | | | pushed, to build (e0ea1da) |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -339,7 +339,7 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
 - **No bypassing the metadata check:** its hashes are refreshed only after the changed blocks are identified (and node 19204 is confirmed unchanged).
 - **Keep backups** until a new install is verified working.
 - **Commit after cause:** shim behaviour changes only once a cause is known. The fast path is behind `SGLFAST`, and the default is count-only.
-- **Verify before speed:** every new fast-path case runs in verify mode (`SGLFAST=2`) before `SGLFAST=1`.
+- **Verify before speed:** from e0ea1da, `SGLFAST=1` checks the first 60 draws of each kind and blend against softpipe before drawing them itself, and hands back any kind and blend that differs. One fast1 boot gives both the check and the speed numbers; `SGLFAST=2` (verify only) is no longer needed.
 
 ## Files in this branch
 
