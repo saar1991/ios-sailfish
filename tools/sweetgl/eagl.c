@@ -947,16 +947,19 @@ fast_shader(GLuint shader, const char *src)
 		shader_kind[shader] = FAST_VS;
 		return;
 	}
-	const char *m = strstr(src, "void main(void)");
+	/* main's body, whatever its parameter list ("(void)" or "()") */
+	const char *m = strstr(src, "void main");
+	m = m != NULL ? strchr(m, ')') : NULL;
 	if (m == NULL) {
 		return;
 	}
-	size_t n = 0, cap = strlen(m + 15) + 1;
+	m++;
+	size_t n = 0, cap = strlen(m) + 1;
 	char *b = malloc(cap);
 	if (b == NULL) {
 		return;
 	}
-	for (const char *q = m + 15; *q != 0; q++) {
+	for (const char *q = m; *q != 0; q++) {
 		if (*q != ' ' && *q != '\n' && *q != '\t' && *q != '\r') {
 			b[n++] = *q;
 		}
@@ -1007,6 +1010,15 @@ fast_shader(GLuint shader, const char *src)
 	}
 	if (shader_kind[shader] == 0) {
 		shader_clamp[shader] = 0;
+		/* the next kinds to add (blurs, circle masks): their whole source, helper functions included */
+		static int unknown_left = 48, pieces_left = 400;
+		if (!dump_shaders && unknown_left > 0 && pieces_left > 0 && strstr(src, "gl_FragData") != NULL) {
+			unknown_left--;
+			sweet_drm_log("sweetgl: unknown fs %u source (%zu bytes):", shader, strlen(src));
+			for (size_t i = 0, l = strlen(src); i < l && pieces_left > 0; i += 400, pieces_left--) {
+				sweet_drm_log("sweetgl:   | %.400s", src + i);
+			}
+		}
 	}
 	free(shader_body[shader]);
 	shader_body[shader] = b;
@@ -1948,6 +1960,26 @@ fs_draw(uint64_t dt, GLsizei count)
 	GLint prog = 0, att = 0;
 	int i;
 	glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
+	/* any single draw of 300 ms or more, whichever frame it is in */
+	static int big_left = 60;
+	if (big_left > 0 && fs_ms(dt) >= 300) {
+		GLint vp[4], sc[4] = {-1, -1, -1, -1}, fba = 0;
+		big_left--;
+		glGetIntegerv(GL_VIEWPORT, vp);
+		if (glIsEnabled(GL_SCISSOR_TEST)) {
+			glGetIntegerv(GL_SCISSOR_BOX, sc);
+		}
+		if (fs_cur_fb != 0) {
+			glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+			    GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &fba);
+		}
+		GLuint t0 = unit_held[0], t1 = unit_held[1];
+		sweet_drm_log("sweetgl: big draw %llu ms prog %d fb %u %ux%u vp %d,%d %dx%d sc %d,%d %dx%d n %d tex0 %u %ux%u "
+		    "tex1 %u %ux%u", fs_ms(dt), prog, fs_cur_fb, fba > 0 && fba < TEXSZ_MAX ? tex_w[fba] : 0,
+		    fba > 0 && fba < TEXSZ_MAX ? tex_h[fba] : 0, vp[0], vp[1], vp[2], vp[3], sc[0], sc[1], sc[2], sc[3],
+		    count, t0, t0 < TEXSZ_MAX ? tex_w[t0] : 0, t0 < TEXSZ_MAX ? tex_h[t0] : 0, t1,
+		    t1 < TEXSZ_MAX ? tex_w[t1] : 0, t1 < TEXSZ_MAX ? tex_h[t1] : 0);
+	}
 	if (fs_detailed < 4 && fs_nrec < FS_DRAWS) {
 		struct fs_rec *r = &fs_rec[fs_nrec++];
 		r->prog = prog;
