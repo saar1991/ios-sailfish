@@ -972,7 +972,7 @@ fbfetch_bind(GLint prog)
 	_mesa_TextureBarrierNV();
 	/* SWEETGL_TRACE: the first draws of each fbfetch program, wherever they happen */
 	static uint8_t traced[PROG_MAX];
-	if (trace_left > 0 && traced[prog] < 12) {
+	if (trace_left > 0 && traced[prog] < 200) {
 		traced[prog]++;
 		TRACE("fbfetch draw %d of prog %d: fb %d texture %d %dx%d", traced[prog], prog, fb, att, w, h);
 		trace_draw_state(prog, 0, 0);
