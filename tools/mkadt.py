@@ -2,7 +2,7 @@
 """Build the minimal Apple Device Tree that the SWEET xnu needs to boot.
 
 Only what the early boot path actually reads (see NOTES.md); every MMIO
-address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--pixel1] [--wp210]
+address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--pixel1] [--wp210 [--bigfirst]]
 --pixel1: Google Pixel 1 (sailfish, MSM8996) presented as an iPhone 8 instead.
 --wp210:  Oukitel WP210 Pro (MT6895 / Dimensity 8200) presented as an iPhone 8.
 """
@@ -227,14 +227,19 @@ def build(seed=None, qemu=False, highmem=False, pixel1=False, wp210=False):
             ('fixed-frequency', u32(timebase)),
         ]))
     # WP210: A55 + A78 (same ISA, ARMv8.2) presented as one SMP cluster as well.
-    for core, (mpidr, cluster, hz) in enumerate(WP210['cpus'] if wp210 else []):
+    # --bigfirst: list the boot A55 first, then the four A78s, then the other
+    # A55s. XNU numbers CPUs in DT order and cpus=N keeps the first N, so
+    # cpus=5 runs the boot core plus all four A78s (the A55s are much slower).
+    order = [0, 4, 5, 6, 7, 1, 2, 3] if wp210 and '--bigfirst' in sys.argv else list(range(8))
+    for core, idx in enumerate(order if wp210 else []):
+        mpidr, cluster, hz = WP210['cpus'][idx]
         cpu_nodes.append(node(f'cpu{core}', [
             ph(),
             ('device_type', cstr('cpu')),
             # 'qcom,kryo' is what the kernel's SweetCPU personality matches
             # (IONameMatch); without an IOCPU for the boot core, boot stalls
             # after the IOKit drivers start.
-            ('compatible', cstr('arm,cortex-a78' if core >= 4 else 'arm,cortex-a55') + cstr('qcom,kryo') + cstr('ARM,v8')),
+            ('compatible', cstr('arm,cortex-a78' if idx >= 4 else 'arm,cortex-a55') + cstr('qcom,kryo') + cstr('ARM,v8')),
             ('reg', u32(mpidr)),
             ('cpu-id', u32(core)),
             ('cluster-id', u32(0)),
@@ -243,7 +248,7 @@ def build(seed=None, qemu=False, highmem=False, pixel1=False, wp210=False):
             ('cluster-core-id', u32(core)),
             ('l2-cache-id', u32(core)),  # private L2 per core (DynamIQ)
             ('l3-cache-id', u32(0)),     # shared L3
-            ('state', cstr('running' if core == 0 else 'stopped')),
+            ('state', cstr('running' if idx == 0 else 'stopped')),
             ('timebase-frequency', u32(timebase)),
             ('clock-frequency', u32(hz)),
             ('bus-frequency', u32(100000000)),
