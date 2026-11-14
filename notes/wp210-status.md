@@ -1,4 +1,4 @@
-# WP210 iOS port: status notes (updated 2026-11-14 18:25)
+# WP210 iOS port: status notes (updated 2026-11-14 18:40)
 
 Working notes so the state survives session resets. Times are local
 (Asia/Jerusalem) unless stated. The newest state is at the top; the older
@@ -267,6 +267,28 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## Verify run (log d6cfddf3, eed85c5, `SGLFAST=2`, 18:23)
+
+- **Verification:** 383 draws match and 4 do not. All 4 are the same draw: alpha-tint, premultiplied blend, rect x 737-739, y 15-24, a 2-pixel sliver.
+  - softpipe colours the column just past the right edge (x 739) and the fast path doesn't
+  - so the two use different coverage rules for **non-integer rectangle edges**
+  - fix: fast-path only rects with integer edges
+- **Qualifying:** 20137 of 46873 draws (43%, was 27%): fill 6248, copy 10640, tint 2067, alpha-tint 277, alpha 903, opaque 2. They took 84.1 s of softpipe time; draws rejected as kind took 104.7 s.
+- **No straight or mixed blends seen.** Program 15's blend is **DST_ALPHA / ONE_MINUS_SRC_ALPHA** (`0x304` = GL_DST_ALPHA): source atop destination. Earlier notes misread it as SRC_ALPHA.
+- **Time by program:**
+
+  | Program | Shader | Share | Qualifying draws |
+  |---|---|---|---|
+  | 5 | copy | 27% | 10638 / 10728 |
+  | 9 | copy + noise | 18% | 0 |
+  | 13 | `color*s0*s1.a`: a second texture's alpha as a mask, 8-9 rects a draw | 13% | 0 |
+  | 3 | fill | 12% | 6247 / 6413 |
+  | 7 | tint | 8% | 2015 / 2026 |
+  | 15 | opaque copy, atop | 5% | 0 |
+
+  Then a few huge draws: program 45 (no recognised shaders, 2 draws, 5.7 s), 19 (darken over backdrop), 39 (clamped copy + noise) and 51 (colour matrix over backdrop).
+- **Program list** (`fast link` lines): the noise variants (copy, tint, clamped copy, mask), the backdrop blends (darken, plus-darker `R=S+D...`, mix, luminance curve, colour matrix, vibrantDark), `supercircleImage` and `circleImage` shapes, and `sgl_vcm`, `sgl_nop` and `sgl_vblur`.
 
 ## Control Center rendering (video 17:38, seen in every run)
 
