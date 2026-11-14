@@ -1284,23 +1284,20 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	if (textured && (ua == -12345.0f || ub == -12345.0f || va == -12345.0f || vb == -12345.0f)) {
 		return fast_no(NO_SHAPE);
 	}
-	/*
-	 * Whole-pixel edges only: with an edge between pixel centres softpipe's
-	 * coverage rule differs from ours (verify: a 2-pixel sliver at x 737.x
-	 * got one more column from softpipe).
-	 */
-	if (fabsf(xa - rintf(xa)) > 1.0f / 64 || fabsf(xb - rintf(xb)) > 1.0f / 64 || fabsf(ya - rintf(ya)) > 1.0f / 64 ||
-	    fabsf(yb - rintf(yb)) > 1.0f / 64) {
-		FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: edges x %.4f-%.4f y %.4f-%.4f", prog, kind, xa, xb, ya, yb);
-		return fast_no(NO_SHAPE);
-	}
 	struct fp_job j = {.kind = kind, .blend = blend, .xa = xa, .xb = xb, .ya = ya, .yb = yb,
 		.ua = ua, .ub = ub, .va = va, .vb = vb};
 	for (int k = 0; k < 4; k++) {
 		float c = col0[k] < 0.0f ? 0.0f : col0[k] > 1.0f ? 1.0f : col0[k];
 		j.color[k] = (uint8_t)(c * 255.0f + 0.5f);
 	}
-	j.x0 = (int)ceilf(xa - 0.5f), j.x1 = (int)ceilf(xb - 0.5f);
+	/*
+	 * softpipe's coverage (sp_setup.c, half-pixel centres): rows from
+	 * ceil(y - 0.5), columns from (int)(x + 0.5), each up to the far edge's
+	 * value, exclusive. They differ from ceil(x - 0.5) when an edge sits
+	 * exactly on a half pixel (scaled layers): verify caught a sliver ending
+	 * at x 739.5 where softpipe drew column 739.
+	 */
+	j.x0 = (int)floorf(xa + 0.5f), j.x1 = (int)floorf(xb + 0.5f);
 	j.y0 = (int)ceilf(ya - 0.5f), j.y1 = (int)ceilf(yb - 0.5f);
 	j.x0 = j.x0 > vp[0] ? j.x0 : vp[0], j.x1 = j.x1 < vp[0] + vp[2] ? j.x1 : vp[0] + vp[2];
 	j.y0 = j.y0 > vp[1] ? j.y0 : vp[1], j.y1 = j.y1 < vp[1] + vp[3] ? j.y1 : vp[1] + vp[3];
