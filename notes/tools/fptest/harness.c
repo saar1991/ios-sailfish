@@ -1,0 +1,103 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include "fastpath.h"
+/* stubs for the Mesa side of fastpath.c */
+struct gl_context; struct gl_texture_object;
+struct gl_context *_mesa_get_current_context(void) { return NULL; }
+struct gl_texture_object *_mesa_lookup_texture(struct gl_context *c, unsigned id) { (void)c; (void)id; return NULL; }
+typedef struct dispatch_queue_s *dispatch_queue_t;
+dispatch_queue_t dispatch_get_global_queue(long a, unsigned long b) { (void)a; (void)b; return NULL; }
+void dispatch_apply_f(size_t n, dispatch_queue_t q, void *ctx, void (*work)(void *, size_t)) {
+	(void)q; /* reverse order: catches dependencies between chunks */
+	for (size_t i = n; i-- > 0;) work(ctx, i);
+}
+/* the old loop, renamed (static helpers in their own namespace) */
+#define px_rgba old_px_rgba
+#define bpp old_bpp
+#define texel old_texel
+#define mul8 old_mul8
+static inline void old_px_rgba(const uint8_t *p, int fmt, uint8_t c[4]);
+#include "old_loop.inc"
+#undef px_rgba
+#undef bpp
+#undef texel
+#undef mul8
+static uint32_t rs = 12345;
+static uint32_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 17; rs ^= rs << 5; return rs; }
+static void fill_img(struct fp_img *m, int w, int h, int fmt) {
+	m->w = w; m->h = h; m->fmt = fmt; m->stride = w * (fmt == FP_A8 ? 1 : 4) + 4 * (int)(rnd() % 3);
+	m->ptr = malloc((size_t)m->stride * h);
+	for (int i = 0; i < m->stride * h; i++) m->ptr[i] = (uint8_t)rnd();
+	/* premultiplied-looking pixels half the time */
+	if (fmt != FP_A8 && rnd() % 2) for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+		uint8_t *p = m->ptr + y * m->stride + 4 * x; int a = rnd() % 4 == 0 ? 255 : rnd() % 4 == 0 ? 0 : p[3];
+		p[3] = (uint8_t)a; for (int k = 0; k < 3; k++) p[k] = (uint8_t)(p[k] * a / 255); }
+}
+static void read_rgba(const struct fp_img *m, int x, int y, uint8_t c[4]) { fp_read_rgba(m, x, y, c); }
+int main(void) {
+	int fails = 0, cases = 0, fast_rows = 0; long maxd_new = 0;
+	const int fmts[4] = {FP_BGRA, FP_RGBA, FP_BGRX, FP_RGBX};
+	for (int it = 0; it < 6000; it++) {
+		struct fp_img src = {0}, d1 = {0}, d2 = {0};
+		int sw = 1 + rnd() % 90, sh = 1 + rnd() % 90, dw = 1 + rnd() % 100, dh = 1 + rnd() % 100;
+		int sfmt = rnd() % 6 == 0 ? FP_A8 : fmts[rnd() % 4], dfmt = fmts[rnd() % 4];
+		if (rnd() % 3 == 0) sfmt = dfmt;
+		fill_img(&src, sw, sh, sfmt); fill_img(&d1, dw, dh, dfmt);
+		d2 = d1; d2.ptr = malloc((size_t)d1.stride * dh); memcpy(d2.ptr, d1.ptr, (size_t)d1.stride * dh);
+		struct fp_job j = {0};
+		j.kind = 1 + (int)(rnd() % 6); j.linear = (int)(rnd() % 2);
+		int blendm = (int)(rnd() % 4); j.blend = blendm;
+		for (int k = 0; k < 4; k++) j.color[k] = (uint8_t)rnd();
+		int x0 = (int)(rnd() % dw), y0 = (int)(rnd() % dh), x1 = x0 + 1 + (int)(rnd() % (dw - x0)), y1 = y0 + 1 + (int)(rnd() % (dh - y0));
+		j.x0 = x0; j.y0 = y0; j.x1 = x1; j.y1 = y1;
+		j.xa = (float)x0; j.xb = (float)x1; j.ya = (float)y0; j.yb = (float)y1;
+		if (rnd() % 2) { /* 1:1 aligned: texel = pixel + offset */
+			int ox = (int)(rnd() % (sw)), oy = (int)(rnd() % (sh));
+			j.ua = (float)ox / sw; j.ub = (float)(ox + (x1 - x0)) / sw; j.va = (float)oy / sh; j.vb = (float)(oy + (y1 - y0)) / sh;
+		} else {
+			j.ua = (float)(rnd() % 1000) / 1000.f; j.ub = (float)(rnd() % 1000) / 1000.f; j.va = (float)(rnd() % 1000) / 1000.f; j.vb = (float)(rnd() % 1000) / 1000.f;
+		}
+		const struct fp_img *sp = j.kind == FPK_FILL ? NULL : &src;
+		int w = x1 - x0, h = y1 - y0;
+		uint8_t *o1 = NULL, *o2 = NULL; int use_out = rnd() % 4 == 0;
+		if (use_out) { o1 = calloc((size_t)w * h, 4); o2 = calloc((size_t)w * h, 4); }
+		cases++;
+		if (blendm <= 1) {
+			old_fp_run(&j, &d1, sp, o1, w * 4);
+			fp_threads = (int)(rnd() % 2);
+			fp_run(&j, &d2, sp, o2, w * 4);
+			int bad = use_out ? memcmp(o1, o2, (size_t)w * h * 4) != 0 : memcmp(d1.ptr, d2.ptr, (size_t)d1.stride * dh) != 0;
+			if (bad && fails++ < 10) printf("MISMATCH it %d kind %d blend %d sfmt %d dfmt %d out %d linear %d rect %d,%d-%d,%d\n", it, j.kind, j.blend, sfmt, dfmt, use_out, j.linear, x0, y0, x1, y1);
+		} else {
+			/* reference: old loop for the shader output (no blend) into an RGBA buffer, then float blend */
+			struct fp_job js = j; js.blend = 0;
+			uint8_t *sh_out = calloc((size_t)w * h, 4);
+			struct fp_img dr = d1; dr.fmt = FP_RGBA;   /* shader output without the X-format alpha */
+			old_fp_run(&js, &dr, sp, sh_out, w * 4);
+			fp_threads = (int)(rnd() % 2);
+			fp_run(&j, &d2, sp, o2, w * 4);
+			for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+				uint8_t s[4], dc[4], got[4]; memcpy(s, sh_out + (y * w + x) * 4, 4);
+				read_rgba(&d1, x0 + x, y0 + y, dc);
+				if (use_out) memcpy(got, o2 + (y * w + x) * 4, 4); else read_rgba(&d2, x0 + x, y0 + y, got);
+				float sa = s[3] / 255.f;
+				for (int k = 0; k < 4; k++) {
+					float sf = s[k] / 255.f, df = dc[k] / 255.f, r;
+					if (k < 3 || blendm == FPB_STRAIGHT) r = sf * sa + df * (1 - sa); else r = sf + df * (1 - sa);
+					if (r > 1) r = 1;
+					int want = (int)(r * 255.f + 0.5f);
+					if ((dfmt == FP_BGRX || dfmt == FP_RGBX) && k == 3) want = 255;
+					long dd = labs((long)want - got[k]); if (dd > maxd_new) maxd_new = dd;
+					if (dd > 1 && fails++ < 4) printf("BLEND %d sfmt %d dfmt %d out %d kind %d lin %d rect %d,%d-%d,%d it %d k %d want %d got %d (s %d,%d,%d,%d d %d,%d,%d,%d)\n", blendm, sfmt, dfmt, use_out, j.kind, j.linear, x0,y0,x1,y1, it, k, want, got[k], s[0],s[1],s[2],s[3],dc[0],dc[1],dc[2],dc[3]);
+				}
+			}
+			free(sh_out);
+		}
+		free(src.ptr); free(d1.ptr); free(d2.ptr); free(o1); free(o2);
+	}
+	(void)fast_rows;
+	printf("cases %d fails %d max blend diff %ld\n", cases, fails, maxd_new);
+	return fails != 0;
+}

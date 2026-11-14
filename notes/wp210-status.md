@@ -54,6 +54,7 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | e98dfef | CPU fast paths (`SGLFAST`), stripped build | - | - | CI failed: implicit declaration of `fast_shader` |
 | bb529ae | forward declaration of `fast_shader`; stripped build | 16274576 | `f7c8d02b…` | yes, then replaced |
 | 14f179d | fast-path diagnostics: time per reject reason, top 6 programs, reject details (logging only) | 16275200 | `b1059f33…` | **yes, current** (17:48) |
+| eed85c5 | half-float colours (fill, tint, alpha-tint), straight and mixed alpha blending, fast rows (memcpy for 1:1 copies), dispatch_apply over cores, map/pixel timing, program log at link | | | pushed, to build |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -213,6 +214,32 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
 - **Steps (first-frame ms)** vary a lot from run to run and are not clearly better.
 - **Next:** the 14f179d run (booted 17:50) shows time per reject reason and per program, and why fill and tint are rejected.
 
+## Diagnostics run (log 22868134, 14f179d, `SGLFAST=1`, 17:50)
+
+- **Why fill, tint and alpha-tint never qualified:** CA's colour attribute is **GL_HALF_FLOAT** (`0x140b`), 4 components with a 48-byte stride, and the fast path accepted only float and byte arrays.
+- **Reject time by reason:** kind 97.7 s, array 28.7 s, blend 13.5 s, mode 1.0 s, tex 0.14 s.
+- **Blend rejects:** program 15 (opaque copy) blends SRC_ALPHA / ONE_MINUS_SRC_ALPHA for both colour and alpha.
+- **Mode rejects:** draws of 4 or 8 rectangles (24 or 48 indices).
+- **Tex rejects:** an ALPHA-kind texture with the A,B,G,R swizzle.
+- **CPU path:** 30.5 s for 8287 draws. Program 5 (copy) now qualifies 7474 of its 7641 draws but still takes 21% of all time, so the loop needed to get faster.
+- **Most expensive programs** (share of time in the top-6 lists):
+  - program 9 (darken with backdrop read plus noise, about 640 ms a full-screen draw): 23%
+  - program 5: 21%
+  - program 3 (fill): 12%
+  - program 13 (kind 0, 8-rectangle draws): 10%
+  - program 15: 9%
+  - program 7 (tint): 6%
+  - programs 47, 39, 51 and 19: about 15% together, in very few draws (program 47: 8.6 s in 2 draws), probably blurs
+- **Program numbers change between boots** (alpha copy is 23 here, 13 in the shader-dump boot), so eed85c5 logs each program's shader at link.
+- **Fixes in eed85c5 (host-tested):**
+  - half-float attributes
+  - straight and mixed blending
+  - memcpy rows for 1:1 copies (15.7 to 0.4 ms for a full screen on one host core)
+  - single-texel reads when there is no filtering
+  - dispatch_apply over cores
+  - verify budget of 60 per kind and blend
+  - map vs pixel-loop timing
+
 ## Control Center rendering (video 17:38, seen in every run)
 
 - **What happens:** Control Center opens about 12 s after the swipe-up. Its background is missing, normally an opaque dark or blurred layer (Reduce Transparency is on). The home screen shows through, undimmed and unblurred, and the modules look translucent over the icons.
@@ -233,7 +260,11 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
      - if it shows `da79097d…`: run `--check` and the read-only metadata check, refresh the hashes, then `--install` until `INSTALL VERIFIED`
 3. **Verify run: done, clean** (see above).
 3a. **Speed run with bb529ae:** a boot image from `args-fast1.txt`; no install needed. Also watch the screen for corruption: the CPU path now writes its own pixels, which verify mode never did.
-3b. **Diagnostic build 14f179d:** CI, then install. It tells why fill and tint are rejected and where the remaining time goes. Check the qualifying counts, the reasons draws don't qualify, and whether there are any `fastverify` mismatches.
+3b. **Diagnostic build 14f179d:** done (log 22868134, see above).
+3c. **eed85c5:**
+   - CI and install (`OLD=b1059f33…`)
+   - verify run with the fast2 image (`SGLFAST=2`, already built)
+   - if clean, speed run with the fast1 image Check the qualifying counts, the reasons draws don't qualify, and whether there are any `fastverify` mismatches.
 4. **Speed run.** Only if the verify run is clean, boot with `args-fast1.txt` and compare the `slow frame` and `WP210 AUTO` numbers with cbf8881a.
 5. **Later:**
    - run the fast path on several A78 cores
