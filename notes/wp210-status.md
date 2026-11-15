@@ -74,8 +74,8 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | d8a55df | CA's blur passes; per-kind detail budget, mesh lines for pairing failures | 16310032 | `e0f2c5c9…` | yes (about 08:25) |
 | 0e13161 | self-check: 3 draws covering 1M pixels is enough; nine-slices checked as a whole; CPU time by kind | 16310160 | `f9d8ab6d…` | yes (about 08:55) |
 | 47ab084 | threads from 4096 pixels; draw time by CPU | 16310432 | `a313176c…` | yes (about 09:16) |
-| e38a725 | spot checks the whole run (1 in 50 draws, 1 in 400 over 256K px); program in mismatch lines | 16310544 | `6eda66af…` | **yes, current** (about 10:40) |
-| 2e46631 | IOSurfaces written into immutable (glTexStorage) textures instead of failing with 0x502 | 16310592 | `4d5a9d63…` | script sent (11:10) |
+| e38a725 | spot checks the whole run (1 in 50 draws, 1 in 400 over 256K px); program in mismatch lines | 16310544 | `6eda66af…` | yes (about 10:40) |
+| 2e46631 | IOSurfaces written into immutable (glTexStorage) textures instead of failing with 0x502 | 16310592 | `4d5a9d63…` | **yes, current** (about 11:12) |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -283,6 +283,16 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## 2e46631 run (log 89095bc7, about 11:13): the 0x502 errors are gone
+
+- **No 0x502 at all:** no `EGLImageTargetTexture2D error 0x502` and no `copy error 0x502` in the whole log, at boot included (there were 6-20 per run before). Also not a single `texture N immutable` line.
+  - So the textures were not immutable: the errors were **stale**. glGetError returns the first error recorded since the last call, and CA's own earlier GL calls had left one pending. The shim read it after its upload and took a good bind for a failure.
+  - The fix works because it calls glGetError right before the upload, which clears the stale error. To do properly: clear the pending error before each upload (it does now), and log what was pending, to find the CA call that raises it.
+- **Video** (WhatsApp 11:14): the weather widget stays "No weather data" on the Today view the whole time.
+  - A scan for one-frame dark bands (15 fps, rows suddenly dark against the frames on either side) finds nothing but an app-launch zoom. The same scan on the previous video finds its glitches (1:49, 2:34, and 2:27, 3:01, 3:06).
+  - The News app did not open this run (the script's path differed), so its launch is not retested directly.
+- **Run:** 28/30 steps drew a frame. Swipe rate etc. as before.
 
 ## e38a725 run (log aba34a49, a55-step kernel, about 10:45): spot checks and video
 
