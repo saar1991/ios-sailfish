@@ -42,7 +42,7 @@ notes are kept under "History" at the end.
 | `main` | 1465988 | BGRA upload for format-0 4bpp IOSurfaces (the copy-error fix) |
 | `sweetgl-diag-0x502` | eed85c5 | shim work on top of 1465988 (table below) |
 | `wp210-auto-input` | 6c51db1 | kernel patches 0204-0207, `mkadt.py --bigfirst` |
-| `wp210-a55-step` | a8e9079 | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines); 0211: frames started on the panel's TE when found (`SWEET TE:`), wallpaper image bytes logged (`SWEET PIX:`); 0212: large images sampled once a second while booting; 0213: their bytes at lookup and free; 0214: wallpaper file opens (`SWEET OPEN:`) |
+| `wp210-a55-step` | c8a78bf | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines); 0211: frames started on the panel's TE when found (`SWEET TE:`), wallpaper image bytes logged (`SWEET PIX:`); 0212: large images sampled once a second while booting; 0213: their bytes at lookup and free; 0214: wallpaper file opens (`SWEET OPEN:`); 0215: without poster descriptors |
 | `wp210-status-notes` | this file | notes, install scripts, tools, boot-args |
 
 ## Shim builds (sweetgl-diag-0x502)
@@ -283,6 +283,12 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## Kernel 0214 run (log 6c8df7e3): open log used up by poster descriptors
+
+- PosterBoard rewrites every poster descriptor in `PRBPosterExtensionDataStore/59` at each boot (Emoji 140, Gradient 120, Aegir 20 opens), which used the 300-line budget before the magenta frame; long paths were cut by the log's line limit.
+- Seen otherwise: SpringBoard reads widget snapshots (`Caches/com.apple.chrono/snapshot-cache/…`) and `Caches/MappedImageCache/Persistent/highlight-….cpbitmap`.
+- **Next kernel (c8a78bf, patch 0215):** skip paths with `descriptors/` or `.app/`, print the last 200 characters of the path.
 
 ## Trace run (log b763735b, 0213 kernel + SWEETGL_TRACE=1): the magenta is a cached snapshot picture
 
