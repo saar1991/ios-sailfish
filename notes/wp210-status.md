@@ -42,7 +42,7 @@ notes are kept under "History" at the end.
 | `main` | 1465988 | BGRA upload for format-0 4bpp IOSurfaces (the copy-error fix) |
 | `sweetgl-diag-0x502` | eed85c5 | shim work on top of 1465988 (table below) |
 | `wp210-auto-input` | 6c51db1 | kernel patches 0204-0207, `mkadt.py --bigfirst` |
-| `wp210-a55-step` | cbb5e10 | 0208: wp210cpumhz steps away from an index a domain already holds (A55 clock); ran, A55s unchanged at 999 MHz |
+| `wp210-a55-step` | f007825 | 0208: wp210cpumhz steps away from an index a domain already holds (ran, A55s unchanged at 999 MHz); 0209: every CPU's MHz once a second for the first 150 s (`SWEET MHZ:` lines) |
 | `wp210-status-notes` | this file | notes, install scripts, tools, boot-args |
 
 ## Shim builds (sweetgl-diag-0x502)
