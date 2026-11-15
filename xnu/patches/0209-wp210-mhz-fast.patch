@@ -1,6 +1,6 @@
 --- a/bsd/dev/sweet_perf.c
 +++ b/bsd/dev/sweet_perf.c
-@@ -677,6 +677,48 @@
+@@ -677,6 +677,83 @@
  }
  
  #define PERF_SAFE_CPUS 8
@@ -16,7 +16,7 @@
 +static void
 +wp210_mhz_fast(void *arg, wait_result_t result)
 +{
-+	int ncpu = (int)ml_get_cpu_count();
++	int ncpu = (int)ml_get_cpu_count(), tries[3] = {0, 0, 0};
 +	(void)arg;
 +	(void)result;
 +	if (ncpu > PERF_SAFE_CPUS) {
@@ -28,10 +28,16 @@
 +			break;
 +		}
 +		uint64_t mhz[PERF_SAFE_CPUS] = {0};
++		int dom[PERF_SAFE_CPUS];
 +		for (int c = 0; c < ncpu; c++) {
++			uint64_t mpidr;
 +			thread_bind(cpu_to_processor(c));
 +			thread_block(THREAD_CONTINUE_NULL);	/* migrate */
++			__asm__ volatile ("mrs %0, mpidr_el1" : "=r"(mpidr));
 +			mhz[c] = perf_mhz();
++			/* physical core (Aff1): 0-3 A55 domain 0, 4-6 A78 domain 1, 7 domain 2 */
++			unsigned core = (unsigned)((mpidr >> 8) & 0xff);
++			dom[c] = core < 4 ? 0 : core < 7 ? 1 : 2;
 +		}
 +		thread_bind(NULL);
 +		uint32_t st[3] = {0, 0, 0};
@@ -43,13 +49,42 @@
 +		    (unsigned long long)mhz[2], (unsigned long long)mhz[3], (unsigned long long)mhz[4],
 +		    (unsigned long long)mhz[5], (unsigned long long)mhz[6], (unsigned long long)mhz[7],
 +		    st[0], st[1], st[2]);
++		/*
++		 * A domain that reads under 60% of its table clock (the halving)
++		 * while its state still holds the wanted index: request it again,
++		 * by way of the next index, up to 3 times per domain.
++		 */
++		for (int d = 0; d < 3 && wp210_csram != 0; d++) {
++			volatile uint32_t *r = (volatile uint32_t *)(wp210_csram + wp210_cpufreq_dom[d]);
++			if (wp210_want[d] < 0 || tries[d] >= 3) {
++				continue;
++			}
++			uint64_t want = r[wp210_want[d]] & 0xfffu, low = 0;
++			for (int c = 0; c < ncpu; c++) {
++				if (dom[c] == d && mhz[c] != 0 && mhz[c] * 10 < want * 6) {
++					low = mhz[c];
++				}
++			}
++			if (low == 0) {
++				continue;
++			}
++			tries[d]++;
++			r[0x88 / 4] = (uint32_t)(wp210_want[d] > 0 ? wp210_want[d] - 1 : wp210_want[d] + 1);
++			__asm__ volatile ("dsb sy" ::: "memory");
++			delay(2000);
++			r[0x88 / 4] = (uint32_t)wp210_want[d];
++			__asm__ volatile ("dsb sy" ::: "memory");
++			delay(2000);
++			printf("SWEET MHZ: domain %d read %llu MHz of %llu: index requested again (try %d), state %u hw %#x\n",
++			    d, (unsigned long long)low, (unsigned long long)want, tries[d], r[0x88 / 4], r[0x8c / 4]);
++		}
 +		perf_wait(1);
 +	}
 +}
  
  static void
  perf_thread_safe(void *arg, wait_result_t result)
-@@ -833,6 +875,10 @@
+@@ -833,6 +910,10 @@
  	if (!enabled) {
  		return;
  	}
