@@ -42,7 +42,7 @@ notes are kept under "History" at the end.
 | `main` | 1465988 | BGRA upload for format-0 4bpp IOSurfaces (the copy-error fix) |
 | `sweetgl-diag-0x502` | eed85c5 | shim work on top of 1465988 (table below) |
 | `wp210-auto-input` | 6c51db1 | kernel patches 0204-0207, `mkadt.py --bigfirst` |
-| `wp210-a55-step` | 56e2dff | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines) |
+| `wp210-a55-step` | e528e6a | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines); 0211: frames started on the panel's TE when found (`SWEET TE:`), wallpaper image bytes logged (`SWEET PIX:`) |
 | `wp210-status-notes` | this file | notes, install scripts, tools, boot-args |
 
 ## Shim builds (sweetgl-diag-0x502)
@@ -283,6 +283,25 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## Kernel 0210 run (log 24b1a1a9, video 16:45): strips unchanged, wallpaper layouts right
+
+- **Domain 0 left alone, domain 1 restored at 41 s** on the first try. The domain-0 lines at 231-241 s in this log are the previous boot's, left in the ring (identical in e13c888d); this boot ends at 211 s.
+- **Thin noise strips: not fixed by 0210.**
+  - Video, all frames, row by row against the neighbours: about 20 strips on the still home screen (35.1, 39.8, 43.8, 48.0, 57.5, 58.0, 59.4, 62.2, 65.3, 67.9, 68.3, 75.8, 77.6, 81.1, 82.0, 88.0, 97.1, 97.3, 100.3, 102.6 s) and some later. About 13 a minute; 15 a minute in the 14:37 video with the same detector.
+  - Each is a full-width band a few pixels high of **coloured noise** (not a shifted picture), in exactly one video frame (1/60 s).
+  - `SWEET PANEL`: 1321 kicks in 210 s, about 8-10 a second on the still screen (backboardd presents about 10 frames/s); the DSI was busy before a START only 23 times.
+  - So garbage written into the panel's memory would last about 100 ms, not one frame. More likely the panel scans rows a transfer is writing at that moment: frames are not started on the panel's TE.
+- **Wallpaper (black 23.6 s, magenta 24.96-26.97 s, blue after, in the video):**
+  - Matches the log: swap 8 shows the home screen, swap 10 the magenta, and frame 8 took 1997 ms before swap 11 (blue; that frame draws the gradient, prog 15 with a 256x1 texture).
+  - The planar layouts are right and as CollectionsPoster asked: 420f 1105x1160, Y bpr 1536 at offset 0, CbCr 553x580 bpr 1536 at 2359296.
+  - backboardd never binds a 420f image. CollectionsPoster makes a BGRA 1105x1160 image after each 420f one; backboardd makes a 32-bit 1105x1160 one (id 64).
+  - In the video's magenta, **red = blue at every spot** (245/245, 244/245, 246/248) and green falls down the screen. A BGRA image read in the wrong byte order cannot do that; Cb,Cr,Cb,Cr bytes shown as B,G,R,A can.
+  - The magenta has fixed dark specks (same places for 2 s): part of the wrongly made image.
+- **Test run itself:** no rendering glitches (no black bars, no blue widget, no frame that differs from both neighbours); the script did not drift to the Today view.
+- **Next kernel (e528e6a, patch 0211):**
+  - panel TE: at 20 s and 60 s log DSI MODE/TXRX/INTEN/INTSTA and count TE_RDY / EXT_TE_RDY (INTSTA bits 2/4) for 100 ms, also with EXT_TE_EN briefly if neither ticks; if one ticks like a refresh, every frame waits for it (at most 20 ms) before START (`sweette=0` turns it off). `SWEET TE:` lines; `SWEET PANEL` adds TE waits.
+  - wallpaper: `SWEET PIX:` 4 bytes at three points of every plane, at the first unlock of each 512x512+ 420f / BGRA / format-0 image, to find which image first holds the wrong bytes.
 
 ## Kernel 6a61c4f run (log e13c888d, about 15:00): the A55 domain does not respond
 
