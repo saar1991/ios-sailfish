@@ -284,6 +284,33 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
 
+## 5-core big-first run (log f7cd692a, about 11:26): faster despite halved clocks
+
+- **Boot:** `mkadt.py --bigfirst` ADT (from wp210-auto-input, identical to wp210.adt apart from the random-seed), `args-big5.txt` (args-fast1 with `cpus=5`, 604 characters), kernel `1b095684…` (a55-step), shim 2e46631. Boot image `wp210-boot-big5.img`.
+  - Logical cpu0 is the boot A55, cpu1-3 the A78s of domain 1, cpu4 the prime A78 (domain 2).
+- **Better on every measure:**
+
+  | Measure | 5 cores | Last 8-core runs |
+  |---|---|---|
+  | Slow frames, mean | **0.70 s** | about 1.0 s |
+  | Slow frames, median | **0.51 s** | 0.64-0.70 s |
+  | Worst frame | 2.4 s | 2.9-3.7 s |
+  | Swap rate | **3.49/s** | 2.9-3.1/s |
+  | Mean first frame | 0.58 s | |
+
+  29/30 steps drew a frame; no draw differed.
+- **Draw time:** 45 s in the test window, about 62 s before.
+  - cpu0 (A55): 5.3 s
+  - cpu1-3: 32.5 s
+  - cpu4: 7.2 s
+- **The clocks halve:**
+  - At boot, cpu0 (A55) read **1998 MHz** and cpu1-3 2349. So the A55s can run at 2 GHz.
+  - From the second 10 s sample on (as userland starts), and for the rest of the run: cpu0 **999**, cpu1-3 **1174** (exactly half), cpu4 2390-2400 (not halved).
+  - The cpufreq state registers do not change (d0 0, d1 6).
+  - In the 8-core runs the A55s (logical 0-3) were already at 999 at the boot probe, and the A78s (logical 4-7) never halved.
+  - So whatever halves the clock hits the CPUs XNU numbers 0-3, whatever their type, outside cpufreq-hw. Possibly a clock divider, or a kernel path tied to the first four CPUs. **Finding it would give back half the speed of logical 0-3.**
+- **launchd (64%) and mediaserverd (56%) still spin;** with 5 cores they take A78 time.
+
 ## 2e46631 run (log 89095bc7, about 11:13): the 0x502 errors are gone
 
 - **No 0x502 at all:** no `EGLImageTargetTexture2D error 0x502` and no `copy error 0x502` in the whole log, at boot included (there were 6-20 per run before). Also not a single `texture N immutable` line.
