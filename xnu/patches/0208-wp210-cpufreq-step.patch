@@ -1,0 +1,21 @@
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -603,6 +603,18 @@
+ 			printf("SWEET CPUFREQ: domain %d: hardware not enabled (hw %#x), unchanged\n", d, r[0x8c / 4]);
+ 			continue;
+ 		}
++		if (r[0x88 / 4] == (uint32_t)best) {
++			/*
++			 * Already the wanted index: the A55 domain reads index 0
++			 * (2000 MHz) as LK left it, yet runs at about 1000 MHz.
++			 * Step to the next index first, so the hardware sees a
++			 * new request.
++			 */
++			r[0x88 / 4] = (uint32_t)(best > 0 ? best - 1 : best + 1);
++			__asm__ volatile ("dsb sy" ::: "memory");
++			delay(2000);
++			printf("SWEET CPUFREQ: domain %d already at index %d: stepped to %u first\n", d, best, r[0x88 / 4]);
++		}
+ 		r[0x88 / 4] = (uint32_t)best;
+ 		wp210_want[d] = best;
+ 		__asm__ volatile ("dsb sy" ::: "memory");
