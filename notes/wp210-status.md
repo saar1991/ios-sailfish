@@ -42,7 +42,7 @@ notes are kept under "History" at the end.
 | `main` | 1465988 | BGRA upload for format-0 4bpp IOSurfaces (the copy-error fix) |
 | `sweetgl-diag-0x502` | eed85c5 | shim work on top of 1465988 (table below) |
 | `wp210-auto-input` | 6c51db1 | kernel patches 0204-0207, `mkadt.py --bigfirst` |
-| `wp210-a55-step` | 4367afb | 0208: wp210cpumhz steps away from an index a domain already holds (ran, A55s unchanged at 999 MHz); 0209: every CPU's MHz once a second for the first 150 s (`SWEET MHZ:` lines), and a domain read under 60% of its table clock is requested again (up to 3 times) |
+| `wp210-a55-step` | 6a61c4f | 0208: wp210cpumhz steps away from an index a domain already holds; 0209: once-a-second clocks for 150 s then every 5 s, and halved domains requested again (domain 0 tries rotate: next index, far index, enable 0x301, enable off/on) |
 | `wp210-status-notes` | this file | notes, install scripts, tools, boot-args |
 
 ## Shim builds (sweetgl-diag-0x502)
@@ -283,6 +283,24 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## Re-request run (log 47c1078b, kernel 4367afb, 5-core big-first, about 12:30): A78s restored
+
+- **At 41 s** the halving came again: cpu0 999, cpu1-3 1174.
+- **Domain 1 (A78s):** one re-request (neighbour index, then the wanted one) brought it back to 2349-2364 MHz, and it held to the end of the run.
+- **Domain 0 (A55):** stayed at 999 through all three tries.
+- **The best run so far:**
+
+  | Measure | This run | Previous 5-core runs |
+  |---|---|---|
+  | Swap rate | **4.51/s** | 3.36-3.49 |
+  | Slow frames, mean | **0.59 s** | 0.70 s |
+  | Slow frames, median | **0.46 s** | 0.51-0.57 s |
+  | Worst frame | 1.4 s | 1.6-2.4 s |
+  | Mean first frame | 0.52 s | |
+
+  29/30 steps drew a frame; no draw differed. Draw time 38.4 s (45 s before).
+- **Next kernel:** keeps re-requesting for the whole run, and tries three more ways for domain 0.
 
 ## Once-a-second clocks (log 189a8195, kernel f007825, 5-core big-first, about 11:55)
 
