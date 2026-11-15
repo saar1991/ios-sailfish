@@ -2871,8 +2871,47 @@ copy_surface(IOSurfaceRef s, GLenum target, GLenum format, GLenum type, size_t w
 	glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
 	GLint ifmt = format == GL_RED ? GL_R8 : format == GL_RG ? GL_RG8 :
 	    type == GL_HALF_FLOAT ? GL_RGBA16F : (GLint)format;
-	glTexImage2D(target, 0, ifmt, (GLsizei)w, (GLsizei)h, 0, format, type, base);
-	GLenum e = glGetError();
+	/*
+	 * A texture CA made with glTexStorage cannot take new storage:
+	 * glTexImage2D and glEGLImageTargetTexture2DOES both fail with 0x502
+	 * (Mesa: "texture is immutable"), and the texture kept what it held
+	 * before (black bars over the News app's text at launch, a Today view
+	 * widget gone plain blue). Write the pixels into its storage instead.
+	 */
+	GLint imm = 0;
+	glGetTexParameteriv(target, GL_TEXTURE_IMMUTABLE_FORMAT, &imm);
+	(void)glGetError();
+	GLenum e;
+	if (imm) {
+		glTexSubImage2D(target, 0, 0, 0, (GLsizei)w, (GLsizei)h, format, type, base);
+		e = glGetError();
+		if (e == GL_INVALID_OPERATION && format == GL_BGRA_EXT && type == GL_UNSIGNED_BYTE) {
+			/* RGBA8 storage takes RGBA only: swap B and R into a packed copy */
+			uint8_t *t = malloc(w * h * 4);
+			if (t != NULL) {
+				for (size_t y = 0; y < h; y++) {
+					const uint8_t *src = (const uint8_t *)base + y * pitch;
+					uint8_t *dst = t + y * w * 4;
+					for (size_t x = 0; x < w; x++, src += 4, dst += 4) {
+						dst[0] = src[2], dst[1] = src[1], dst[2] = src[0], dst[3] = src[3];
+					}
+				}
+				glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+				glTexSubImage2D(target, 0, 0, 0, (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, t);
+				e = glGetError();
+				free(t);
+			}
+		}
+		static int imm_logged;
+		if (imm_logged++ < 40) {
+			sweet_drm_log("sweetgl: %s: surface %u %zux%zu fmt %#x/%#x: texture %u immutable, written in place (%s %#x)",
+			    why, IOSurfaceGetID(s), w, h, format, type, unit_held[active_unit()], e == GL_NO_ERROR ? "ok" : "error",
+			    e);
+		}
+	} else {
+		glTexImage2D(target, 0, ifmt, (GLsizei)w, (GLsizei)h, 0, format, type, base);
+		e = glGetError();
+	}
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, row);
 	glPixelStorei(GL_UNPACK_ALIGNMENT, align);
 	glPixelStorei(GL_UNPACK_SKIP_ROWS, skip_rows);
@@ -2946,7 +2985,11 @@ bind_surface(IOSurfaceRef s, GLenum target, GLenum format, GLenum type, uint32_t
 		img.format = gl_format(format, type, &img.internalformat);
 	}
 	set_swizzle(target, argb);
-	if (!multi && pitch % 64 != 0) {
+	/* immutable storage (glTexStorage) cannot be replaced by the surface's pages: copy into it */
+	GLint imm = 0;
+	glGetTexParameteriv(target, GL_TEXTURE_IMMUTABLE_FORMAT, &imm);
+	(void)glGetError();
+	if (!multi && (pitch % 64 != 0 || imm)) {
 		if (format == 0) {
 			upload_format(fourcc, IOSurfaceGetBytesPerElement(s), &format, &type);
 		}
