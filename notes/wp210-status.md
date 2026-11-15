@@ -42,6 +42,7 @@ notes are kept under "History" at the end.
 | `main` | 1465988 | BGRA upload for format-0 4bpp IOSurfaces (the copy-error fix) |
 | `sweetgl-diag-0x502` | eed85c5 | shim work on top of 1465988 (table below) |
 | `wp210-auto-input` | 6c51db1 | kernel patches 0204-0207, `mkadt.py --bigfirst` |
+| `wp210-a55-step` | cbb5e10 | 0208: wp210cpumhz steps away from an index a domain already holds (A55 clock) |
 | `wp210-status-notes` | this file | notes, install scripts, tools, boot-args |
 
 ## Shim builds (sweetgl-diag-0x502)
@@ -72,7 +73,7 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | 9bfed51 | supercircle / circle shapes, masked supercircle icons, mix over the backdrop; unrecognised vertex shaders logged | 16292992 | `3d2abd4a…` | yes (about 07:52) |
 | d8a55df | CA's blur passes; per-kind detail budget, mesh lines for pairing failures | 16310032 | `e0f2c5c9…` | yes (about 08:25) |
 | 0e13161 | self-check: 3 draws covering 1M pixels is enough; nine-slices checked as a whole; CPU time by kind | 16310160 | `f9d8ab6d…` | yes (about 08:55) |
-| 47ab084 | threads from 4096 pixels; draw time by CPU | 16310432 | `a313176c…` | script sent (09:14) |
+| 47ab084 | threads from 4096 pixels; draw time by CPU | 16310432 | `a313176c…` | **yes, current** (about 09:16) |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -280,6 +281,22 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## 47ab084 run (log 27f57680, `SGLFAST=1`, about 09:18): the A55s
+
+- **Self-check:** no draw differed.
+- **Steps:** 30/30 drew a frame. Median first frame 0.29 s.
+- **Slow frames:** mean 0.94 s, median 0.62 s, worst 3.9 s. The mean and median are the best so far.
+- **Swap rate:** 2.85/s.
+- **Threads from 4096 pixels:** the CPU path went from 20.1 s to 12.7 s per test run.
+  - darken tint: 272 to 58 ns/px
+  - alpha copy: 166 to 76 ns/px
+  - alpha tint: 182 to 69 ns/px
+- **Draw time by CPU** (softpipe and the fast path, test window): **60% on cpu0-3** (the A55s at 999 MHz). The A55s total 37.2 s, the A78s 24.5 s. backboardd's drawing thread spends most of its time on the slow cores, because the ADT presents one SMP cluster.
+- **The A55 clock:** the domain 0 register read index 0 (2000 MHz) before wp210cpumhz wrote it, and enable 0x301. The A78 domains, left at index 19 and 29, moved when written. Writing the index a domain already holds probably does nothing.
+  - **Kernel branch `wp210-a55-step` (cbb5e10, patch 0208):** if a domain already holds the wanted index, write the next index first, wait 2 ms, then the wanted one. It logs `SWEET CPUFREQ: domain N already at index I: stepped to J first`.
+  - Built by the xnu workflow (workflow_dispatch on that branch); boot image as above with `args-fast1.txt`.
+  - If the A55s then read about 2000 MHz, all softpipe and CPU-path time on them should about halve.
 
 ## 0e13161 run (log 0ca183a3, `SGLFAST=1`, about 08:58)
 
