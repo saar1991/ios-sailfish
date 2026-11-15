@@ -42,7 +42,7 @@ notes are kept under "History" at the end.
 | `main` | 1465988 | BGRA upload for format-0 4bpp IOSurfaces (the copy-error fix) |
 | `sweetgl-diag-0x502` | eed85c5 | shim work on top of 1465988 (table below) |
 | `wp210-auto-input` | 6c51db1 | kernel patches 0204-0207, `mkadt.py --bigfirst` |
-| `wp210-a55-step` | f007825 | 0208: wp210cpumhz steps away from an index a domain already holds (ran, A55s unchanged at 999 MHz); 0209: every CPU's MHz once a second for the first 150 s (`SWEET MHZ:` lines) |
+| `wp210-a55-step` | 4367afb | 0208: wp210cpumhz steps away from an index a domain already holds (ran, A55s unchanged at 999 MHz); 0209: every CPU's MHz once a second for the first 150 s (`SWEET MHZ:` lines), and a domain read under 60% of its table clock is requested again (up to 3 times) |
 | `wp210-status-notes` | this file | notes, install scripts, tools, boot-args |
 
 ## Shim builds (sweetgl-diag-0x502)
@@ -283,6 +283,15 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## Once-a-second clocks (log 189a8195, kernel f007825, 5-core big-first, about 11:55)
+
+- **18-20 s:** the bootloader clocks (cpu0 1999, domain 1 1400, prime 499), state 0/19/29.
+- **22 s:** wp210cpumhz has run: 1998 / 2349 / 2399, state 0/6/6.
+- **40 to 41 s:** cpu0 1998 -> **999**, cpu1-3 2349 -> **1174**; the prime stays 2380-2404. The state stays 0/6/6 to the end.
+- **The first 5-core run** dropped between its 10 s samples around 31 and 41 s, so the same moment. In the 8-core runs the A55s were already at 999 at the boot probe (about 18 s).
+- **In the log that second:** a dasd (pid 68) crash report, `exec webbookmarksd`, the first screen frames (swaps 11-15). Nothing that obviously touches clocks.
+- **Next (kernel 4367afb):** after a drop, request the index again (neighbour, then wanted) and see whether the clock comes back.
 
 ## 5-core big-first run (log f7cd692a, about 11:26): faster despite halved clocks
 
