@@ -42,7 +42,7 @@ notes are kept under "History" at the end.
 | `main` | 1465988 | BGRA upload for format-0 4bpp IOSurfaces (the copy-error fix) |
 | `sweetgl-diag-0x502` | eed85c5 | shim work on top of 1465988 (table below) |
 | `wp210-auto-input` | 6c51db1 | kernel patches 0204-0207, `mkadt.py --bigfirst` |
-| `wp210-a55-step` | e528e6a | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines); 0211: frames started on the panel's TE when found (`SWEET TE:`), wallpaper image bytes logged (`SWEET PIX:`) |
+| `wp210-a55-step` | 5872b22 | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines); 0211: frames started on the panel's TE when found (`SWEET TE:`), wallpaper image bytes logged (`SWEET PIX:`); 0212: large images sampled once a second while booting |
 | `wp210-status-notes` | this file | notes, install scripts, tools, boot-args |
 
 ## Shim builds (sweetgl-diag-0x502)
@@ -283,6 +283,15 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## Kernel 0211 run (log ec3478a8, video 17:49): TE fixes the line strips
+
+- **Image checked:** `wp210-boot-0211.img` (`268374d6…`) holds the 0211 kernel (SWEET TE / SWEET PIX strings) and the 5-core command line.
+- **Panel TE found:** DSI mode 0 (command), TXRX 0x1023c (EXT_TE_EN off), INTEN 0. `TE_RDY` (INTSTA bit 2) ticks every 16.47 ms (60.7 Hz); `EXT_TE_RDY` only twice in 100 ms at 20 s and not at all at 60 s, nor with EXT_TE_EN. Frames start on TE_RDY: 1112 waits in 210 s, none hit 20 ms.
+- **Line strips: fixed.** Same detector, still home screen: 1 strip in 72 s (33.7 s), against about 13 a minute with 0210 and 15 before.
+- **No speed cost:** swaps/s through the test match 0210 sample for sample; slow-frame times within run-to-run noise.
+- **Wallpaper:** still black, magenta, blue. CollectionsPoster's 420f and BGRA images never pass the kernel's lock/unlock traps, so 0211 logged only backboardd's 1105x1160 copy (id 63): all zero at its first unlock (the black phase).
+- **Next kernel (5872b22, patch 0212):** 10-75 s after boot, once a second, the kernel reads 4 bytes at three points of each plane of every large 420f / BGRA / format-0 image and logs them when they change (`SWEET PIX: <s> s id …`).
 
 ## Kernel 0210 run (log 24b1a1a9, video 16:45): strips unchanged, wallpaper layouts right
 
