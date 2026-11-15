@@ -18,6 +18,7 @@
 #include <objc/message.h>
 #include <objc/runtime.h>
 #include <pthread.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -894,6 +895,8 @@ enum { NO_KIND, NO_MODE, NO_STATE, NO_BLEND, NO_ARRAY, NO_SHAPE, NO_TEX, NO_FB, 
 static struct {
 	uint32_t draws, kind[FPK_COUNT], no[NO_COUNT], ok, bad;
 	uint64_t eligible_abs, fast_abs, no_abs[NO_COUNT], map_abs, run_abs;
+	uint64_t kind_abs[FPK_COUNT], kind_px[FPK_COUNT], wait_abs;    /* drawn here: time and pixels by kind */
+	uint32_t multi_checked;
 	uint32_t blend[FPB_COUNT];
 } fst;
 /* per program over the 10 s window: draws, qualifying draws, time, reasons seen (bit per NO_) */
@@ -918,6 +921,13 @@ static struct {
 	GLuint tex;
 } fast_pend;
 static uint32_t fast_verified[FPK_COUNT][FPB_COUNT], fast_bad_logged;
+static uint64_t fast_vpix[FPK_COUNT][FPB_COUNT];        /* pixels compared */
+/*
+ * Checked enough: FAST_VERIFY_EACH draws, or 3 covering a million pixels
+ * (a full-screen blur checked costs softpipe's 2 s each time).
+ */
+#define FAST_DONE(k, b) (fast_verified[k][b] >= FAST_VERIFY_EACH || \
+	(fast_verified[k][b] >= 3 && fast_vpix[k][b] >= 1000000))
 static uint8_t fast_off[FPK_COUNT][FPB_COUNT];   /* differed from softpipe: not drawn here any more */
 #define FAST_VERIFY_EACH 10
 
@@ -1947,9 +1957,21 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	 * that ever differs from softpipe goes back to softpipe for good. Draws
 	 * of several rectangles are only drawn here once single ones passed.
 	 */
-	int check = fast_mode == 2 || fast_verified[kind][blend] < FAST_VERIFY_EACH;
-	if (fast_mode == 0 || fast_off[kind][blend] || (check && nrect > 1) ||
-	    (check && (fast_verified[kind][blend] >= FAST_VERIFY_EACH || fast_pend.buf != NULL))) {
+	int check = fast_mode == 2 || !FAST_DONE(kind, blend);
+	/* several rectangles are checked together when no two cover the same pixel (nine-slices) */
+	int disjoint = 1;
+	for (int a = 0; a < nrect && check; a++) {
+		for (int b = a + 1; b < nrect; b++) {
+			const struct fp_job *p = &jobs[a], *q = &jobs[b];
+			disjoint &= p->x1 <= q->x0 || q->x1 <= p->x0 || p->y1 <= q->y0 || q->y1 <= p->y0 || p->x1 <= p->x0 ||
+			    p->y1 <= p->y0 || q->x1 <= q->x0 || q->y1 <= q->y0;
+		}
+	}
+	if (fast_mode == 0 || fast_off[kind][blend] || (check && !disjoint) ||
+	    (check && ((fast_mode == 2 && fast_verified[kind][blend] >= FAST_VERIFY_EACH) || fast_pend.buf != NULL))) {
+		if (check && fast_mode == 1 && !fast_off[kind][blend]) {
+			fst.wait_abs++;
+		}
 		return 2;
 	}
 	struct fp_img dst = {0}, src = {0}, mimg = {0}, nimg = {0};
@@ -2031,15 +2053,28 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		j->y0 = j->y0 > 0 ? j->y0 : 0, j->y1 = j->y1 < dst.h ? j->y1 : dst.h;
 	}
 	uint64_t tm1 = mach_absolute_time();
+	/* the rectangles' union (pixels drawn) */
+	int ux0 = INT_MAX, uy0 = INT_MAX, ux1 = INT_MIN, uy1 = INT_MIN;
+	uint64_t npx = 0;
+	for (int r = 0; r < nrect; r++) {
+		const struct fp_job *j = &jobs[r];
+		if (j->x1 > j->x0 && j->y1 > j->y0) {
+			ux0 = j->x0 < ux0 ? j->x0 : ux0, uy0 = j->y0 < uy0 ? j->y0 : uy0;
+			ux1 = j->x1 > ux1 ? j->x1 : ux1, uy1 = j->y1 > uy1 ? j->y1 : uy1;
+			npx += (uint64_t)(j->x1 - j->x0) * (uint64_t)(j->y1 - j->y0);
+		}
+	}
 	if (!check) {
 		for (int r = 0; r < nrect; r++) {
 			fp_run(&jobs[r], &dst, in.textured ? &src : NULL, NULL, 0);
 		}
-	} else if (jobs[0].x1 > jobs[0].x0 && jobs[0].y1 > jobs[0].y0) {
-		/* verify (one rectangle): the expected pixels of the rectangle plus a one-pixel border */
-		struct fp_job *j = &jobs[0];
-		int bx = j->x0 > 0 ? j->x0 - 1 : 0, by = j->y0 > 0 ? j->y0 - 1 : 0;
-		int bw = (j->x1 < dst.w ? j->x1 + 1 : dst.w) - bx, bh = (j->y1 < dst.h ? j->y1 + 1 : dst.h) - by;
+	} else if (ux1 > ux0 && uy1 > uy0) {
+		/*
+		 * verify: the expected pixels of the rectangles' union plus a
+		 * one-pixel border; pixels no rectangle covers stay as they are
+		 */
+		int bx = ux0 > 0 ? ux0 - 1 : 0, by = uy0 > 0 ? uy0 - 1 : 0;
+		int bw = (ux1 < dst.w ? ux1 + 1 : dst.w) - bx, bh = (uy1 < dst.h ? uy1 + 1 : dst.h) - by;
 		uint8_t *buf = malloc((size_t)bw * (size_t)bh * 4);
 		if (buf != NULL) {
 			for (int y = 0; y < bh; y++) {
@@ -2047,11 +2082,17 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 					fp_read_rgba(&dst, bx + x, by + y, buf + ((size_t)y * (size_t)bw + (size_t)x) * 4);
 				}
 			}
-			fp_run(j, &dst, in.textured ? &src : NULL, buf + ((size_t)(j->y0 - by) * (size_t)bw + (size_t)(j->x0 - bx)) * 4,
-			    bw * 4);
+			for (int r = 0; r < nrect; r++) {
+				struct fp_job *j = &jobs[r];
+				if (j->x1 > j->x0 && j->y1 > j->y0) {
+					fp_run(j, &dst, in.textured ? &src : NULL,
+					    buf + ((size_t)(j->y0 - by) * (size_t)bw + (size_t)(j->x0 - bx)) * 4, bw * 4);
+				}
+			}
 			fast_pend.buf = buf, fast_pend.bx = bx, fast_pend.by = by, fast_pend.bw = bw, fast_pend.bh = bh;
-			fast_pend.x0 = j->x0, fast_pend.y0 = j->y0, fast_pend.x1 = j->x1, fast_pend.y1 = j->y1;
+			fast_pend.x0 = ux0, fast_pend.y0 = uy0, fast_pend.x1 = ux1, fast_pend.y1 = uy1;
 			fast_pend.kind = kind, fast_pend.blend = blend, fast_pend.tex = (GLuint)att;
+			fst.multi_checked += nrect > 1;
 		}
 	}
 	uint64_t tm2 = mach_absolute_time();
@@ -2061,6 +2102,10 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	fp_unmap(&dst);
 	fst.map_abs += tm1 - tm0 + mach_absolute_time() - tm2;
 	fst.run_abs += tm2 - tm1;
+	if (!check) {
+		fst.kind_abs[kind] += tm2 - tm1;
+		fst.kind_px[kind] += npx;
+	}
 	return check ? 2 : 1;
 }
 
@@ -2072,6 +2117,7 @@ fast_verify(void)
 	int bad = 0, maxd = 0, fx = -1, fy = -1;
 	uint8_t want[4] = {0}, got[4] = {0};
 	fast_verified[fast_pend.kind][fast_pend.blend]++;
+	fast_vpix[fast_pend.kind][fast_pend.blend] += (uint64_t)fast_pend.bw * (uint64_t)fast_pend.bh;
 	if (fp_map_tex(fast_pend.tex, 0, &dst) == 0) {
 		for (int y = 0; y < fast_pend.bh; y++) {
 			for (int x = 0; x < fast_pend.bw; x++) {
@@ -2154,6 +2200,17 @@ fast_log(void)
 	    "map %llu", fs_ms(fst.no_abs[NO_KIND]), fs_ms(fst.no_abs[NO_MODE]), fs_ms(fst.no_abs[NO_STATE]),
 	    fs_ms(fst.no_abs[NO_BLEND]), fs_ms(fst.no_abs[NO_ARRAY]), fs_ms(fst.no_abs[NO_SHAPE]), fs_ms(fst.no_abs[NO_TEX]),
 	    fs_ms(fst.no_abs[NO_FB]), fs_ms(fst.no_abs[NO_MAP]));
+	/* time and pixels drawn here by kind (kind:ms/kilopixels), and draws that waited for their kind's checks */
+	char kl[400];
+	int ko = snprintf(kl, sizeof(kl), "sweetgl: fast cpu (kind:ms/kpx): waited %llu, multi checked %u;",
+	    (unsigned long long)fst.wait_abs, fst.multi_checked);
+	for (int k = 1; k < FPK_COUNT && ko < (int)sizeof(kl) - 24; k++) {
+		if (fst.kind_px[k] != 0) {
+			ko += snprintf(kl + ko, sizeof(kl) - (size_t)ko, " %d:%llu/%llu", k, fs_ms(fst.kind_abs[k]),
+			    (unsigned long long)(fst.kind_px[k] / 1000));
+		}
+	}
+	sweet_drm_log("%s", kl);
 	/* the 6 programs that took the most time; reasons as bits: 1 kind 2 mode 4 state 8 blend 16 array ... */
 	for (int r = 0; r < 6; r++) {
 		int best = 0;
