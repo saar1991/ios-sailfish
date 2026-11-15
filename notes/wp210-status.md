@@ -73,8 +73,8 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | 9bfed51 | supercircle / circle shapes, masked supercircle icons, mix over the backdrop; unrecognised vertex shaders logged | 16292992 | `3d2abd4a…` | yes (about 07:52) |
 | d8a55df | CA's blur passes; per-kind detail budget, mesh lines for pairing failures | 16310032 | `e0f2c5c9…` | yes (about 08:25) |
 | 0e13161 | self-check: 3 draws covering 1M pixels is enough; nine-slices checked as a whole; CPU time by kind | 16310160 | `f9d8ab6d…` | yes (about 08:55) |
-| 47ab084 | threads from 4096 pixels; draw time by CPU | 16310432 | `a313176c…` | **yes, current** (about 09:16) |
-| e38a725 | spot checks the whole run (1 in 50 draws, 1 in 400 over 256K px); program in mismatch lines | 16310544 | `6eda66af…` | script sent (10:33) |
+| 47ab084 | threads from 4096 pixels; draw time by CPU | 16310432 | `a313176c…` | yes (about 09:16) |
+| e38a725 | spot checks the whole run (1 in 50 draws, 1 in 400 over 256K px); program in mismatch lines | 16310544 | `6eda66af…` | **yes, current** (about 10:40) |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -282,6 +282,16 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## e38a725 run (log aba34a49, a55-step kernel, about 10:45): spot checks and video
+
+- **Checks:** 402 spot checks and the first checks, **553 compared draws, 0 differed**. The fast path drew exactly what softpipe draws everywhere it was checked.
+- **Run:** 30/30 steps. No panic or crash, only the usual boot messages.
+- **Video** (WhatsApp 10:49):
+  - **Today view, weather widget as a plain blue square:** shows again when the Today view opens, then turns into "No weather data" on glass. With no differences in any check, this is most likely the widget's placeholder look while it loads (the weather widget's background is a blue sky gradient), not a drawing error.
+  - **Top Stories widget:** once showed its grey placeholder boxes without its titles. Also a loading state.
+  - **One frame (video 1:49, the round 1 swipe right back to page 1):** the lower half of the screen is black and the home screen top is drawn. It is the only one in the run. The fast path is checked and clean, so this is more likely the display path: the single-buffered framebuffer caught mid-copy. To watch for.
+  - **Not glitches, but not what the script means:** in rounds 2 and 3 swipe right ends on the Today view, and the following taps open Apple News and Spotlight instead of the Phone app.
 
 ## wp210-a55-step kernel run (log 7268fa74, kernel `1b095684…`, shim 47ab084, about 10:15)
 
