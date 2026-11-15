@@ -42,7 +42,7 @@ notes are kept under "History" at the end.
 | `main` | 1465988 | BGRA upload for format-0 4bpp IOSurfaces (the copy-error fix) |
 | `sweetgl-diag-0x502` | eed85c5 | shim work on top of 1465988 (table below) |
 | `wp210-auto-input` | 6c51db1 | kernel patches 0204-0207, `mkadt.py --bigfirst` |
-| `wp210-a55-step` | c8a78bf | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines); 0211: frames started on the panel's TE when found (`SWEET TE:`), wallpaper image bytes logged (`SWEET PIX:`); 0212: large images sampled once a second while booting; 0213: their bytes at lookup and free; 0214: wallpaper file opens (`SWEET OPEN:`); 0215: without poster descriptors |
+| `wp210-a55-step` | 7cb354c | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines); 0211: frames started on the panel's TE when found (`SWEET TE:`), wallpaper image bytes logged (`SWEET PIX:`); 0212: large images sampled once a second while booting; 0213: their bytes at lookup and free; 0214: wallpaper file opens (`SWEET OPEN:`); 0215: without poster descriptors; 0216: posters' RuntimeSnapshot .atx hidden from readers (`sweetsnap=0` keeps them) |
 | `wp210-status-notes` | this file | notes, install scripts, tools, boot-args |
 
 ## Shim builds (sweetgl-diag-0x502)
@@ -283,6 +283,13 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## Kernel 0215 run (log e9bb670e): the snapshot is rewritten at each boot
+
+- At about 35 s PosterBoard writes (write-only) the active poster's snapshots: `PRBPosterExtensionDataStore/59/Extensions/com.apple.WallpaperKit.CollectionsPoster/configurations/C4DB7640-A7AE-481B-8DD7-10A7FABBF8F0/versions/0/RuntimeSnapshot-home.atx` and `-lock.atx` (plus `RuntimeSnapshotMetadata-*.plist`). The magenta shows about 2 s later (swap 10).
+- So the snapshot is made anew each boot. Likely mechanism: an .atx holds ASTC blocks; ASTC decoders give **magenta, the error colour,** for invalid blocks, and an all-zero block is invalid. The poster's conversion images are all zero (0213), so the snapshot is encoded from nothing; the dark specks are the few blocks that decode.
+- The 300 lines ran out again before any reader (extension binaries, `/Library/Wallpaper/Collections/Bokeh…` plists; the active poster is the Bokeh collection).
+- **Next kernel (7cb354c, patch 0216):** open log for any process, only snapshot / .atx / .ktx / .heic / .cpbitmap paths outside system folders and bundles; **read-only opens of `RuntimeSnapshot-*.atx` fail with ENOENT** (logged `denied`; boot-arg `sweetsnap=0` allows them). Expected: black instead of magenta until the live poster.
 
 ## Kernel 0214 run (log 6c8df7e3): open log used up by poster descriptors
 
