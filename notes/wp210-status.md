@@ -284,6 +284,19 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
 
+## Kernel 6a61c4f run (log e13c888d, about 15:00): the A55 domain does not respond
+
+- **Kernel 6a61c4f ran:** its lines name the method. Domain 1 came back at 41 s on the first try, as before.
+- **Domain 0 (A55) stayed at 999-1000 MHz through 19+ tries,** every 5 s, cycling the next index, the far index (1000 MHz), enable 0x301, and enable off/on.
+  - Writing index 13 (1000 MHz) did not even move it.
+  - **After the 40 s event the A55 clock does not follow this register at all.** Something else (firmware or another block) owns it.
+  - With cpus=5 the A55 is only cpu0 (about 3 s of draw time per run), so this is set aside.
+- **Next kernel:** stop re-requesting domain 0 (it churns its enable word every 5 s for nothing); keep domain 1's.
+- **Video (from the user):** the black, magenta, blue wallpaper at startup is still there, plus minor glitches.
+  - The wallpaper comes from CollectionsPoster. It creates '420f' surfaces (1105x1160, 512x512) that the kernel's IOSurface reports as `bpe 4 bpr 4480 planes 2` (4 bytes a pixel for a 4:2:0 YUV surface), plus BGRA 1105x1160 surfaces.
+  - backboardd's shim never binds a 420f surface (none fails in the log). So the magenta is most likely made inside CollectionsPoster, from YUV planes laid out differently from what it expects.
+  - To check: the kernel's plane offsets and row lengths for 420f.
+
 ## Run with video (log 895ce656, about 14:35): still kernel 4367afb; display glitches
 
 - **Kernel:** the log's re-request lines are 4367afb's (no "by <method>", three tries), so 6a61c4f's A55 methods were not in this boot.
