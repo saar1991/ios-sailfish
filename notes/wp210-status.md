@@ -70,7 +70,8 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | e5f492c | flat nine-slice cells, ONE/ONE blend, colour matrix over the backdrop | 16292800 | `e18828d6…` | **yes, current** (about 22:17) |
 | 5956cb2 | diagnostics: draws over 300 ms, unrecognised fragment shaders logged whole | 16292912 | `cb25b600…` | yes (about 22:40) |
 | 9bfed51 | supercircle / circle shapes, masked supercircle icons, mix over the backdrop; unrecognised vertex shaders logged | 16292992 | `3d2abd4a…` | yes (about 07:52) |
-| d8a55df | CA's blur passes; per-kind detail budget, mesh lines for pairing failures | 16310032 | `e0f2c5c9…` | script sent (08:19) |
+| d8a55df | CA's blur passes; per-kind detail budget, mesh lines for pairing failures | 16310032 | `e0f2c5c9…` | yes (about 08:25) |
+| 0e13161 | self-check: 3 draws covering 1M pixels is enough; nine-slices checked as a whole; CPU time by kind | | | pushed, to build |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -278,6 +279,27 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## d8a55df run (log 62a4a7ac, `SGLFAST=1`, about 08:30): blur on the CPU
+
+- **Blur:** recognised (5 programs) and drawn here. Up to 40 blur draws per 10 s, no differences.
+- **Steps:** 30/30 drew a frame (first time), median first frame 0.32 s.
+- **No 10 s frames any more:** worst slow frame 3.1 s (11.3 s before), mean 1.0 s.
+  - Swap rate 2.65/s. The last runs were 3.72, 2.45, 2.58, 2.65: the swap count is a noisy measure, and the latencies show the change better.
+  - tap_dock1, first frame: 0.20/0.08/0.32 s. It was 0.69/5.4/4.4 s in e5f492c.
+- **Kinds not handled are almost gone from softpipe:** "kind" was 20-60 ms per 10 s, against about 2 s before.
+- **What remains:**
+  - **The CPU path:** about 3 s per 10 s; pixels 2.1-3.1 s, map 0.3-0.5 s.
+  - **Qualifying draws softpipe drew:** self-checks, and draws waiting for their kind's checks. About 15 s per run.
+  - **Shape rejects:** 0.5-0.85 s per 10 s.
+    - **Masked nine-slices (prog 13):** rotated (the meshes are logged), so not rectangles.
+    - **Mix (prog 27) and masked supercircle (prog 65):** corner cells are single triangles (the cell's other triangle has zero area).
+  - **Texture rejects:** 0.3-0.45 s per 10 s.
+- **CPUs:** cpu0-3 (A55) read about 999 MHz, cpu4-7 (A78) about 2.36 GHz.
+- **Next build (0e13161):**
+  - checked enough after 3 draws covering 1M pixels
+  - nine-slices are verified as a whole (they could only wait before)
+  - per-kind CPU time and pixels
 
 ## 9bfed51 run (log 86650232, `SGLFAST=1`, about 07:55)
 
