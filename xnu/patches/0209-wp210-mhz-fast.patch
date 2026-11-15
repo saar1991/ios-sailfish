@@ -1,6 +1,6 @@
 --- a/bsd/dev/sweet_perf.c
 +++ b/bsd/dev/sweet_perf.c
-@@ -677,6 +677,83 @@
+@@ -677,6 +677,103 @@
  }
  
  #define PERF_SAFE_CPUS 8
@@ -17,6 +17,7 @@
 +wp210_mhz_fast(void *arg, wait_result_t result)
 +{
 +	int ncpu = (int)ml_get_cpu_count(), tries[3] = {0, 0, 0};
++	uint64_t last[3] = {0, 0, 0};
 +	(void)arg;
 +	(void)result;
 +	if (ncpu > PERF_SAFE_CPUS) {
@@ -24,9 +25,6 @@
 +	}
 +	for (;;) {
 +		uint64_t up = perf_ns(mach_absolute_time()) / NSEC_PER_SEC;
-+		if (up > 150) {
-+			break;
-+		}
 +		uint64_t mhz[PERF_SAFE_CPUS] = {0};
 +		int dom[PERF_SAFE_CPUS];
 +		for (int c = 0; c < ncpu; c++) {
@@ -44,19 +42,25 @@
 +		for (int d = 0; d < 3 && wp210_csram != 0; d++) {
 +			st[d] = ((volatile uint32_t *)(wp210_csram + wp210_cpufreq_dom[d]))[0x88 / 4];
 +		}
-+		printf("SWEET MHZ: %llu s %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu state %u/%u/%u\n",
-+		    (unsigned long long)up, (unsigned long long)mhz[0], (unsigned long long)mhz[1],
-+		    (unsigned long long)mhz[2], (unsigned long long)mhz[3], (unsigned long long)mhz[4],
-+		    (unsigned long long)mhz[5], (unsigned long long)mhz[6], (unsigned long long)mhz[7],
-+		    st[0], st[1], st[2]);
++		if (up <= 150) {
++			printf("SWEET MHZ: %llu s %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu state %u/%u/%u\n",
++			    (unsigned long long)up, (unsigned long long)mhz[0], (unsigned long long)mhz[1],
++			    (unsigned long long)mhz[2], (unsigned long long)mhz[3], (unsigned long long)mhz[4],
++			    (unsigned long long)mhz[5], (unsigned long long)mhz[6], (unsigned long long)mhz[7],
++			    st[0], st[1], st[2]);
++		}
 +		/*
-+		 * A domain that reads under 60% of its table clock (the halving)
-+		 * while its state still holds the wanted index: request it again,
-+		 * by way of the next index, up to 3 times per domain.
++		 * A domain under 60% of its table clock (the halving at about 40 s
++		 * after boot) while its state holds the wanted index: request the
++		 * index again, at most once in 5 s per domain, for as long as the
++		 * system runs. The neighbouring index then the wanted one brought
++		 * domain 1 back (log 47c1078b) but not domain 0, so domain 0's
++		 * tries also go through a far index (1000 MHz), the enable value
++		 * LK left (0x301), and enable off and on, in turn.
 +		 */
 +		for (int d = 0; d < 3 && wp210_csram != 0; d++) {
 +			volatile uint32_t *r = (volatile uint32_t *)(wp210_csram + wp210_cpufreq_dom[d]);
-+			if (wp210_want[d] < 0 || tries[d] >= 3) {
++			if (wp210_want[d] < 0 || up < last[d] + 5) {
 +				continue;
 +			}
 +			uint64_t want = r[wp210_want[d]] & 0xfffu, low = 0;
@@ -68,23 +72,39 @@
 +			if (low == 0) {
 +				continue;
 +			}
++			int how = d == 0 ? tries[d] % 4 : 0, far = 13;
++			static const char *const hows[4] = {"next index", "far index", "enable 0x301", "enable off/on"};
 +			tries[d]++;
-+			r[0x88 / 4] = (uint32_t)(wp210_want[d] > 0 ? wp210_want[d] - 1 : wp210_want[d] + 1);
++			last[d] = up;
++			if (how == 2) {
++				r[0x84 / 4] = 0x301;
++			} else if (how == 3) {
++				r[0x84 / 4] = 0;
++				__asm__ volatile ("dsb sy" ::: "memory");
++				delay(2000);
++				r[0x84 / 4] = 1;
++			}
 +			__asm__ volatile ("dsb sy" ::: "memory");
 +			delay(2000);
++			r[0x88 / 4] = (uint32_t)(how == 1 ? far : wp210_want[d] > 0 ? wp210_want[d] - 1 : wp210_want[d] + 1);
++			__asm__ volatile ("dsb sy" ::: "memory");
++			delay(how == 1 ? 5000 : 2000);
 +			r[0x88 / 4] = (uint32_t)wp210_want[d];
 +			__asm__ volatile ("dsb sy" ::: "memory");
 +			delay(2000);
-+			printf("SWEET MHZ: domain %d read %llu MHz of %llu: index requested again (try %d), state %u hw %#x\n",
-+			    d, (unsigned long long)low, (unsigned long long)want, tries[d], r[0x88 / 4], r[0x8c / 4]);
++			if (tries[d] <= 40) {
++				printf("SWEET MHZ: %llu s domain %d read %llu MHz of %llu: index requested again by %s (try %d), "
++				    "state %u hw %#x enable %#x\n", (unsigned long long)up, d, (unsigned long long)low,
++				    (unsigned long long)want, hows[how], tries[d], r[0x88 / 4], r[0x8c / 4], r[0x84 / 4]);
++			}
 +		}
-+		perf_wait(1);
++		perf_wait(up < 150 ? 1 : 5);
 +	}
 +}
  
  static void
  perf_thread_safe(void *arg, wait_result_t result)
-@@ -833,6 +910,10 @@
+@@ -833,6 +930,10 @@
  	if (!enabled) {
  		return;
  	}
