@@ -14,6 +14,8 @@
 enum fp_fmt { FP_NONE, FP_BGRA, FP_RGBA, FP_BGRX, FP_RGBX, FP_A8 };
 
 /* fragment shaders handled, by what they compute */
+#define FP_TAPS 16
+
 enum fp_kind {
 	FPK_NONE,
 	FPK_FILL,       /* color */
@@ -34,6 +36,7 @@ enum fp_kind {
 	FPK_CIRCLE,     /* color * CA's circleImage(texcoord0) */
 	FPK_MASKSUP,    /* color * texture * supercircleImage(texcoord1).a (masked icons) */
 	FPK_MIXBD,      /* mix(texture1, framebuffer, texture.a) */
+	FPK_BLUR,       /* CA's Gaussian blur pass: weighted taps of texture0 at texcoord0 + offsets */
 	FPK_COUNT
 };
 
@@ -79,6 +82,14 @@ struct fp_job {
 	float farg[4], falpha;
 	/* FPK_CM4 / FPK_CM3: color_matrix rows (the alpha row zero for CM3) */
 	float cm[4][3];
+	/*
+	 * FPK_BLUR: taps of texture0 at (u, v) + toff[i] (texture coordinates),
+	 * acc = q[0] * tw[0], then acc = q[i] * tw[i] + acc; divided by
+	 * max(.001, acc.a) when bdiv. Filtered like softpipe in float
+	 * (clamp to edge), linear or nearest as linear says.
+	 */
+	int ntap, bdiv;
+	float toff[FP_TAPS][2], tw[FP_TAPS];
 	int linear;             /* filter for this scale: 0 nearest, 1 linear (clamp to edge) */
 	uint8_t color[4];       /* RGBA */
 	/*

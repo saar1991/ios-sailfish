@@ -861,7 +861,29 @@ sgl_PixelStorei(void *rctx, GLenum pname, GLint param)
  * Counts and times every 10 s with the flush statistics.
  */
 #define FAST_VS 0x40
+#define FAST_BVS 0x41   /* a blur pass's vertex shader (blur_sh: its texcoords) */
 static int fast_mode;
+/*
+ * CA's blur passes. Vertex shader: texcoordN = t0 + sign * offset[k],
+ * t0 = vertex_texcoord0 * texmat0.xy + texmat0.zw. Fragment shader: qI =
+ * texture2D(texture0, texcoordN); acc = qI * weight[i].c, then acc = qI *
+ * weight[i].c + acc, ...; optionally acc /= max(0.001, acc.a) when divide
+ * is not 0; gl_FragData[0] = acc. Parsed from main's body.
+ */
+struct blur_sh {
+	uint8_t n, div, warr;                   /* fs: taps; uses divide; weight is an array */
+	uint8_t tc[FP_TAPS], wi[FP_TAPS];       /* fs: each tap's texcoord and weight component (vec4 * 4 + c) */
+	uint16_t have;                          /* vs: the texcoords it sets */
+	int8_t sign[FP_TAPS];                   /* vs, by texcoord: sign and offset index */
+	uint8_t k[FP_TAPS];
+};
+static struct blur_sh *blur_sh[PROG_MAX];
+static struct prog_blur {
+	int n, div;
+	int8_t sign[FP_TAPS];
+	uint8_t k[FP_TAPS], wi[FP_TAPS];
+	GLint off[FP_TAPS], w[4], divloc;       /* offset[k], weight (vec4 i), divide */
+} *prog_blur[PROG_MAX];
 static uint8_t shader_kind[PROG_MAX], prog_kind[PROG_MAX];
 static char *shader_body[PROG_MAX];     /* fragment shader main(), whitespace removed */
 static uint8_t shader_clamp[PROG_MAX], prog_clamp[PROG_MAX];   /* CA's clamped-texcoord variant */
@@ -884,7 +906,11 @@ static int fast_why;            /* reason of the last fast_no */
 /* the first rejects of these reasons are logged with their details */
 static int fast_detail_left[NO_COUNT] = {[NO_ARRAY] = 40, [NO_BLEND] = 20, [NO_TEX] = 20, [NO_MODE] = 10,
     [NO_SHAPE] = 10, [NO_STATE] = 10, [NO_FB] = 10, [NO_MAP] = 10};
-#define FAST_DETAIL(why, ...) do { if (fast_detail_left[why] > 0) { fast_detail_left[why]--; \
+/* and 4 more of each reason for each kind (a new kind's reasons after the old ones used theirs) */
+static uint8_t fast_detail_kind[NO_COUNT][FPK_COUNT];
+#define FAST_DETAIL(why, ...) do { int dk_ = kind > 0 && kind < FPK_COUNT ? kind : 0; \
+	if (fast_detail_left[why] > 0 || fast_detail_kind[why][dk_] < 4) { \
+	if (fast_detail_left[why] > 0) { fast_detail_left[why]--; } else { fast_detail_kind[why][dk_]++; } \
 	sweet_drm_log("sweetgl: fast no " __VA_ARGS__); } } while (0)
 static struct {
 	uint8_t *buf;
@@ -924,6 +950,93 @@ static uint8_t fast_off[FPK_COUNT][FPB_COUNT];   /* differed from softpipe: not 
 	"S=S*(y*y)*(y*y);returnD*(1.-S.a)+S;}"
 /* CA's clamped sampling: tc0_0 = clamp(texcoord0_0, coord_arg.xy, coord_arg.zw), then tc0_0 in place of texcoord0_0 */
 #define FAST_CLAMP "mediumpvec2tc0_0=clamp(texcoord0_0,coord_arg.xy,coord_arg.zw);"
+
+/* a blur vertex shader's main, whitespace removed; 0 when it is one */
+static int
+blur_parse_vs(const char *b, struct blur_sh *o)
+{
+	static const char head[] =
+	    "{highpvec2t0=vertex_texcoord0*texmat0.xy+texmat0.zw;gl_Position=vertex_matrix*vertex_position;";
+	memset(o, 0, sizeof(*o));
+	if (strncmp(b, head, sizeof(head) - 1) != 0) {
+		return -1;
+	}
+	const char *p = b + sizeof(head) - 1;
+	while (*p != '}') {
+		int tc = -1, k = -1, len = 0;
+		char sg = 0;
+		if (sscanf(p, "texcoord%d=t0%coffset[%d];%n", &tc, &sg, &k, &len) != 3 || len == 0 || tc < 0 ||
+		    tc >= FP_TAPS || k < 0 || k >= FP_TAPS || (sg != '+' && sg != '-') || (o->have & (1u << tc))) {
+			return -1;
+		}
+		o->have |= (uint16_t)(1u << tc);
+		o->sign[tc] = sg == '+' ? 1 : -1;
+		o->k[tc] = (uint8_t)k;
+		p += len;
+	}
+	return p[1] == 0 && o->have != 0 ? 0 : -1;
+}
+
+/* a blur fragment shader's main, whitespace removed; 0 when it is one */
+static int
+blur_parse_fs(const char *b, struct blur_sh *o)
+{
+	int qtc[FP_TAPS], ended = 0;
+	for (int i = 0; i < FP_TAPS; i++) {
+		qtc[i] = -1;
+	}
+	memset(o, 0, sizeof(*o));
+	if (*b++ != '{') {
+		return -1;
+	}
+	while (*b != 0 && *b != '}') {
+		const char *e = strchr(b, ';');
+		char st[160];
+		if (e == NULL || ended || (size_t)(e - b) >= sizeof(st)) {
+			return -1;
+		}
+		memcpy(st, b, (size_t)(e - b));
+		st[e - b] = 0;
+		b = e + 1;
+		int q = -1, tc = -1, vi = 0, len = 0;
+		char c = 0;
+		if (strncmp(st, "lowpvec4q", 9) == 0 || strcmp(st, "mediumpvec4acc") == 0 || strcmp(st, "highpvec4acc") == 0) {
+			continue;
+		}
+		if (sscanf(st, "q%d=texture2D(texture0,texcoord%d)%n", &q, &tc, &len) == 2 && st[len] == 0) {
+			if (q < 0 || q >= FP_TAPS || tc < 0 || tc >= FP_TAPS) {
+				return -1;
+			}
+			qtc[q] = tc;
+			continue;
+		}
+		if (strcmp(st, "if(divide!=0.0)acc/=max(0.001,acc.a)") == 0) {
+			o->div = 1;
+			continue;
+		}
+		if (strcmp(st, "gl_FragData[0]=acc") == 0) {
+			ended = 1;
+			continue;
+		}
+		int arr = 0;
+		if (sscanf(st, "acc=q%d*weight[%d].%c%n", &q, &vi, &c, &len) == 3) {
+			arr = 1;
+		} else if (sscanf(st, "acc=q%d*weight.%c%n", &q, &c, &len) != 2) {
+			return -1;
+		}
+		/* the first term sets acc, the others add to it */
+		const char *rest = st + len;
+		if (strcmp(rest, o->n == 0 ? "" : "+acc") != 0 || q < 0 || q >= FP_TAPS || qtc[q] < 0 || vi < 0 || vi > 3 ||
+		    strchr("xyzw", c) == NULL || c == 0 || o->n >= FP_TAPS || (o->n > 0 && arr != o->warr) || o->div) {
+			return -1;
+		}
+		o->warr = (uint8_t)arr;
+		o->tc[o->n] = (uint8_t)qtc[q];
+		o->wi[o->n] = (uint8_t)(vi * 4 + (int)(strchr("xyzw", c) - "xyzw"));
+		o->n++;
+	}
+	return ended && *b == '}' && b[1] == 0 && o->n > 0 ? 0 : -1;
+}
 
 static void
 fast_shader(GLuint shader, const char *src)
@@ -965,7 +1078,31 @@ fast_shader(GLuint shader, const char *src)
 		shader_kind[shader] = FAST_VS;
 		return;
 	}
-	/* vertex shaders of other kinds (the blur's): whole, for the blur kind next */
+	if (strstr(src, "gl_Position") != NULL && strstr(src, "uniform highp vec2 offset[") != NULL) {
+		/* a blur pass's vertex shader? */
+		const char *vm = strstr(src, "void main");
+		vm = vm != NULL ? strchr(vm, ')') : NULL;
+		char *vb = vm != NULL ? malloc(strlen(vm)) : NULL;
+		struct blur_sh t;
+		if (vb != NULL) {
+			size_t vn = 0;
+			for (const char *q = vm + 1; *q != 0; q++) {
+				if (*q != ' ' && *q != '\n' && *q != '\t' && *q != '\r') {
+					vb[vn++] = *q;
+				}
+			}
+			vb[vn] = 0;
+			if (blur_parse_vs(vb, &t) == 0 && (blur_sh[shader] != NULL || (blur_sh[shader] = malloc(sizeof(t))) != NULL)) {
+				*blur_sh[shader] = t;
+				shader_kind[shader] = FAST_BVS;
+			}
+			free(vb);
+		}
+		if (shader_kind[shader] == FAST_BVS) {
+			return;
+		}
+	}
+	/* vertex shaders of other kinds: whole */
 	static int unknown_vs_left = 16;
 	if (!dump_shaders && unknown_vs_left > 0 && strstr(src, "gl_Position") != NULL) {
 		unknown_vs_left--;
@@ -1012,7 +1149,7 @@ fast_shader(GLuint shader, const char *src)
 		shader_clamp[shader] = 1;
 	}
 	for (int k = 1; k < FPK_COUNT; k++) {
-		if (strcmp(cmp, body[k]) == 0) {
+		if (body[k] != NULL && strcmp(cmp, body[k]) == 0) {
 			shader_kind[shader] = (uint8_t)k;
 		}
 	}
@@ -1038,9 +1175,16 @@ fast_shader(GLuint shader, const char *src)
 		}
 		free(all);
 	}
+	struct blur_sh bt;
+	if (shader_kind[shader] == 0 && strstr(src, "gl_FragData") != NULL && blur_parse_fs(b, &bt) == 0 &&
+	    (blur_sh[shader] != NULL || (blur_sh[shader] = malloc(sizeof(bt))) != NULL)) {
+		*blur_sh[shader] = bt;
+		shader_kind[shader] = FPK_BLUR;
+		shader_clamp[shader] = 0;
+	}
 	if (shader_kind[shader] == 0) {
 		shader_clamp[shader] = 0;
-		/* the next kinds to add (blurs, circle masks): their whole source, helper functions included */
+		/* kinds not added yet: their whole source, helper functions included */
 		static int unknown_left = 48, pieces_left = 400;
 		if (!dump_shaders && unknown_left > 0 && pieces_left > 0 && strstr(src, "gl_FragData") != NULL) {
 			unknown_left--;
@@ -1066,12 +1210,17 @@ fast_link(GLuint program)
 	prog_kind[program] = 0;
 	prog_clamp[program] = 0;
 	glGetAttachedShaders(program, 4, &n, sh);
-	GLuint fsh = 0;
+	GLuint fsh = 0, bvsh = 0;
 	for (GLsizei i = 0; i < n; i++) {
 		int k = sh[i] < PROG_MAX ? shader_kind[sh[i]] : 0;
-		vs |= k == FAST_VS;
-		fs = k != 0 && k != FAST_VS ? k : fs;
-		fsh = k != FAST_VS && sh[i] < PROG_MAX && shader_body[sh[i]] != NULL ? sh[i] : fsh;
+		vs |= k == FAST_VS || k == FAST_BVS;
+		bvsh = k == FAST_BVS ? sh[i] : bvsh;
+		fs = k != 0 && k != FAST_VS && k != FAST_BVS ? k : fs;
+		fsh = k != FAST_VS && k != FAST_BVS && sh[i] < PROG_MAX && shader_body[sh[i]] != NULL ? sh[i] : fsh;
+	}
+	/* a blur's two halves go together, and only with each other */
+	if ((fs == FPK_BLUR) != (bvsh != 0)) {
+		vs = 0;
 	}
 	/* which program is which: the program numbers change between boots */
 	static int linked_logged;
@@ -1085,6 +1234,42 @@ fast_link(GLuint program)
 	}
 	if (!vs || !fs) {
 		return;
+	}
+	if (fs == FPK_BLUR) {
+		/* the taps: the fragment shader's texcoords and weights, the vertex shader's offsets */
+		const struct blur_sh *f = blur_sh[fsh], *v = blur_sh[bvsh];
+		struct prog_blur pb;
+		memset(&pb, 0, sizeof(pb));
+		if (f == NULL || v == NULL) {
+			return;
+		}
+		pb.n = f->n, pb.div = f->div;
+		for (int t = 0; t < f->n; t++) {
+			if (!(v->have & (1u << f->tc[t]))) {
+				return;
+			}
+			pb.sign[t] = v->sign[f->tc[t]], pb.k[t] = v->k[f->tc[t]], pb.wi[t] = f->wi[t];
+		}
+		for (int k = 0; k < FP_TAPS; k++) {
+			char nm[16];
+			snprintf(nm, sizeof(nm), "offset[%d]", k);
+			pb.off[k] = glGetUniformLocation(program, nm);
+		}
+		for (int i = 0; i < 4; i++) {
+			char nm[16];
+			snprintf(nm, sizeof(nm), "weight[%d]", i);
+			pb.w[i] = f->warr ? glGetUniformLocation(program, nm) : i == 0 ? glGetUniformLocation(program, "weight") : -1;
+		}
+		pb.divloc = f->div ? glGetUniformLocation(program, "divide") : -1;
+		for (int t = 0; t < pb.n; t++) {
+			if (pb.off[pb.k[t]] < 0 || pb.w[pb.wi[t] / 4] < 0) {
+				return;
+			}
+		}
+		if ((pb.div && pb.divloc < 0) || (prog_blur[program] == NULL && (prog_blur[program] = malloc(sizeof(pb))) == NULL)) {
+			return;
+		}
+		*prog_blur[program] = pb;
 	}
 	prog_loc[program].pos = glGetAttribLocation(program, "vertex_position");
 	prog_loc[program].color = glGetAttribLocation(program, "vertex_color");
@@ -1668,6 +1853,23 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		int paired = fast_pair(&ap, idx, nrect);
 		if (paired <= 0) {
 			FAST_DETAIL(NO_SHAPE, "shape prog %d kind %d: %d triangles do not pair into rectangles", prog, kind, 2 * nrect);
+			/* the first few: the triangles (vertex positions as given), for what the mesh is */
+			static int mesh_left = 6;
+			if (mesh_left > 0) {
+				mesh_left--;
+				char line[400];
+				for (int t0 = 0; t0 < 2 * nrect; t0 += 4) {
+					int o = snprintf(line, sizeof(line), "sweetgl: fast mesh prog %d tri %d:", prog, t0);
+					for (int t = t0; t < t0 + 4 && t < 2 * nrect && o < (int)sizeof(line) - 60; t++) {
+						for (int v = 0; v < 3; v++) {
+							GLfloat q[4];
+							fast_attr_read(&ap, idx[3 * t + v], q);
+							o += snprintf(line + o, sizeof(line) - (size_t)o, "%s%g,%g", v == 0 ? " | " : " ", q[0], q[1]);
+						}
+					}
+					sweet_drm_log("%s", line);
+				}
+			}
 			return fast_no(NO_SHAPE);
 		}
 		nrect = paired;
@@ -1691,6 +1893,31 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	}
 	if (prog_clamp[prog]) {
 		glGetUniformfv((GLuint)prog, prog_loc[prog].carg, ca);
+	}
+	/* blur: each tap's offset (sign * offset[k]) and weight, and divide */
+	float boff[FP_TAPS][2] = {{0}}, bw[FP_TAPS] = {0};
+	int bdiv = 0;
+	if (kind == FPK_BLUR) {
+		const struct prog_blur *pb = prog_blur[prog];
+		GLfloat wv[4][4] = {{0}}, divide = 0;
+		if (pb == NULL) {
+			return fast_no(NO_KIND);
+		}
+		for (int i = 0; i < 4; i++) {
+			if (pb->w[i] >= 0) {
+				glGetUniformfv((GLuint)prog, pb->w[i], wv[i]);
+			}
+		}
+		for (int t = 0; t < pb->n; t++) {
+			GLfloat o[2] = {0, 0};
+			glGetUniformfv((GLuint)prog, pb->off[pb->k[t]], o);
+			boff[t][0] = (float)pb->sign[t] * o[0], boff[t][1] = (float)pb->sign[t] * o[1];
+			bw[t] = wv[pb->wi[t] / 4][pb->wi[t] % 4];
+		}
+		if (pb->div) {
+			glGetUniformfv((GLuint)prog, pb->divloc, &divide);
+			bdiv = divide != 0.0f;
+		}
 	}
 	/* textures: what the shader's texture0 (and texture1 for masks) samples, clamped, one level */
 	GLuint tex = 0, mtex = 0;
@@ -1782,6 +2009,11 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		}
 		if (kind == FPK_CM4 || kind == FPK_CM3) {
 			memcpy(j->cm, cmr, sizeof(j->cm));
+		}
+		if (kind == FPK_BLUR) {
+			j->ntap = prog_blur[prog]->n, j->bdiv = bdiv;
+			memcpy(j->toff, boff, sizeof(j->toff));
+			memcpy(j->tw, bw, sizeof(j->tw));
 		}
 		if (ntex != 0) {
 			/*
@@ -1914,10 +2146,10 @@ fast_log(void)
 	    fst.no[NO_KIND], fst.no[NO_MODE], fst.no[NO_STATE], fst.no[NO_BLEND], fst.no[NO_ARRAY], fst.no[NO_SHAPE],
 	    fst.no[NO_TEX], fst.no[NO_FB], fst.no[NO_MAP]);
 	sweet_drm_log("sweetgl: fast here: map %llu ms, pixels %llu ms; blend none %u premul %u straight %u mixed %u atop %u "
-	    "dstout %u add %u; super %u circle %u masksup %u mixbd %u",
+	    "dstout %u add %u; super %u circle %u masksup %u mixbd %u blur %u",
 	    fs_ms(fst.map_abs), fs_ms(fst.run_abs), fst.blend[FPB_NONE], fst.blend[FPB_PREMUL], fst.blend[FPB_STRAIGHT],
 	    fst.blend[FPB_MIXED], fst.blend[FPB_ATOP], fst.blend[FPB_DSTOUT], fst.blend[FPB_ADD], fst.kind[FPK_SUPER],
-	    fst.kind[FPK_CIRCLE], fst.kind[FPK_MASKSUP], fst.kind[FPK_MIXBD]);
+	    fst.kind[FPK_CIRCLE], fst.kind[FPK_MASKSUP], fst.kind[FPK_MIXBD], fst.kind[FPK_BLUR]);
 	sweet_drm_log("sweetgl: fast not, ms: kind %llu mode %llu state %llu blend %llu array %llu shape %llu tex %llu fb %llu "
 	    "map %llu", fs_ms(fst.no_abs[NO_KIND]), fs_ms(fst.no_abs[NO_MODE]), fs_ms(fst.no_abs[NO_STATE]),
 	    fs_ms(fst.no_abs[NO_BLEND]), fs_ms(fst.no_abs[NO_ARRAY]), fs_ms(fst.no_abs[NO_SHAPE]), fs_ms(fst.no_abs[NO_TEX]),

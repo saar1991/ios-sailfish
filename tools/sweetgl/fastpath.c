@@ -214,6 +214,9 @@ struct fp_rows {
 	 */
 	const float *shA, *shB;
 	int shx0, shy0;
+	/* FPK_BLUR: the texture, and per tap a column and a row table (fp_tap) */
+	const struct fp_img *bsrc;
+	const struct fp_tap *btc, *btr;
 };
 
 static inline float
@@ -405,6 +408,73 @@ shape_value(const struct fp_rows *R, int X, int Y)
 	return clampf((w * 0.5f + (1.0f - d)) / w, 0.0f, 1.0f);
 }
 
+/*
+ * One axis of a blur tap, as softpipe's wrap_linear_clamp_to_edge (i0, i1,
+ * weight of i1) or wrap_nearest_clamp_to_edge (i0 == i1, f 0).
+ */
+struct fp_tap {
+	int i0, i1;
+	float f;
+};
+
+static void
+tap_axis(float s, int size, int linear, struct fp_tap *t)
+{
+	if (linear) {
+		float u = s * (float)size;
+		u = (u < 0.0f ? 0.0f : u > (float)size ? (float)size : u) - 0.5f;
+		int i = (int)floorf(u);
+		t->f = u - floorf(u);
+		t->i0 = i < 0 ? 0 : i;
+		t->i1 = i + 1 >= size ? size - 1 : i + 1;
+	} else {
+		float u = s * (float)size;
+		t->i0 = t->i1 = u < 0.5f ? 0 : u > (float)size - 0.5f ? size - 1 : (int)floorf(u);
+		t->f = 0.0f;
+	}
+}
+
+static inline float
+lerpf(float a, float v0, float v1)
+{
+	return v0 + a * (v1 - v0);
+}
+
+/* the blurred pixel x, y of the job (before blending) */
+static void
+blur_px(const struct fp_rows *R, int x, int y, uint8_t s[4])
+{
+	const struct fp_job *j = R->j;
+	const struct fp_img *src = R->bsrc;
+	const int sb = bpp(src->fmt);
+	float acc[4] = {0, 0, 0, 0};
+	for (int t = 0; t < j->ntap; t++) {
+		/* texture x from the window column (row when turned), texture y from the other */
+		const struct fp_tap *c = &R->btc[(size_t)t * (size_t)R->w + (size_t)x], *r = &R->btr[(size_t)t * (size_t)R->h + (size_t)y];
+		const struct fp_tap *tx = j->swap ? r : c, *ty = j->swap ? c : r;
+		const uint8_t *row0 = src->ptr + (size_t)ty->i0 * (size_t)src->stride, *row1 = src->ptr + (size_t)ty->i1 * (size_t)src->stride;
+		uint8_t a[4], b[4], e[4], f[4];
+		px_rgba(row0 + (size_t)tx->i0 * (size_t)sb, src->fmt, a);
+		px_rgba(row0 + (size_t)tx->i1 * (size_t)sb, src->fmt, b);
+		px_rgba(row1 + (size_t)tx->i0 * (size_t)sb, src->fmt, e);
+		px_rgba(row1 + (size_t)tx->i1 * (size_t)sb, src->fmt, f);
+		for (int k = 0; k < 4; k++) {
+			const float q = lerpf(ty->f, lerpf(tx->f, (float)a[k] * (1.0f / 255.0f), (float)b[k] * (1.0f / 255.0f)),
+			    lerpf(tx->f, (float)e[k] * (1.0f / 255.0f), (float)f[k] * (1.0f / 255.0f)));
+			acc[k] = q * j->tw[t] + acc[k];
+		}
+	}
+	if (j->bdiv) {
+		float m = acc[3] > 0.001f ? acc[3] : 0.001f;
+		for (int k = 0; k < 4; k++) {
+			acc[k] /= m;
+		}
+	}
+	for (int k = 0; k < 4; k++) {
+		s[k] = (uint8_t)(clampf(acc[k], 0.0f, 1.0f) * 255.0f + 0.5f);
+	}
+}
+
 static void
 fp_row(const struct fp_rows *R, int y)
 {
@@ -537,6 +607,8 @@ fp_row(const struct fp_rows *R, int y)
 				float c = clampf(Rf[k], 0.0f, 1.0f);
 				s[k] = (uint8_t)(c * 255.0f + 0.5f);
 			}
+		} else if (j->kind == FPK_BLUR) {
+			blur_px(R, x, y, s);
 		} else if (j->kind == FPK_SUPER || j->kind == FPK_CIRCLE || j->kind == FPK_MASKSUP) {
 			/* color * vec4(l) (* s0), in float like the shader */
 			float l = shape_value(R, j->x0 + x, j->y0 + y);
@@ -616,10 +688,36 @@ fp_run(const struct fp_job *j, struct fp_img *dst, const struct fp_img *src, uin
 		return;
 	}
 	struct fp_rows R = {.j = j, .dst = dst, .src = src, .out = out, .out_stride = out_stride, .w = w, .h = h};
+	struct fp_tap *btab = NULL;
+	if (j->kind == FPK_BLUR) {
+		/* the taps' tables; the pixel loop reads the texture through them (not cols and rows) */
+		if (src == NULL || j->ntap <= 0 || j->ntap > FP_TAPS ||
+		    (btab = malloc(sizeof(*btab) * (size_t)j->ntap * (size_t)(w + h))) == NULL) {
+			return;
+		}
+		const float dx = (j->swap ? j->vb - j->va : j->ub - j->ua) / (j->xb - j->xa);
+		const float dy = (j->swap ? j->ub - j->ua : j->vb - j->va) / (j->yb - j->ya);
+		const float cx0 = j->swap ? j->va : j->ua, cy0 = j->swap ? j->ua : j->va;
+		const int sx = j->swap ? src->h : src->w, sy = j->swap ? src->w : src->h;
+		for (int t = 0; t < j->ntap; t++) {
+			const float ox = j->toff[t][j->swap ? 1 : 0], oy = j->toff[t][j->swap ? 0 : 1];
+			for (int i = 0; i < w; i++) {
+				tap_axis(cx0 + ((float)(j->x0 + i) + 0.5f - j->xa) * dx + ox, sx, j->linear,
+				    &btab[(size_t)t * (size_t)w + (size_t)i]);
+			}
+			for (int i = 0; i < h; i++) {
+				tap_axis(cy0 + ((float)(j->y0 + i) + 0.5f - j->ya) * dy + oy, sy, j->linear,
+				    &btab[(size_t)j->ntap * (size_t)w + (size_t)t * (size_t)h + (size_t)i]);
+			}
+		}
+		R.bsrc = src, R.btc = btab, R.btr = btab + (size_t)j->ntap * (size_t)w;
+		R.src = src = NULL;
+	}
 	int *cols = NULL;
 	if (src != NULL) {
 		cols = malloc(sizeof(int) * 3 * (size_t)(w + h));
 		if (cols == NULL) {
+			free(btab);
 			return;
 		}
 		int *rows = cols + 3 * w;
@@ -641,6 +739,7 @@ fp_run(const struct fp_job *j, struct fp_img *dst, const struct fp_img *src, uin
 		const int nx = j->x1 - sx0 + 1, ny = j->y1 - sy0 + 1;
 		if ((shtab = malloc(sizeof(float) * (size_t)(nx + ny))) == NULL) {
 			free(cols);
+			free(btab);
 			return;
 		}
 		/* the coordinate along x: u (v when turned), along y: v (u) */
@@ -659,6 +758,7 @@ fp_run(const struct fp_job *j, struct fp_img *dst, const struct fp_img *src, uin
 		if (j->src2 == NULL || src == NULL || (mtab = malloc(sizeof(int) * 3 * (size_t)(w + h))) == NULL) {
 			free(shtab);
 			free(cols);
+			free(btab);
 			return;
 		}
 		tables(j, j->src2, j->u2a, j->u2b, j->v2a, j->v2b, j->swap2, j->linear2, 0, w, h, mtab, mtab + 3 * w);
@@ -671,6 +771,7 @@ fp_run(const struct fp_job *j, struct fp_img *dst, const struct fp_img *src, uin
 			free(mtab);
 			free(shtab);
 			free(cols);
+			free(btab);
 			return;
 		}
 		for (int i = 0; i < w; i++) {
@@ -693,4 +794,5 @@ fp_run(const struct fp_job *j, struct fp_img *dst, const struct fp_img *src, uin
 	free(mtab);
 	free(shtab);
 	free(cols);
+	free(btab);
 }
