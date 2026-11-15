@@ -42,7 +42,7 @@ notes are kept under "History" at the end.
 | `main` | 1465988 | BGRA upload for format-0 4bpp IOSurfaces (the copy-error fix) |
 | `sweetgl-diag-0x502` | eed85c5 | shim work on top of 1465988 (table below) |
 | `wp210-auto-input` | 6c51db1 | kernel patches 0204-0207, `mkadt.py --bigfirst` |
-| `wp210-a55-step` | cbb5e10 | 0208: wp210cpumhz steps away from an index a domain already holds (A55 clock) |
+| `wp210-a55-step` | cbb5e10 | 0208: wp210cpumhz steps away from an index a domain already holds (A55 clock); ran, A55s unchanged at 999 MHz |
 | `wp210-status-notes` | this file | notes, install scripts, tools, boot-args |
 
 ## Shim builds (sweetgl-diag-0x502)
@@ -281,6 +281,15 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## wp210-a55-step kernel run (log 7268fa74, kernel `1b095684…`, shim 47ab084, about 10:15)
+
+- **Kernel 0208 ran:** `domain 0 already at index 0: stepped to 1 first`, then index 0 again. **The A55s still read 999 MHz.** Writing the CSRAM state register does not move the A55 clock; something else sets it. Still open.
+- **Run:** comparable to the last one. 2.84 swaps/s, 30/30 steps, slow frames mean 0.94 s, median 0.60 s, worst 3.1 s. No draw differed.
+- **Video** (WhatsApp 10:16):
+  - **Control Center:** its background is now the blurred home screen, as on a real iPhone (it was missing before).
+  - **Spotlight:** its blur looks right.
+  - **Today view:** for about 3 s (video 2:23-2:26) the weather widget shows as a plain bright blue square, without its glass material and text. It is back to normal at 2:31. Then the scripted tap opens Apple News. Not yet explained: it may be a widget reload or a drawing bug.
 
 ## 47ab084 run (log 27f57680, `SGLFAST=1`, about 09:18): the A55s
 
