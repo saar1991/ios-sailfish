@@ -1,0 +1,68 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 0597e36..37b120e 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -77,6 +77,7 @@ enum {
+ static IOLock       *sweet_surface_lock;
+ static SweetSurface *sweet_surface_table[SWEET_SURFACE_MAX_ID];
+ static uint32_t      sweet_surface_users[SWEET_SURFACE_MAX_ID];
++static void sweet_surface_px_event(SweetSurface *s, const char *what);    /* 0213 */
+ static uint32_t      sweet_surface_next_id = 1;
+ static uint32_t      sweet_surface_creates_logged;
+ static uint64_t      sweet_surface_wired;       /* bytes of buffer surfaces */
+@@ -174,6 +175,7 @@ sweet_surface_put(SweetSurface *s)
+ 	}
+ 	IOLockUnlock(sweet_surface_lock);
+ 	if (drop) {
++		sweet_surface_px_event(s, "freed");
+ 		s->release();
+ 	}
+ }
+@@ -857,6 +859,9 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 		IOReturn ret = kIOReturnNotFound;
+ 		if (s != NULL) {
+ 			ret = sweet_surface_get(s) ? returnSurface(s, args) : kIOReturnNotFound;
++			if (ret == kIOReturnSuccess) {
++				sweet_surface_px_event(s, "looked up");
++			}
+ 			s->release();
+ 		}
+ 		sweet_surf_log_once("sel", selector);
+@@ -868,6 +873,9 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 		SweetSurface *s = OSDynamicCast(SweetSurface, obj);
+ 		if (ret == kIOReturnSuccess) {
+ 			ret = (s != NULL && sweet_surface_get(s)) ? returnSurface(s, args) : kIOReturnBadArgument;
++			if (ret == kIOReturnSuccess) {
++				sweet_surface_px_event(s, "looked up by port");
++			}
+ 		}
+ 		OSSafeReleaseNULL(obj);
+ 		sweet_surf_log_once("sel", selector);
+@@ -1038,6 +1046,27 @@ sweet_surface_log_pixels(SweetSurface *s, bool write)
+ 	    s->width, s->height, s->pixelFormat, s->bytesPerElement, s->bytesPerRow, line);
+ }
+ 
++/*
++ * 0213: CollectionsPoster's 420f and BGRA images live under a second (log
++ * 1698ab27: gone before the next sample) and never pass the lock traps.
++ * Log their bytes when another process looks one up (backboardd taking the
++ * wallpaper) and when the last user frees one (its final contents).
++ */
++static uint32_t sweet_surf_px_events;
++
++static void
++sweet_surface_px_event(SweetSurface *s, const char *what)
++{
++	char line[200], name[32];
++	if (sweet_surf_px_events >= 150 || !sweet_surface_px_wanted(s) || !sweet_surface_px_line(s, line, sizeof(line))) {
++		return;
++	}
++	sweet_surf_px_events++;
++	proc_selfname(name, sizeof(name));
++	IOLog("SWEET PIX: %s %s id %u %ux%u fmt 0x%x bpr %u planes %u:%s\n", name, what, s->id, s->width, s->height,
++	    s->pixelFormat, s->bytesPerRow, s->planeCount, line);
++}
++
+ /*
+  * 0212: the same bytes for every large image, sampled by the kernel itself
+  * (from the perf thread, once a second while the system starts), logged
