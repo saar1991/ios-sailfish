@@ -287,7 +287,8 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
 ## Kernel 0216 runs (videos 22:30:15 and 22:30:24): panic, and magenta still there
 
 - **Panic (my bug):** first boot reached the home screen, then `Kernel data abort` at pc …74b32a8, lr …7575f24, x0 0xfffffe100d3450d3, x1 a kernel constant. 0216 compared `ni_cnd.cn_nameptr` with "RuntimeSnapshot-", but `vn_open_auth` frees that path buffer (`nameidone`, line 695) before the VNOP_OPEN block. Fixed in **0217 (5c0a12b)**: the name comes from `vnode_getname`.
-- **Second boot ran**, and still showed magenta at 32-33 s, blue from 34 s. Its log should show whether any RuntimeSnapshot read was denied (no log sent yet).
+- **Second boot (log 7a3d258a) ran 0215, not 0216:** its open log has `/Library/Wallpaper/…` paths, which 0216 skips, and no `denied` lines; so the magenta in that video is expected.
+- **That log shows the reader:** PosterBoard writes `RuntimeSnapshot-home/lock.atx` at about 35 s; at about 36.5 s **SpringBoard reads `RuntimeSnapshot-lock.atx` and `-home.atx`** (and `RuntimeSnapshotMetadata-home.plist`); the very next frame is the magenta one (prog 35's single full-screen draw, swap 14). 0217 refuses exactly that read.
 
 ## Kernel 0215 run (log e9bb670e): the snapshot is rewritten at each boot
 
