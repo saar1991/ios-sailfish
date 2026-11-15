@@ -70,7 +70,7 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | e5f492c | flat nine-slice cells, ONE/ONE blend, colour matrix over the backdrop | 16292800 | `e18828d6…` | **yes, current** (about 22:17) |
 | 5956cb2 | diagnostics: draws over 300 ms, unrecognised fragment shaders logged whole | 16292912 | `cb25b600…` | yes (about 22:40) |
 | 9bfed51 | supercircle / circle shapes, masked supercircle icons, mix over the backdrop; unrecognised vertex shaders logged | 16292992 | `3d2abd4a…` | yes (about 07:52) |
-| d8a55df | CA's blur passes; per-kind detail budget, mesh lines for pairing failures | | | pushed, to build |
+| d8a55df | CA's blur passes; per-kind detail budget, mesh lines for pairing failures | 16310032 | `e0f2c5c9…` | script sent (08:19) |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
