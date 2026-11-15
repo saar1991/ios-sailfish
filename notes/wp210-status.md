@@ -69,7 +69,8 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | 9a67231 | nine-slice pairing, mipmaps when not minified, luminanceCurve, dst-out | 16292736 | `14dd9a0c…` | yes (about 21:57) |
 | e5f492c | flat nine-slice cells, ONE/ONE blend, colour matrix over the backdrop | 16292800 | `e18828d6…` | **yes, current** (about 22:17) |
 | 5956cb2 | diagnostics: draws over 300 ms, unrecognised fragment shaders logged whole | 16292912 | `cb25b600…` | yes (about 22:40) |
-| 9bfed51 | supercircle / circle shapes, masked supercircle icons, mix over the backdrop; unrecognised vertex shaders logged | 16292992 | `3d2abd4a…` | script sent (07:50) |
+| 9bfed51 | supercircle / circle shapes, masked supercircle icons, mix over the backdrop; unrecognised vertex shaders logged | 16292992 | `3d2abd4a…` | yes (about 07:52) |
+| d8a55df | CA's blur passes; per-kind detail budget, mesh lines for pairing failures | | | pushed, to build |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -277,6 +278,23 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## 9bfed51 run (log 86650232, `SGLFAST=1`, about 07:55)
+
+- **Self-check:** no draw differed. 2.58 frames/s, 27/30 steps, median first frame 0.41 s. It ended on the home screen (10/s).
+- **Recognised:** all four new kinds (prog 27 mix, 45 supercircle, 69 masked supercircle, 89 circle).
+- **Circle:** drawn on the CPU (130 draws, verified).
+- **Masked supercircle (prog 69, about 5 s per run) and mix (prog 27):** almost every draw was rejected as a shape. For prog 27, 8 triangles don't pair into rectangles. The detail lines for prog 69 weren't printed, because the shared budget was used up early in the boot.
+- **Blur vertex shaders:**
+  - 4 taps at `t0 + offset[i]`, or 14 at `t0 ± offset[0..6]`.
+  - The fragment shaders take 4, 8, 10, 12 or 14 of them, in symmetric pairs, weights `weight[0..1]`, and divide by alpha when `divide` is set.
+  - `notes/tools/srcs.py` pulls the sources out of a decoded log.
+- **Next build (d8a55df):**
+  - the blur kind, generic: parsed from both shaders; float bilinear sampling as softpipe does it, clamp to edge
+    - host test `blurtest.c`: 4.3M pixels, max difference 1
+    - a full-screen 12-tap pass takes 137 ms on one host core (softpipe 2.1-2.6 s on the phone)
+  - detail budget per reason per kind
+  - meshes of failed pairings logged
 
 ## 5956cb2 run (log e556f5f9, `SGLFAST=1`, about 22:42): diagnostics
 
