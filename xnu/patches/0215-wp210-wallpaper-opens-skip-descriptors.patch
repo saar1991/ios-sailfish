@@ -1,0 +1,26 @@
+diff --git a/bsd/vfs/vfs_vnops.c b/bsd/vfs/vfs_vnops.c
+index a3e0b09..52d9d2e 100644
+--- a/bsd/vfs/vfs_vnops.c
++++ b/bsd/vfs/vfs_vnops.c
+@@ -215,12 +215,20 @@ sweet_open_log(vnode_t vp, int fmode)
+ 		low[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+ 	}
+ 	low[i] = 0;
++	/*
++	 * 0215: PosterBoard rewrites every poster descriptor at each boot (log
++	 * 6c8df7e3: 280 lines, all before the magenta frame): skip those and app
++	 * bundles, and print the path's last 200 characters (the log cuts lines).
++	 */
++	if (strnstr(low, "descriptors/", sizeof(low)) != NULL || strnstr(low, ".app/", sizeof(low)) != NULL) {
++		return;
++	}
+ 	static const char *const keys[] = {"poster", "snapshot", "wallpaper", ".ktx", ".heic", ".cpbitmap"};
+ 	for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+ 		if (strnstr(low, keys[k], sizeof(low)) != NULL) {
+ 			sweet_open_logged++;
+ 			printf("SWEET OPEN: %s %s%s%s %s\n", name, (fmode & FREAD) ? "r" : "", (fmode & FWRITE) ? "w" : "",
+-			    (fmode & O_CREAT) ? "c" : "", path);
++			    (fmode & O_CREAT) ? "c" : "", i > 200 ? path + i - 200 : path);
+ 			return;
+ 		}
+ 	}
