@@ -42,7 +42,7 @@ notes are kept under "History" at the end.
 | `main` | 1465988 | BGRA upload for format-0 4bpp IOSurfaces (the copy-error fix) |
 | `sweetgl-diag-0x502` | eed85c5 | shim work on top of 1465988 (table below) |
 | `wp210-auto-input` | 6c51db1 | kernel patches 0204-0207, `mkadt.py --bigfirst` |
-| `wp210-a55-step` | 5872b22 | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines); 0211: frames started on the panel's TE when found (`SWEET TE:`), wallpaper image bytes logged (`SWEET PIX:`); 0212: large images sampled once a second while booting |
+| `wp210-a55-step` | 393911e | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines); 0211: frames started on the panel's TE when found (`SWEET TE:`), wallpaper image bytes logged (`SWEET PIX:`); 0212: large images sampled once a second while booting; 0213: their bytes at lookup and free |
 | `wp210-status-notes` | this file | notes, install scripts, tools, boot-args |
 
 ## Shim builds (sweetgl-diag-0x502)
@@ -283,6 +283,14 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## Kernel 0212 run (log 1698ab27, about 18:20): wallpaper images too short-lived to sample
+
+- Magenta still at startup (user).
+- The magenta frame (swap 10, frame 7) is one full-screen opaque copy, prog 35, the plain `vec4(t0.rgb,1)` shader, 253 ms: its texture already holds the magenta bytes. The fast path drew it as softpipe would.
+- CollectionsPoster's 1105x1160 420f (id 51) and BGRA (52/54/56) images are created between the 37 s and 38 s samples and gone at 38 s; the once-a-second sampler never saw them. backboardd's 1105x1160 copy (id 64, created after the magenta frame) stayed all zero.
+- **Next kernel (patch 0213):** large images' bytes when another process looks one up and when the last user frees it (`SWEET PIX: <proc> looked up / freed id …`).
+- Suspect if the BGRA image holds the CbCr bytes: the plane fields of the lock result (0x68 + plane * 0x80, from patch 0046), never checked against IOSurface.framework.
 
 ## Kernel 0211 run (log ec3478a8, video 17:49): TE fixes the line strips
 
