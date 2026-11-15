@@ -1,0 +1,269 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index b9ec877..a2e0cde 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -50,6 +50,8 @@ extern struct processor *thread_bind(struct processor *processor);
+ extern uint64_t sweet_fb_stat_swaps, sweet_fb_stat_presents, sweet_fb_stat_present_abs;
+ extern uint64_t sweet_fbcon_stat_kicks, sweet_fbcon_stat_done, sweet_fbcon_stat_timeout;
+ extern uint64_t sweet_fbcon_stat_busy, sweet_fbcon_stat_busy_timeout;
++extern uint64_t sweet_fbcon_te_waits, sweet_fbcon_te_timeouts;
++extern bool sweet_fbcon_te_probe(uint32_t out[11]);
+ extern uint64_t sweet_fb_stat_gap[4];
+ extern uint32_t sweet_touch_moves;
+ void sweet_perf_init(void);
+@@ -670,7 +672,7 @@ wp210_cpufreq_watch(void)
+ static void
+ wp210_mhz_fast(void *arg, wait_result_t result)
+ {
+-	int ncpu = (int)ml_get_cpu_count(), tries[3] = {0, 0, 0};
++	int ncpu = (int)ml_get_cpu_count(), tries[3] = {0, 0, 0}, te_probes = 0;
+ 	uint64_t last[3] = {0, 0, 0};
+ 	(void)arg;
+ 	(void)result;
+@@ -757,10 +759,23 @@ wp210_mhz_fast(void *arg, wait_result_t result)
+ 				    (unsigned long long)want, hows[how], tries[d], r[0x88 / 4], r[0x8c / 4], r[0x84 / 4]);
+ 			}
+ 		}
+-		/* the panel's transfers, every 30 s: waits for the DSI to finish a frame (0210) */
++		/* the panel's transfers, every 30 s: waits for the DSI to finish a frame (0210) and for TE (0211) */
+ 		if (up % 30 < (up < 150 ? 1u : 5u)) {
+-			printf("SWEET PANEL: %llu s kicks %llu, waited for a busy DSI %llu times (%llu gave up after 25 ms)\n",
+-			    (unsigned long long)up, sweet_fbcon_stat_kicks, sweet_fbcon_stat_busy, sweet_fbcon_stat_busy_timeout);
++			printf("SWEET PANEL: %llu s kicks %llu, waited for a busy DSI %llu times (%llu gave up after 25 ms), "
++			    "for TE %llu times (%llu gave up after 20 ms)\n",
++			    (unsigned long long)up, sweet_fbcon_stat_kicks, sweet_fbcon_stat_busy, sweet_fbcon_stat_busy_timeout,
++			    sweet_fbcon_te_waits, sweet_fbcon_te_timeouts);
++		}
++		/* the panel's TE, at about 20 s (frames start on it from then) and again at 60 s, as a check (0211) */
++		if ((up >= 20 && te_probes == 0) || (up >= 60 && te_probes == 1)) {
++			uint32_t te[11];
++			te_probes++;
++			if (sweet_fbcon_te_probe(te)) {
++				printf("SWEET TE: %llu s mode %#x txrx %#x inten %#x intsta %#x; in 100 ms TE_RDY %u (every %u us), "
++				    "EXT_TE_RDY %u (every %u us), with EXT_TE_EN %u (every %u us); frames start on %s\n",
++				    (unsigned long long)up, te[0], te[1], te[2], te[3], te[4], te[5], te[6], te[7], te[8], te[9],
++				    te[10] == 0 ? "no TE" : te[10] == (1u << 4) ? "EXT_TE_RDY" : "TE_RDY");
++			}
+ 		}
+ 		perf_wait(up < 150 ? 1 : 5);
+ 	}
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index fd42f58..c35e208 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -953,6 +953,68 @@ IOSurfaceRootUserClient::trapLock(void *id, __unused void *options, void *seedOu
+ 	return ret;
+ }
+ 
++/*
++ * 0211: the boot wallpaper is magenta for 2 s (video 16:45) with red = blue
++ * in every spot, as if the Cb,Cr,Cb,Cr bytes of a 420f image's second plane
++ * were shown as B,G,R,A. CollectionsPoster makes 1105x1160 420f images and a
++ * BGRA image of the same size after each; backboardd then makes a 32-bit
++ * one (id 64). For the first unlock of each such image (512x512 or more,
++ * 420f, BGRA or format 0, not the panel's 750x1334), log 4 bytes at the
++ * middle column, a quarter, half and three quarters down, of every plane:
++ * which image first holds the wrong bytes.
++ */
++static uint32_t sweet_surf_px_ids[48];
++static uint32_t sweet_surf_px_n;
++
++static void
++sweet_surface_log_pixels(SweetSurface *s, bool write)
++{
++	uint32_t f = s->pixelFormat;
++	if (s->width < 512 || s->height < 512 || (s->width == 750 && s->height == 1334) ||
++	    (f != 0 && f != 0x34323066 /* 420f */ && f != 0x34323076 /* 420v */ && f != 0x42475241 /* BGRA */)) {
++		return;
++	}
++	IOLockLock(sweet_surface_lock);
++	bool seen = sweet_surf_px_n >= 48;
++	for (uint32_t i = 0; i < sweet_surf_px_n && !seen; i++) {
++		seen = sweet_surf_px_ids[i] == s->id;
++	}
++	if (!seen) {
++		sweet_surf_px_ids[sweet_surf_px_n++] = s->id;
++	}
++	IOLockUnlock(sweet_surface_lock);
++	if (seen) {
++		return;
++	}
++	uint8_t *base = (uint8_t *)s->kernelAddress();
++	if (base == NULL) {
++		return;
++	}
++	char line[256], name[32];
++	int m = 0;
++	uint32_t np = s->planeCount > 0 ? s->planeCount : 1;
++	for (uint32_t p = 0; p < np && p < 2; p++) {
++		uint32_t w = s->planeCount > 0 ? s->planes[p].width : s->width;
++		uint32_t h = s->planeCount > 0 ? s->planes[p].height : s->height;
++		uint32_t bpr = s->planeCount > 0 ? s->planes[p].bytesPerRow : s->bytesPerRow;
++		uint32_t off = s->planeCount > 0 ? s->planes[p].offset : 0;
++		uint32_t bpe = s->planeCount > 0 ? s->planes[p].bytesPerElement : s->bytesPerElement;
++		m += snprintf(line + m, sizeof(line) - m, " plane %u:", p);
++		for (uint32_t q = 1; q <= 3; q++) {
++			uint64_t at = (uint64_t)off + (uint64_t)(h * q / 4) * bpr + (uint64_t)(w / 2) * (bpe ? bpe : 1);
++			if (at + 4 > s->allocSize) {
++				m += snprintf(line + m, sizeof(line) - m, " -");
++				continue;
++			}
++			m += snprintf(line + m, sizeof(line) - m, " %02x%02x%02x%02x", base[at], base[at + 1], base[at + 2],
++			    base[at + 3]);
++		}
++	}
++	proc_selfname(name, sizeof(name));
++	IOLog("SWEET PIX: %s %s id %u %ux%u fmt 0x%x bpe %u bpr %u:%s\n", name, write ? "wrote" : "read", s->id,
++	    s->width, s->height, f, s->bytesPerElement, s->bytesPerRow, line);
++}
++
+ IOReturn
+ IOSurfaceRootUserClient::trapUnlock(void *id, void *options, void *seedOut,
+     void *, void *, void *)
+@@ -961,6 +1023,7 @@ IOSurfaceRootUserClient::trapUnlock(void *id, void *options, void *seedOut,
+ 	if (s == NULL) {
+ 		return kIOReturnNotFound;
+ 	}
++	sweet_surface_log_pixels(s, !((uintptr_t)options & kIOSurfaceLockReadOnly));
+ 	IOReturn ret = sweet_surface_seed_out(s, seedOut,
+ 	    !((uintptr_t)options & kIOSurfaceLockReadOnly));
+ 	s->release();
+diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
+index 6c29b9f..bce4ebe 100644
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -974,10 +974,9 @@ static uint64_t fbcon_mtk_last;
+ /*
+  * MediaTek DSI: INTSTA (+0x0c) bit 31 is DSI_BUSY while a frame is being
+  * sent (Linux mtk_dsi.c, mtk_dsi_wait_for_idle). A command-mode frame of
+- * 1080x2412 takes close to the 1/60 s kick spacing; a START while one is
+- * still going restarts the transfer part way through a row, and the panel
+- * shows a band a few rows high with the picture shifted sideways (videos
+- * 14:37, 0:41/0:49/1:10; e38a725 1:49 likely the same).
++ * 1080x2412 takes close to the 1/60 s kick spacing, so a START could come
++ * while one is still going (0210). It rarely does (23 waits in 210 s) and
++ * did not explain the thin noise strips: see the TE wait below (0211).
+  */
+ uint64_t sweet_fbcon_stat_busy, sweet_fbcon_stat_busy_timeout;
+ 
+@@ -1006,12 +1005,120 @@ sweet_fbcon_wait_idle(void)
+ 	}
+ }
+ 
++/*
++ * Panel TE (0211). The busy wait above did not change the thin noise strips
++ * (video 16:45: about 13 a minute before and after). Each strip lasts one
++ * refresh, while transfers came only every ~100 ms: the noise is the panel
++ * scanning rows that a transfer is writing at that moment, as happens when
++ * transfers are not started on the panel's TE (tearing effect) signal.
++ * MediaTek DSI (Linux mtk_dsi.c): INTSTA bit 2 TE_RDY and bit 4 EXT_TE_RDY,
++ * set by the hardware and cleared by writing 0 to them; TXRX_CTRL (+0x18)
++ * bit 8 TE_FREERUN, 9 EXT_TE_EN, 10 EXT_TE_EDGE. sweet_fbcon_te_probe() (from
++ * the perf thread) logs the registers and how often each flag sets. When
++ * one ticks like a refresh (40..130 Hz) with the registers as LK left them,
++ * frames start on it (at most 20 ms wait); boot-arg sweette=0 never does.
++ */
++#define FBCON_MTK_INTSTA        (0x0c / 4)
++#define FBCON_MTK_TXRX          (0x18 / 4)
++uint64_t sweet_fbcon_te_waits, sweet_fbcon_te_timeouts;
++static uint32_t fbcon_mtk_te_flag;      /* INTSTA bit frames start on, 0 = none */
++
++static void
++fbcon_mtk_te_clear(uint32_t flag)
++{
++	volatile uint32_t *sta = &fbcon_mtk_dsi[FBCON_MTK_INTSTA];
++	*sta = *sta & ~flag;
++}
++
++/* How many times flag sets in ms milliseconds, and the mean period between them in us. */
++static uint32_t
++fbcon_mtk_te_count(uint32_t flag, uint32_t ms, uint32_t *period_us)
++{
++	uint64_t tb = gPEClockFrequencyInfo.timebase_frequency_hz;
++	uint64_t t0 = mach_absolute_time(), end = t0 + tb * ms / 1000, first = 0, last = 0;
++	uint32_t n = 0;
++	fbcon_mtk_te_clear(flag);
++	while (mach_absolute_time() < end) {
++		if (fbcon_mtk_dsi[FBCON_MTK_INTSTA] & flag) {
++			last = mach_absolute_time();
++			if (n++ == 0) {
++				first = last;
++			}
++			fbcon_mtk_te_clear(flag);
++		}
++		delay(20);
++	}
++	*period_us = n > 1 ? (uint32_t)((last - first) * 1000000 / tb / (n - 1)) : 0;
++	return n;
++}
++
++/*
++ * out: mode, txrx, inten, intsta, TE_RDY count, its period (us), EXT_TE_RDY
++ * count, period, the same with EXT_TE_EN, period, the flag frames start on.
++ * Returns false without a MediaTek DSI.
++ */
++bool sweet_fbcon_te_probe(uint32_t out[11]);
++bool
++sweet_fbcon_te_probe(uint32_t out[11])
++{
++	if (fbcon_mtk_dsi == NULL) {
++		return false;
++	}
++	volatile uint32_t *d = fbcon_mtk_dsi;
++	uint32_t txrx = d[FBCON_MTK_TXRX];
++	out[0] = d[0x14 / 4];
++	out[1] = txrx;
++	out[2] = d[0x08 / 4];
++	out[3] = d[FBCON_MTK_INTSTA];
++	out[4] = fbcon_mtk_te_count(1u << 2, 100, &out[5]);
++	out[6] = fbcon_mtk_te_count(1u << 4, 100, &out[7]);
++	out[8] = out[9] = 0;
++	if (out[6] == 0 && !(txrx & (1u << 9))) {
++		/* the external TE pin, with EXT_TE_EN for 100 ms only (no frame is started here) */
++		d[FBCON_MTK_TXRX] = txrx | (1u << 9);
++		out[8] = fbcon_mtk_te_count(1u << 4, 100, &out[9]);
++		d[FBCON_MTK_TXRX] = txrx;
++	}
++	int on = 1;
++	PE_parse_boot_argn("sweette", &on, sizeof(on));
++	uint32_t flag = 0;
++	if (on && out[6] >= 4 && out[6] <= 13) {
++		flag = 1u << 4;
++	} else if (on && out[4] >= 4 && out[4] <= 13) {
++		flag = 1u << 2;
++	}
++	fbcon_mtk_te_flag = flag;
++	out[10] = flag;
++	return true;
++}
++
++/* Until the panel's next TE (at most 20 ms), when sweet_fbcon_te_probe found one. */
++static void
++fbcon_mtk_wait_te(void)
++{
++	uint32_t flag = fbcon_mtk_te_flag;
++	if (flag == 0) {
++		return;
++	}
++	uint64_t end = mach_absolute_time() + gPEClockFrequencyInfo.timebase_frequency_hz / 50;
++	fbcon_mtk_te_clear(flag);
++	sweet_fbcon_te_waits++;
++	while (!(fbcon_mtk_dsi[FBCON_MTK_INTSTA] & flag)) {
++		if (mach_absolute_time() > end) {
++			sweet_fbcon_te_timeouts++;
++			return;
++		}
++		delay(20);
++	}
++}
++
+ static void
+ fbcon_mtk_kick(bool force)
+ {
+ 	uint64_t gap = gPEClockFrequencyInfo.timebase_frequency_hz / 60;
+ 	if (force) {
+ 		sweet_fbcon_wait_idle();
++		fbcon_mtk_wait_te();
+ 	} else if (fbcon_mtk_busy()) {
+ 		return;         /* dropped, like a kick inside the 1/60 s window */
+ 	}
