@@ -1,0 +1,164 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index a2e0cde..93c5cfb 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -52,6 +52,7 @@ extern uint64_t sweet_fbcon_stat_kicks, sweet_fbcon_stat_done, sweet_fbcon_stat_
+ extern uint64_t sweet_fbcon_stat_busy, sweet_fbcon_stat_busy_timeout;
+ extern uint64_t sweet_fbcon_te_waits, sweet_fbcon_te_timeouts;
+ extern bool sweet_fbcon_te_probe(uint32_t out[11]);
++extern void sweet_surface_sample(uint64_t up);
+ extern uint64_t sweet_fb_stat_gap[4];
+ extern uint32_t sweet_touch_moves;
+ void sweet_perf_init(void);
+@@ -766,6 +767,10 @@ wp210_mhz_fast(void *arg, wait_result_t result)
+ 			    (unsigned long long)up, sweet_fbcon_stat_kicks, sweet_fbcon_stat_busy, sweet_fbcon_stat_busy_timeout,
+ 			    sweet_fbcon_te_waits, sweet_fbcon_te_timeouts);
+ 		}
++		/* the large images' bytes, when they change, while the system starts (0212: the magenta wallpaper) */
++		if (up >= 10 && up <= 75) {
++			sweet_surface_sample(up);
++		}
+ 		/* the panel's TE, at about 20 s (frames start on it from then) and again at 60 s, as a check (0211) */
+ 		if ((up >= 20 && te_probes == 0) || (up >= 60 && te_probes == 1)) {
+ 			uint32_t te[11];
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index c35e208..0597e36 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -966,32 +966,25 @@ IOSurfaceRootUserClient::trapLock(void *id, __unused void *options, void *seedOu
+ static uint32_t sweet_surf_px_ids[48];
+ static uint32_t sweet_surf_px_n;
+ 
+-static void
+-sweet_surface_log_pixels(SweetSurface *s, bool write)
++/* Large 420f / BGRA / format-0 images (not the panel's 750x1334). */
++static bool
++sweet_surface_px_wanted(SweetSurface *s)
+ {
+ 	uint32_t f = s->pixelFormat;
+-	if (s->width < 512 || s->height < 512 || (s->width == 750 && s->height == 1334) ||
+-	    (f != 0 && f != 0x34323066 /* 420f */ && f != 0x34323076 /* 420v */ && f != 0x42475241 /* BGRA */)) {
+-		return;
+-	}
+-	IOLockLock(sweet_surface_lock);
+-	bool seen = sweet_surf_px_n >= 48;
+-	for (uint32_t i = 0; i < sweet_surf_px_n && !seen; i++) {
+-		seen = sweet_surf_px_ids[i] == s->id;
+-	}
+-	if (!seen) {
+-		sweet_surf_px_ids[sweet_surf_px_n++] = s->id;
+-	}
+-	IOLockUnlock(sweet_surface_lock);
+-	if (seen) {
+-		return;
+-	}
++	return s->width >= 512 && s->height >= 512 && !(s->width == 750 && s->height == 1334) &&
++	       (f == 0 || f == 0x34323066 /* 420f */ || f == 0x34323076 /* 420v */ || f == 0x42475241 /* BGRA */);
++}
++
++/* " plane 0: xxxxxxxx xxxxxxxx xxxxxxxx plane 1: ..." into line; false without a kernel address. */
++static bool
++sweet_surface_px_line(SweetSurface *s, char *line, size_t len)
++{
+ 	uint8_t *base = (uint8_t *)s->kernelAddress();
+ 	if (base == NULL) {
+-		return;
++		return false;
+ 	}
+-	char line[256], name[32];
+ 	int m = 0;
++	line[0] = 0;
+ 	uint32_t np = s->planeCount > 0 ? s->planeCount : 1;
+ 	for (uint32_t p = 0; p < np && p < 2; p++) {
+ 		uint32_t w = s->planeCount > 0 ? s->planes[p].width : s->width;
+@@ -999,20 +992,86 @@ sweet_surface_log_pixels(SweetSurface *s, bool write)
+ 		uint32_t bpr = s->planeCount > 0 ? s->planes[p].bytesPerRow : s->bytesPerRow;
+ 		uint32_t off = s->planeCount > 0 ? s->planes[p].offset : 0;
+ 		uint32_t bpe = s->planeCount > 0 ? s->planes[p].bytesPerElement : s->bytesPerElement;
+-		m += snprintf(line + m, sizeof(line) - m, " plane %u:", p);
++		m += snprintf(line + m, len - m, " plane %u:", p);
+ 		for (uint32_t q = 1; q <= 3; q++) {
+ 			uint64_t at = (uint64_t)off + (uint64_t)(h * q / 4) * bpr + (uint64_t)(w / 2) * (bpe ? bpe : 1);
+ 			if (at + 4 > s->allocSize) {
+-				m += snprintf(line + m, sizeof(line) - m, " -");
++				m += snprintf(line + m, len - m, " -");
+ 				continue;
+ 			}
+-			m += snprintf(line + m, sizeof(line) - m, " %02x%02x%02x%02x", base[at], base[at + 1], base[at + 2],
++			m += snprintf(line + m, len - m, " %02x%02x%02x%02x", base[at], base[at + 1], base[at + 2],
+ 			    base[at + 3]);
+ 		}
+ 	}
++	return true;
++}
++
++/*
++ * 0211: the boot wallpaper is magenta for 2 s (video 16:45) with red = blue
++ * in every spot, as if the Cb,Cr,Cb,Cr bytes of a 420f image's second plane
++ * were shown as B,G,R,A. For the first unlock of each large image, log 4
++ * bytes at the middle column, a quarter, half and three quarters down, of
++ * every plane. (Log ec3478a8: CollectionsPoster's images never come here;
++ * backboardd's 1105x1160 copy was all zero at its first unlock.)
++ */
++static void
++sweet_surface_log_pixels(SweetSurface *s, bool write)
++{
++	if (!sweet_surface_px_wanted(s)) {
++		return;
++	}
++	IOLockLock(sweet_surface_lock);
++	bool seen = sweet_surf_px_n >= 48;
++	for (uint32_t i = 0; i < sweet_surf_px_n && !seen; i++) {
++		seen = sweet_surf_px_ids[i] == s->id;
++	}
++	if (!seen) {
++		sweet_surf_px_ids[sweet_surf_px_n++] = s->id;
++	}
++	IOLockUnlock(sweet_surface_lock);
++	char line[200], name[32];
++	if (seen || !sweet_surface_px_line(s, line, sizeof(line))) {
++		return;
++	}
+ 	proc_selfname(name, sizeof(name));
+ 	IOLog("SWEET PIX: %s %s id %u %ux%u fmt 0x%x bpe %u bpr %u:%s\n", name, write ? "wrote" : "read", s->id,
+-	    s->width, s->height, f, s->bytesPerElement, s->bytesPerRow, line);
++	    s->width, s->height, s->pixelFormat, s->bytesPerElement, s->bytesPerRow, line);
++}
++
++/*
++ * 0212: the same bytes for every large image, sampled by the kernel itself
++ * (from the perf thread, once a second while the system starts), logged
++ * when they change: which image turns magenta, and when, whoever writes it.
++ */
++static uint32_t sweet_surf_px_hash[SWEET_SURFACE_MAX_ID];
++static uintptr_t sweet_surf_px_obj[SWEET_SURFACE_MAX_ID];
++static uint32_t sweet_surf_px_lines;
++
++extern "C" void sweet_surface_sample(uint64_t up);
++void
++sweet_surface_sample(uint64_t up)
++{
++	for (uint32_t id = 1; id < SWEET_SURFACE_MAX_ID && sweet_surf_px_lines < 300; id++) {
++		SweetSurface *s = sweet_surface_copy(id);
++		if (s == NULL) {
++			continue;
++		}
++		char line[200];
++		if (sweet_surface_px_wanted(s) && sweet_surface_px_line(s, line, sizeof(line))) {
++			uint32_t h = 2166136261u;
++			for (const char *c = line; *c; c++) {
++				h = (h ^ (uint8_t)*c) * 16777619u;
++			}
++			if (sweet_surf_px_obj[id] != (uintptr_t)s || sweet_surf_px_hash[id] != h) {
++				sweet_surf_px_obj[id] = (uintptr_t)s;
++				sweet_surf_px_hash[id] = h;
++				sweet_surf_px_lines++;
++				IOLog("SWEET PIX: %llu s id %u %ux%u fmt 0x%x bpr %u:%s\n", (unsigned long long)up, id, s->width, s->height,
++				    s->pixelFormat, s->bytesPerRow, line);
++			}
++		}
++		s->release();
++	}
+ }
+ 
+ IOReturn
