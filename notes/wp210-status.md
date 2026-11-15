@@ -71,7 +71,8 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | 5956cb2 | diagnostics: draws over 300 ms, unrecognised fragment shaders logged whole | 16292912 | `cb25b600…` | yes (about 22:40) |
 | 9bfed51 | supercircle / circle shapes, masked supercircle icons, mix over the backdrop; unrecognised vertex shaders logged | 16292992 | `3d2abd4a…` | yes (about 07:52) |
 | d8a55df | CA's blur passes; per-kind detail budget, mesh lines for pairing failures | 16310032 | `e0f2c5c9…` | yes (about 08:25) |
-| 0e13161 | self-check: 3 draws covering 1M pixels is enough; nine-slices checked as a whole; CPU time by kind | 16310160 | `f9d8ab6d…` | script sent (08:53) |
+| 0e13161 | self-check: 3 draws covering 1M pixels is enough; nine-slices checked as a whole; CPU time by kind | 16310160 | `f9d8ab6d…` | yes (about 08:55) |
+| (next) | threads from 4096 pixels; draw time by CPU | | | pushed, to build |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -279,6 +280,32 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## 0e13161 run (log 0ca183a3, `SGLFAST=1`, about 08:58)
+
+- **Self-check:** no draw differed.
+- **Steps:** 30/30 drew a frame. Median first frame 0.25 s (the best so far), mean 0.73 s.
+- **Swap rate:** 2.28/s (a noisy measure).
+- **Qualifying draws softpipe drew** (self-checks, or waiting for them): 9.6 s per test run, down from 14.8 s.
+- **CPU path by kind,** over the test (ms / Mpx, then ns per pixel):
+
+  | Kind | ms | Mpx | ns/px |
+  |---|---|---|---|
+  | copy | 6603 | 212 | 31 |
+  | darken tint | 4108 | 15 | 272 |
+  | tint | 1488 | 34 | 44 |
+  | noisy copy | 1329 | 85 | 16 |
+  | alpha copy | 1278 | 7.7 | 166 |
+  | fill | 1269 | 233 | 5 |
+  | alpha tint | 1109 | 6.1 | 182 |
+  | circle | 891 | 3.6 | 247 |
+  | blur | 833 | 7.5 | 111 |
+
+  On one host core: tint 34, alpha tint 17-32, darken tint 34, circle 41 ns/px (`notes/tools/fptest/bench.c`). The phone is 6-8 times slower, as if the draws ran on an A55 at 1 GHz.
+- **Next build:**
+  - dispatch_apply from 4096 pixels (was 65536)
+  - draw time by CPU number, to see where backboardd's render thread runs
+  - If it is the A55s: raise their clock (they read 999 MHz), or mark the clusters E/P in the ADT so XNU's AMP scheduler puts UI threads on the A78s.
 
 ## d8a55df run (log 62a4a7ac, `SGLFAST=1`, about 08:30): blur on the CPU
 
