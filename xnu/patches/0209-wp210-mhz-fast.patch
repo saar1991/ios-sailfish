@@ -1,0 +1,62 @@
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -677,6 +677,48 @@
+ }
+ 
+ #define PERF_SAFE_CPUS 8
++
++/*
++ * sweetperf=2: every CPU's clock once a second for the first 150 s after
++ * boot, with the cpufreq state of each domain. The CPUs XNU numbers 0-3
++ * drop to half their clock at some point while the system starts (8 cores:
++ * the A55s, 2000 -> 999 MHz; cpus=5 big-first: the boot A55 and the three
++ * domain-1 A78s, 2350 -> 1174), the cpufreq state unchanged. These lines
++ * sit among the boot log's, to show what the drop coincides with.
++ */
++static void
++wp210_mhz_fast(void *arg, wait_result_t result)
++{
++	int ncpu = (int)ml_get_cpu_count();
++	(void)arg;
++	(void)result;
++	if (ncpu > PERF_SAFE_CPUS) {
++		ncpu = PERF_SAFE_CPUS;
++	}
++	for (;;) {
++		uint64_t up = perf_ns(mach_absolute_time()) / NSEC_PER_SEC;
++		if (up > 150) {
++			break;
++		}
++		uint64_t mhz[PERF_SAFE_CPUS] = {0};
++		for (int c = 0; c < ncpu; c++) {
++			thread_bind(cpu_to_processor(c));
++			thread_block(THREAD_CONTINUE_NULL);	/* migrate */
++			mhz[c] = perf_mhz();
++		}
++		thread_bind(NULL);
++		uint32_t st[3] = {0, 0, 0};
++		for (int d = 0; d < 3 && wp210_csram != 0; d++) {
++			st[d] = ((volatile uint32_t *)(wp210_csram + wp210_cpufreq_dom[d]))[0x88 / 4];
++		}
++		printf("SWEET MHZ: %llu s %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu state %u/%u/%u\n",
++		    (unsigned long long)up, (unsigned long long)mhz[0], (unsigned long long)mhz[1],
++		    (unsigned long long)mhz[2], (unsigned long long)mhz[3], (unsigned long long)mhz[4],
++		    (unsigned long long)mhz[5], (unsigned long long)mhz[6], (unsigned long long)mhz[7],
++		    st[0], st[1], st[2]);
++		perf_wait(1);
++	}
++}
+ 
+ static void
+ perf_thread_safe(void *arg, wait_result_t result)
+@@ -833,6 +875,10 @@
+ 	if (!enabled) {
+ 		return;
+ 	}
++	/* sweetperf=2: also the once-a-second clocks of the first 150 s */
++	if (enabled == 2 && kernel_thread_start(wp210_mhz_fast, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
+ 	if (kernel_thread_start(enabled == 2 ? perf_thread_safe : perf_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
