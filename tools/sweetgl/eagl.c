@@ -896,7 +896,7 @@ static struct {
 	uint32_t draws, kind[FPK_COUNT], no[NO_COUNT], ok, bad;
 	uint64_t eligible_abs, fast_abs, no_abs[NO_COUNT], map_abs, run_abs;
 	uint64_t kind_abs[FPK_COUNT], kind_px[FPK_COUNT], wait_abs;    /* drawn here: time and pixels by kind */
-	uint32_t multi_checked;
+	uint32_t multi_checked, spot;
 	uint64_t core_abs[8];   /* draw time by the CPU the drawing thread was on (0-3 A55, 4-7 A78) */
 	uint32_t blend[FPB_COUNT];
 } fst;
@@ -918,11 +918,12 @@ static uint8_t fast_detail_kind[NO_COUNT][FPK_COUNT];
 	sweet_drm_log("sweetgl: fast no " __VA_ARGS__); } } while (0)
 static struct {
 	uint8_t *buf;
-	int bx, by, bw, bh, x0, y0, x1, y1, kind, blend;
+	int bx, by, bw, bh, x0, y0, x1, y1, kind, blend, prog, spot, nrect;
 	GLuint tex;
 } fast_pend;
 static uint32_t fast_verified[FPK_COUNT][FPB_COUNT], fast_bad_logged;
 static uint64_t fast_vpix[FPK_COUNT][FPB_COUNT];        /* pixels compared */
+static uint32_t fast_spot[FPK_COUNT][FPB_COUNT];        /* draws since the last spot check */
 /*
  * Checked enough: FAST_VERIFY_EACH draws, or 3 covering a million pixels
  * (a full-screen blur checked costs softpipe's 2 s each time).
@@ -1958,7 +1959,23 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	 * that ever differs from softpipe goes back to softpipe for good. Draws
 	 * of several rectangles are only drawn here once single ones passed.
 	 */
-	int check = fast_mode == 2 || !FAST_DONE(kind, blend);
+	int check = fast_mode == 2 || !FAST_DONE(kind, blend), spot = 0;
+	/*
+	 * Spot checks, the whole run: one in 50 draws of each kind and blend
+	 * (one in 400 of those over 256K pixels, a full-screen softpipe draw
+	 * costs up to 2 s), so a case the first checks never met is caught too.
+	 */
+	if (!check && fast_mode == 1 && !fast_off[kind][blend] && fast_pend.buf == NULL) {
+		uint64_t px = 0;
+		for (int r = 0; r < nrect; r++) {
+			const struct fp_job *j = &jobs[r];
+			px += j->x1 > j->x0 && j->y1 > j->y0 ? (uint64_t)(j->x1 - j->x0) * (uint64_t)(j->y1 - j->y0) : 0;
+		}
+		if (++fast_spot[kind][blend] >= (px > 262144 ? 400u : 50u)) {
+			fast_spot[kind][blend] = 0;
+			check = spot = 1;
+		}
+	}
 	/* several rectangles are checked together when no two cover the same pixel (nine-slices) */
 	int disjoint = 1;
 	for (int a = 0; a < nrect && check; a++) {
@@ -1967,6 +1984,9 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 			disjoint &= p->x1 <= q->x0 || q->x1 <= p->x0 || p->y1 <= q->y0 || q->y1 <= p->y0 || p->x1 <= p->x0 ||
 			    p->y1 <= p->y0 || q->x1 <= q->x0 || q->y1 <= q->y0;
 		}
+	}
+	if (spot && !disjoint) {
+		check = spot = 0;       /* not checkable: drawn here as usual */
 	}
 	if (fast_mode == 0 || fast_off[kind][blend] || (check && !disjoint) ||
 	    (check && ((fast_mode == 2 && fast_verified[kind][blend] >= FAST_VERIFY_EACH) || fast_pend.buf != NULL))) {
@@ -2093,6 +2113,8 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 			fast_pend.buf = buf, fast_pend.bx = bx, fast_pend.by = by, fast_pend.bw = bw, fast_pend.bh = bh;
 			fast_pend.x0 = ux0, fast_pend.y0 = uy0, fast_pend.x1 = ux1, fast_pend.y1 = uy1;
 			fast_pend.kind = kind, fast_pend.blend = blend, fast_pend.tex = (GLuint)att;
+			fast_pend.prog = prog, fast_pend.spot = spot, fast_pend.nrect = nrect;
+			fst.spot += spot;
 			fst.multi_checked += nrect > 1;
 		}
 	}
@@ -2146,12 +2168,13 @@ fast_verify(void)
 		fst.bad++;
 		if (!fast_off[fast_pend.kind][fast_pend.blend]) {
 			fast_off[fast_pend.kind][fast_pend.blend] = 1;
-			sweet_drm_log("sweetgl: fast kind %d blend %d differs from softpipe: softpipe draws it from now on",
-			    fast_pend.kind, fast_pend.blend);
+			sweet_drm_log("sweetgl: fast kind %d blend %d differs from softpipe (%s check, prog %d): softpipe draws it "
+			    "from now on", fast_pend.kind, fast_pend.blend, fast_pend.spot ? "spot" : "first", fast_pend.prog);
 		}
 		if (fast_bad_logged++ < 60) {
-			sweet_drm_log("sweetgl: fastverify kind %d blend %d rect %d,%d-%d,%d: %d px differ (max %d), first %d,%d "
-			    "want %02x%02x%02x%02x got %02x%02x%02x%02x", fast_pend.kind, fast_pend.blend, fast_pend.x0, fast_pend.y0,
+			sweet_drm_log("sweetgl: fastverify %s prog %d rects %d kind %d blend %d rect %d,%d-%d,%d: %d px differ (max %d), "
+			    "first %d,%d want %02x%02x%02x%02x got %02x%02x%02x%02x", fast_pend.spot ? "spot" : "first", fast_pend.prog,
+			    fast_pend.nrect, fast_pend.kind, fast_pend.blend, fast_pend.x0, fast_pend.y0,
 			    fast_pend.x1, fast_pend.y1, bad, maxd, fx, fy, want[0], want[1], want[2], want[3], got[0], got[1],
 			    got[2], got[3]);
 		}
@@ -2210,8 +2233,8 @@ fast_log(void)
 	    fs_ms(fst.no_abs[NO_FB]), fs_ms(fst.no_abs[NO_MAP]));
 	/* time and pixels drawn here by kind (kind:ms/kilopixels), and draws that waited for their kind's checks */
 	char kl[400];
-	int ko = snprintf(kl, sizeof(kl), "sweetgl: fast cpu (kind:ms/kpx): waited %llu, multi checked %u;",
-	    (unsigned long long)fst.wait_abs, fst.multi_checked);
+	int ko = snprintf(kl, sizeof(kl), "sweetgl: fast cpu (kind:ms/kpx): waited %llu, multi checked %u, spot %u;",
+	    (unsigned long long)fst.wait_abs, fst.multi_checked, fst.spot);
 	for (int k = 1; k < FPK_COUNT && ko < (int)sizeof(kl) - 24; k++) {
 		if (fst.kind_px[k] != 0) {
 			ko += snprintf(kl + ko, sizeof(kl) - (size_t)ko, " %d:%llu/%llu", k, fs_ms(fst.kind_abs[k]),
