@@ -284,6 +284,12 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
 
+## Kernel 0217 run (log 89cc705b, video 22:57): magenta gone
+
+- **Magenta fixed:** `SWEET OPEN: SpringBoard denied r …RuntimeSnapshot-…atx` twice, no panic; the wallpaper goes black (video 18-20 s) → blue (21 s). The black is the time with no snapshot, until the live poster draws.
+- **One black rectangle** at video 102.87 s (≈ 120 s uptime, end of the scripted swipe back to page 1, step r1 s3): a band across the Clock and News icons, dark for one frame, solid black for one, then gone. Not the panel noise (that is gone: strip detector found nothing else); looks like a region of one frame left undrawn. No error in the shim's log. Watch whether it recurs.
+- **Phone app launch:** tap at 128.08 s, first frame after 81 ms, 5 frames over 1722 ms; frame 833 alone took 963 ms of drawing (150 draws, 7 off-screen framebuffers: the zoom over the blurred home screen). First-round launches since 0210: 1678, 1170, 982, 1265, 975, 1722 ms — the usual range, not a new slowdown. At the same time launchd 60% and mediaserverd 35% (the known spin).
+
 ## Kernel 0216 runs (videos 22:30:15 and 22:30:24): panic, and magenta still there
 
 - **Panic (my bug):** first boot reached the home screen, then `Kernel data abort` at pc …74b32a8, lr …7575f24, x0 0xfffffe100d3450d3, x1 a kernel constant. 0216 compared `ni_cnd.cn_nameptr` with "RuntimeSnapshot-", but `vn_open_auth` frees that path buffer (`nameidone`, line 695) before the VNOP_OPEN block. Fixed in **0217 (5c0a12b)**: the name comes from `vnode_getname`.
