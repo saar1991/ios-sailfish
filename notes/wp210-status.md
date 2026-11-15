@@ -42,7 +42,7 @@ notes are kept under "History" at the end.
 | `main` | 1465988 | BGRA upload for format-0 4bpp IOSurfaces (the copy-error fix) |
 | `sweetgl-diag-0x502` | eed85c5 | shim work on top of 1465988 (table below) |
 | `wp210-auto-input` | 6c51db1 | kernel patches 0204-0207, `mkadt.py --bigfirst` |
-| `wp210-a55-step` | 6a61c4f | 0208: wp210cpumhz steps away from an index a domain already holds; 0209: once-a-second clocks for 150 s then every 5 s, and halved domains requested again (domain 0 tries rotate: next index, far index, enable 0x301, enable off/on) |
+| `wp210-a55-step` | 56e2dff | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines) |
 | `wp210-status-notes` | this file | notes, install scripts, tools, boot-args |
 
 ## Shim builds (sweetgl-diag-0x502)
@@ -291,7 +291,11 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - Writing index 13 (1000 MHz) did not even move it.
   - **After the 40 s event the A55 clock does not follow this register at all.** Something else (firmware or another block) owns it.
   - With cpus=5 the A55 is only cpu0 (about 3 s of draw time per run), so this is set aside.
-- **Next kernel:** stop re-requesting domain 0 (it churns its enable word every 5 s for nothing); keep domain 1's.
+- **Next kernel (56e2dff, patch 0210):**
+  - stop re-requesting domain 0
+  - wait for the DSI to finish a frame before writing and kicking (the line bands)
+  - log the planar (420f) surface layouts (the wallpaper)
+  - Written against a reconstructed tree: xnu-8796.141.3 from apple-oss-distributions with patches 0001-0209 applied by git apply (0031 and 0041 need blacktop's sweet_hfs).
 - **Video (from the user):** the black, magenta, blue wallpaper at startup is still there, plus minor glitches.
   - The wallpaper comes from CollectionsPoster. It creates '420f' surfaces (1105x1160, 512x512) that the kernel's IOSurface reports as `bpe 4 bpr 4480 planes 2` (4 bytes a pixel for a 4:2:0 YUV surface), plus BGRA 1105x1160 surfaces.
   - backboardd's shim never binds a 420f surface (none fails in the log). So the magenta is most likely made inside CollectionsPoster, from YUV planes laid out differently from what it expects.
