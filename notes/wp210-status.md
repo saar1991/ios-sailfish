@@ -284,6 +284,12 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
 
+## Kernel 0213 run (log 809f7331): the wallpaper app's YUV/BGRA images are never filled
+
+- CollectionsPoster's 1105x1160 420f and BGRA images (and the 512x512 420f ones) are **all zero in every plane when freed**, and no other process ever looks them up. They are scratch images for a hardware conversion this phone does not have; the magenta does not travel through them, and the lock result's plane fields are not involved.
+- The magenta frame (frame 6 here) is again one full-screen draw of prog 35, the general opaque-image shader (later used ~100 times per sample), 271 ms: just under the 300 ms big-draw log, so its texture is not named.
+- **Next run, no new kernel or shim:** the 0213 kernel with `notes/bootargs/args-trace.txt` (args-big5 without `sweetprof`, plus `SWEETGL_TRACE=1` in sweetenv, 587 characters): the shim traces its first 20000 texture uploads and IOSurface binds (sizes, formats, centre pixel), interleaved with the swaps.
+
 ## Kernel 0212 run (log 1698ab27, about 18:20): wallpaper images too short-lived to sample
 
 - Magenta still at startup (user).
