@@ -1,0 +1,144 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index d90fee1..b9ec877 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -49,6 +49,7 @@ extern struct processor *cpu_to_processor(int cpu);
+ extern struct processor *thread_bind(struct processor *processor);
+ extern uint64_t sweet_fb_stat_swaps, sweet_fb_stat_presents, sweet_fb_stat_present_abs;
+ extern uint64_t sweet_fbcon_stat_kicks, sweet_fbcon_stat_done, sweet_fbcon_stat_timeout;
++extern uint64_t sweet_fbcon_stat_busy, sweet_fbcon_stat_busy_timeout;
+ extern uint64_t sweet_fb_stat_gap[4];
+ extern uint32_t sweet_touch_moves;
+ void sweet_perf_init(void);
+@@ -713,7 +714,12 @@ wp210_mhz_fast(void *arg, wait_result_t result)
+ 		 */
+ 		for (int d = 0; d < 3 && wp210_csram != 0; d++) {
+ 			volatile uint32_t *r = (volatile uint32_t *)(wp210_csram + wp210_cpufreq_dom[d]);
+-			if (wp210_want[d] < 0 || up < last[d] + 5) {
++			/*
++			 * Not domain 0: 20+ tries by every means (log e13c888d) left
++			 * the A55s at 999 MHz; after about 40 s their clock no longer
++			 * follows this register.
++			 */
++			if (d == 0 || wp210_want[d] < 0 || up < last[d] + 5) {
+ 				continue;
+ 			}
+ 			uint64_t want = r[wp210_want[d]] & 0xfffu, low = 0;
+@@ -751,6 +757,11 @@ wp210_mhz_fast(void *arg, wait_result_t result)
+ 				    (unsigned long long)want, hows[how], tries[d], r[0x88 / 4], r[0x8c / 4], r[0x84 / 4]);
+ 			}
+ 		}
++		/* the panel's transfers, every 30 s: waits for the DSI to finish a frame (0210) */
++		if (up % 30 < (up < 150 ? 1u : 5u)) {
++			printf("SWEET PANEL: %llu s kicks %llu, waited for a busy DSI %llu times (%llu gave up after 25 ms)\n",
++			    (unsigned long long)up, sweet_fbcon_stat_kicks, sweet_fbcon_stat_busy, sweet_fbcon_stat_busy_timeout);
++		}
+ 		perf_wait(up < 150 ? 1 : 5);
+ 	}
+ }
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 75bb038..af65255 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -93,6 +93,7 @@ static uint32_t sweet_fb_vsync_us = 16667;
+ #define SWEET_FB_P1_DOT_PITCH           326
+ 
+ extern "C" void sweet_fbcon_kick(bool force);           /* pexpert/arm/pe_serial.c */
++extern "C" void sweet_fbcon_wait_idle(void);            /* pexpert/arm/pe_serial.c (0210) */
+ extern "C" void sweet_fbcon_flip(uint64_t pa, uint32_t stride);
+ extern "C" void sweet_fbcon_mirror_row(uint32_t x, uint32_t y, const void *src, size_t len);  /* wp210 */
+ extern "C" void sweet_fbcon_blank(bool blank);
+@@ -1013,6 +1014,8 @@ AppleCLCD::present(const uint8_t *rec)
+ 				}
+ 			}
+ 		} else if (src != 0 && bpe == 4 && fScaled) {
++			/* not over the frame the DSI is still sending (0210) */
++			sweet_fbcon_wait_idle();
+ 			blitScaled(src + s->offset, s->bytesPerRow, sx, sy, dx, dy, w, h);
+ 		} else if (src != 0 && bpe == 4) {
+ 			for (int32_t y = 0; y < h; y++) {
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index da08b9a..fd42f58 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -795,6 +795,25 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 		    name, s->id, s->width, s->height, s->pixelFormat, s->bytesPerElement,
+ 		    s->bytesPerRow, s->planeCount, s->allocSize, props->getCount(), ret);
+ 	}
++	/*
++	 * Planar surfaces (CollectionsPoster's 420f wallpaper, shown magenta for
++	 * a moment at startup): each plane as asked and as laid out (0210).
++	 */
++	static uint32_t planar_logged;
++	if (s->planeCount > 0 && planar_logged < 12) {
++		OSArray *pa = OSDynamicCast(OSArray, props->getObject("IOSurfacePlaneInfo"));
++		planar_logged++;
++		for (uint32_t i = 0; i < s->planeCount; i++) {
++			OSDictionary *pd = pa ? OSDynamicCast(OSDictionary, pa->getObject(i)) : NULL;
++			const struct sweet_surface_plane *pl = &s->planes[i];
++			IOLog("SWEET SURF: id %u fmt 0x%x plane %u: %ux%u bpe %u el %ux%u bpr %u offset %u size %u; asked: bpr %s offset %s "
++			    "size %s (%u keys)\n", s->id, s->pixelFormat, i, pl->width, pl->height, pl->bytesPerElement,
++			    pl->elementWidth, pl->elementHeight, pl->bytesPerRow, pl->offset, pl->size,
++			    pd && pd->getObject("IOSurfacePlaneBytesPerRow") ? "yes" : "no",
++			    pd && pd->getObject("IOSurfacePlaneOffset") ? "yes" : "no",
++			    pd && pd->getObject("IOSurfacePlaneSize") ? "yes" : "no", pd ? pd->getCount() : 0);
++		}
++	}
+ 	/* Who asks for formats CoreAnimation's CPU renderer cannot draw into? */
+ 	static uint32_t odd_logged;
+ 	if (s->pixelFormat != SWEET_FMT('B', 'G', 'R', 'A') && s->pixelFormat != SWEET_FMT('L', '0', '0', '8') &&
+diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
+index 475ce1b..6c29b9f 100644
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -971,10 +971,50 @@ static volatile uint32_t *fbcon_mtk_mutex[2];
+ static volatile uint32_t *fbcon_mtk_dsi;
+ static uint64_t fbcon_mtk_last;
+ 
++/*
++ * MediaTek DSI: INTSTA (+0x0c) bit 31 is DSI_BUSY while a frame is being
++ * sent (Linux mtk_dsi.c, mtk_dsi_wait_for_idle). A command-mode frame of
++ * 1080x2412 takes close to the 1/60 s kick spacing; a START while one is
++ * still going restarts the transfer part way through a row, and the panel
++ * shows a band a few rows high with the picture shifted sideways (videos
++ * 14:37, 0:41/0:49/1:10; e38a725 1:49 likely the same).
++ */
++uint64_t sweet_fbcon_stat_busy, sweet_fbcon_stat_busy_timeout;
++
++static bool
++fbcon_mtk_busy(void)
++{
++	return fbcon_mtk_dsi != NULL && (fbcon_mtk_dsi[0x0c / 4] & (1u << 31)) != 0;
++}
++
++/* Until the DSI has sent the frame (at most 25 ms): before writing the panel buffer, and before a START. */
++void sweet_fbcon_wait_idle(void);
++void
++sweet_fbcon_wait_idle(void)
++{
++	if (!fbcon_mtk_busy()) {
++		return;
++	}
++	uint64_t end = mach_absolute_time() + gPEClockFrequencyInfo.timebase_frequency_hz / 40;
++	sweet_fbcon_stat_busy++;
++	while (fbcon_mtk_busy()) {
++		if (mach_absolute_time() > end) {
++			sweet_fbcon_stat_busy_timeout++;
++			return;
++		}
++		delay(100);
++	}
++}
++
+ static void
+ fbcon_mtk_kick(bool force)
+ {
+ 	uint64_t gap = gPEClockFrequencyInfo.timebase_frequency_hz / 60;
++	if (force) {
++		sweet_fbcon_wait_idle();
++	} else if (fbcon_mtk_busy()) {
++		return;         /* dropped, like a kick inside the 1/60 s window */
++	}
+ 	for (;;) {
+ 		if (os_atomic_cmpxchg(&fbcon_kick_lock, 0u, 1u, acquire)) {
+ 			uint64_t now = mach_absolute_time();
