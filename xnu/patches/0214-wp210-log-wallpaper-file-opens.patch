@@ -1,0 +1,69 @@
+diff --git a/bsd/vfs/vfs_vnops.c b/bsd/vfs/vfs_vnops.c
+index 3a94ed4..a3e0b09 100644
+--- a/bsd/vfs/vfs_vnops.c
++++ b/bsd/vfs/vfs_vnops.c
+@@ -181,6 +181,52 @@ vn_open_modflags(struct nameidata *ndp, int *fmodep, int cmode)
+ 	return error;
+ }
+ 
++#if defined(SWEET)
++/*
++ * 0214: the boot wallpaper is magenta for 2 s because backboardd shows a
++ * ready-made 750x1334 BGRA picture of it (SWEETGL_TRACE, log b763735b:
++ * TexImage2D 750x1334 BGRA just before the magenta frame) whose pixels are
++ * already magenta: a cached snapshot. Log the wallpaper-related files that
++ * PosterBoard, SpringBoard, backboardd and the poster extensions open (path
++ * with poster / snapshot / wallpaper / .ktx / .heic / .cpbitmap in it), and
++ * whether for writing: which file, and whether this boot rewrites it.
++ */
++static uint32_t sweet_open_logged;
++
++static void
++sweet_open_log(vnode_t vp, int fmode)
++{
++	char name[32], path[640], low[640];
++	int len = sizeof(path);
++	if (sweet_open_logged >= 300) {
++		return;
++	}
++	proc_selfname(name, sizeof(name));
++	if (strnstr(name, "Poster", sizeof(name)) == NULL && strcmp(name, "SpringBoard") != 0 &&
++	    strcmp(name, "backboardd") != 0) {
++		return;
++	}
++	if (vn_getpath(vp, path, &len) != 0) {
++		return;
++	}
++	size_t i;
++	for (i = 0; path[i] != 0 && i < sizeof(low) - 1; i++) {
++		char c = path[i];
++		low[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
++	}
++	low[i] = 0;
++	static const char *const keys[] = {"poster", "snapshot", "wallpaper", ".ktx", ".heic", ".cpbitmap"};
++	for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
++		if (strnstr(low, keys[k], sizeof(low)) != NULL) {
++			sweet_open_logged++;
++			printf("SWEET OPEN: %s %s%s%s %s\n", name, (fmode & FREAD) ? "r" : "", (fmode & FWRITE) ? "w" : "",
++			    (fmode & O_CREAT) ? "c" : "", path);
++			return;
++		}
++	}
++}
++#endif
++
+ static int
+ vn_open_auth_finish(vnode_t vp, int fmode, vfs_context_t ctx)
+ {
+@@ -189,6 +235,11 @@ vn_open_auth_finish(vnode_t vp, int fmode, vfs_context_t ctx)
+ 	if ((error = vnode_ref_ext(vp, fmode, 0)) != 0) {
+ 		goto bad;
+ 	}
++#if defined(SWEET)
++	if (vnode_isreg(vp)) {
++		sweet_open_log(vp, fmode);
++	}
++#endif
+ 
+ 	/* Call out to allow 3rd party notification of open.
+ 	 * Ignore result of kauth_authorize_fileop call.
