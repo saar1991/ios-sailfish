@@ -284,6 +284,23 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
 
+## Run with video (log 895ce656, about 14:35): still kernel 4367afb; display glitches
+
+- **Kernel:** the log's re-request lines are 4367afb's (no "by <method>", three tries), so 6a61c4f's A55 methods were not in this boot.
+  - The A78s came back at 41 s again.
+  - No draw differed.
+- **Boot wallpaper, video 0:39-0:41:** black, then magenta for about 0.8 s, then the right blue.
+  - The wallpaper (CollectionsPoster) is a YUV image: surfaces '420f' (bi-planar 4:2:0, full range) and 'L008'.
+  - Magenta is what YUV gives with the chroma bytes all high (about 0xFF); zero chroma would be green.
+  - So the first frames show the wallpaper's luma with a chroma plane not yet written, or read from the wrong place. To check in the shim: how the 420f planes are bound (plane offsets) at first use.
+- **Thin black lines, video 0:41, 0:49, 1:10:**
+  - On a still home screen, one camera frame (1/60 s) shows a band a few rows high, across the whole width. In it the picture is cut and shifted sideways (0:49.05 through the Notes/Reminders/Clock/News row, 0:49.55 through the TV/Podcasts row).
+  - Not drawing: the frames are the same before and after, and the fast path checks are clean.
+  - It is the path from the frame to the panel. AppleCLCD scales each 750x1334 frame row by row into the panel buffer (0197). backboardd alternates two surfaces with different row lengths (surface 1 bpr 3008, surface 2 bpr 3072). The panel is command mode, kicked once per present (0195, `sweet_fbcon_kick(false)`).
+  - A transfer that reads the buffer while rows are being rewritten, or without the panel's tearing-effect sync, can show such a band.
+  - The earlier one-frame "lower half black" (e38a725 video 1:49) is probably the same family.
+  - To look at: present timing against the transfer (TE), or a second panel buffer.
+
 ## Re-request run (log 47c1078b, kernel 4367afb, 5-core big-first, about 12:30): A78s restored
 
 - **At 41 s** the halving came again: cpu0 999, cpu1-3 1174.
