@@ -75,6 +75,7 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | 0e13161 | self-check: 3 draws covering 1M pixels is enough; nine-slices checked as a whole; CPU time by kind | 16310160 | `f9d8ab6d…` | yes (about 08:55) |
 | 47ab084 | threads from 4096 pixels; draw time by CPU | 16310432 | `a313176c…` | yes (about 09:16) |
 | e38a725 | spot checks the whole run (1 in 50 draws, 1 in 400 over 256K px); program in mismatch lines | 16310544 | `6eda66af…` | **yes, current** (about 10:40) |
+| 2e46631 | IOSurfaces written into immutable (glTexStorage) textures instead of failing with 0x502 | | | pushed, to build |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
@@ -291,6 +292,11 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - **Today view, weather widget as a plain blue square:** shows again when the Today view opens, then turns into "No weather data" on glass. With no differences in any check, this is most likely the widget's placeholder look while it loads (the weather widget's background is a blue sky gradient), not a drawing error.
   - **Top Stories widget:** once showed its grey placeholder boxes without its titles. Also a loading state.
   - **One frame (video 1:49, the round 1 swipe right back to page 1):** the lower half of the screen is black and the home screen top is drawn. It is the only one in the run. The fast path is checked and clean, so this is more likely the display path: the single-buffered framebuffer caught mid-copy. To watch for.
+  - **Correction (you pointed at 2:32 and 2:34):**
+    - The weather widget turns from "No weather data" to plain blue at 2:32.5, after showing correctly: not a loading look.
+    - Frame by frame at 2:34, the News app's launch shows black bars over its title and text lines.
+    - Both line up with texImageIOSurface failures: surface 114 642x1000 at `exec News`, surface 112 750x184 during the Today view. Both are `EGLImageTargetTexture2D error 0x502`, which Mesa raises only for immutable (glTexStorage) textures.
+    - **2e46631 copies into such textures with glTexSubImage2D.**
   - **Not glitches, but not what the script means:** in rounds 2 and 3 swipe right ends on the Today view, and the following taps open Apple News and Spotlight instead of the Phone app.
 
 ## wp210-a55-step kernel run (log 7268fa74, kernel `1b095684…`, shim 47ab084, about 10:15)
