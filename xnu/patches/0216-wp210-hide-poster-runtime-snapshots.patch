@@ -1,0 +1,144 @@
+diff --git a/bsd/vfs/vfs_vnops.c b/bsd/vfs/vfs_vnops.c
+index 52d9d2e..fcdbc4c 100644
+--- a/bsd/vfs/vfs_vnops.c
++++ b/bsd/vfs/vfs_vnops.c
+@@ -182,56 +182,93 @@ vn_open_modflags(struct nameidata *ndp, int *fmodep, int cmode)
+ }
+ 
+ #if defined(SWEET)
++#include <pexpert/pexpert.h>
+ /*
+  * 0214: the boot wallpaper is magenta for 2 s because backboardd shows a
+- * ready-made 750x1334 BGRA picture of it (SWEETGL_TRACE, log b763735b:
+- * TexImage2D 750x1334 BGRA just before the magenta frame) whose pixels are
+- * already magenta: a cached snapshot. Log the wallpaper-related files that
+- * PosterBoard, SpringBoard, backboardd and the poster extensions open (path
+- * with poster / snapshot / wallpaper / .ktx / .heic / .cpbitmap in it), and
+- * whether for writing: which file, and whether this boot rewrites it.
++ * ready-made 750x1334 BGRA picture of it (SWEETGL_TRACE, log b763735b)
++ * whose pixels are already magenta. Log the snapshot-like files opened.
++ *
++ * 0216: log 6c8df7e3 / e9bb670e: PosterBoard writes the poster's
++ * RuntimeSnapshot-home.atx / -lock.atx at about 35 s; the magenta shows
++ * about 2 s later. An .atx usually holds ASTC blocks, whose decoders give
++ * magenta for an invalid block (an all-zero block is one), and the poster's
++ * own conversion images are all zero (0213). Now any process, only
++ * snapshot / .atx / .ktx / .heic / .cpbitmap paths outside the system
++ * folders and bundles (the poster binaries used up the lines before), and
++ * read-only opens of RuntimeSnapshot-*.atx fail with ENOENT (boot-arg
++ * sweetsnap=0 keeps them): iOS then has no snapshot to show.
+  */
+ static uint32_t sweet_open_logged;
+ 
+-static void
+-sweet_open_log(vnode_t vp, int fmode)
++/* path's lower-case copy into low; false if not wanted */
++static bool
++sweet_open_path(vnode_t vp, char *path, char *low, int size, size_t *plen)
+ {
+-	char name[32], path[640], low[640];
+-	int len = sizeof(path);
+-	if (sweet_open_logged >= 300) {
+-		return;
+-	}
+-	proc_selfname(name, sizeof(name));
+-	if (strnstr(name, "Poster", sizeof(name)) == NULL && strcmp(name, "SpringBoard") != 0 &&
+-	    strcmp(name, "backboardd") != 0) {
+-		return;
+-	}
++	int len = size;
+ 	if (vn_getpath(vp, path, &len) != 0) {
+-		return;
++		return false;
+ 	}
+ 	size_t i;
+-	for (i = 0; path[i] != 0 && i < sizeof(low) - 1; i++) {
++	for (i = 0; path[i] != 0 && i < (size_t)size - 1; i++) {
+ 		char c = path[i];
+ 		low[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+ 	}
+ 	low[i] = 0;
+-	/*
+-	 * 0215: PosterBoard rewrites every poster descriptor at each boot (log
+-	 * 6c8df7e3: 280 lines, all before the magenta frame): skip those and app
+-	 * bundles, and print the path's last 200 characters (the log cuts lines).
+-	 */
+-	if (strnstr(low, "descriptors/", sizeof(low)) != NULL || strnstr(low, ".app/", sizeof(low)) != NULL) {
+-		return;
++	*plen = i;
++	static const char *const skip[] = {"/system/library/", "/library/wallpaper/", ".appex/", ".app/", "descriptors/"};
++	for (size_t k = 0; k < sizeof(skip) / sizeof(skip[0]); k++) {
++		if (strnstr(low, skip[k], (size_t)size) != NULL) {
++			return false;
++		}
+ 	}
+-	static const char *const keys[] = {"poster", "snapshot", "wallpaper", ".ktx", ".heic", ".cpbitmap"};
++	static const char *const keys[] = {"snapshot", ".atx", ".ktx", ".heic", ".cpbitmap"};
+ 	for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+-		if (strnstr(low, keys[k], sizeof(low)) != NULL) {
+-			sweet_open_logged++;
+-			printf("SWEET OPEN: %s %s%s%s %s\n", name, (fmode & FREAD) ? "r" : "", (fmode & FWRITE) ? "w" : "",
+-			    (fmode & O_CREAT) ? "c" : "", i > 200 ? path + i - 200 : path);
+-			return;
++		if (strnstr(low, keys[k], (size_t)size) != NULL) {
++			return true;
+ 		}
+ 	}
++	return false;
++}
++
++static void
++sweet_open_print(vnode_t vp, int fmode, const char *what)
++{
++	char name[32], path[640], low[640];
++	size_t i;
++	if (sweet_open_logged >= 300 || !sweet_open_path(vp, path, low, sizeof(path), &i)) {
++		return;
++	}
++	sweet_open_logged++;
++	proc_selfname(name, sizeof(name));
++	printf("SWEET OPEN: %s %s%s%s%s %s\n", name, what, (fmode & FREAD) ? "r" : "", (fmode & FWRITE) ? "w" : "",
++	    (fmode & O_CREAT) ? "c" : "", i > 200 ? path + i - 200 : path);
++}
++
++static void
++sweet_open_log(vnode_t vp, int fmode)
++{
++	sweet_open_print(vp, fmode, "");
++}
++
++/* true: refuse this open (ENOENT): a read-only open of a poster's RuntimeSnapshot-*.atx */
++static bool
++sweet_open_deny(vnode_t vp, struct componentname *cnp, int fmode)
++{
++	static int on = -1;
++	if (cnp == NULL || cnp->cn_nameptr == NULL || (fmode & FWRITE) || !(fmode & FREAD)) {
++		return false;
++	}
++	int n = cnp->cn_namelen;
++	if (n < 20 || strncmp(cnp->cn_nameptr, "RuntimeSnapshot-", 16) != 0 || strncmp(cnp->cn_nameptr + n - 4, ".atx", 4) != 0) {
++		return false;
++	}
++	if (on < 0) {
++		int v = 1;
++		PE_parse_boot_argn("sweetsnap", &v, sizeof(v));
++		on = v != 0;
++	}
++	sweet_open_print(vp, fmode, on ? "denied " : "allowed ");
++	return on;
+ }
+ #endif
+ 
+@@ -683,6 +720,12 @@ continue_create_lookup:
+ 		}
+ 
+ 		if (!did_create) {
++#if defined(SWEET)
++			if (sweet_open_deny(vp, &ndp->ni_cnd, fmode)) {
++				error = ENOENT;
++				goto bad;
++			}
++#endif
+ 			error = vn_authorize_open_existing(vp, &ndp->ni_cnd, fmode, ctx, NULL);
+ 			if (error) {
+ 				goto bad;
