@@ -1,0 +1,295 @@
+diff --git a/bsd/dev/arm/systemcalls.c b/bsd/dev/arm/systemcalls.c
+index 7fd9be1..917f35a 100644
+--- a/bsd/dev/arm/systemcalls.c
++++ b/bsd/dev/arm/systemcalls.c
+@@ -180,6 +180,17 @@ unix_syscall(
+ 	AUDIT_SYSCALL_ENTER(code, proc, uthread);
+ 	error = (*(callp->sy_call))(proc, &uthread->uu_arg[0], &(uthread->uu_rval[0]));
+ 	AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
++#if defined(SWEET)
++	{
++		/* 0218: system calls of the processes named in sweetsys (bsd/dev/sweet_perf.c) */
++		extern void *sweet_sys_task[2];
++		extern void sweet_sys_count(int which, int bsd, int num, int err);
++		void *t = (void *)current_task();
++		if (__improbable(t == sweet_sys_task[0] || t == sweet_sys_task[1])) {
++			sweet_sys_count(t == sweet_sys_task[0] ? 0 : 1, 1, code, error);
++		}
++	}
++#endif
+ 
+ #if CONFIG_MACF
+ skip_syscall:
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 93c5cfb..2a56790 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -62,6 +62,135 @@ extern bool sweet_pmic_read(uint16_t ppid, uint8_t addr, uint8_t *out);
+ 
+ static int perf_sleep_chan;
+ 
++/*
++ * 0218: what keep launchd and mediaserverd busy? They use about 63% and
++ * 45% of a core all the time, even with the phone idle (SWEET TOP), and no
++ * crash loop explains it. Count the system calls of the processes named in
++ * boot-arg sweetsys (default "launchd,mediaserverd", at most two, "-" = off):
++ * BSD syscalls and Mach traps, with how many failed and the last error.
++ * Every 10 s from 20 s to 400 s: "SWEET SYS: <s> s <name>[pid] 10 s: N bsd,
++ * M mach; ..." then the 12 most frequent, 4 per line, as name xCOUNT
++ * (eFAILED last ERR). The hooks (bsd/dev/arm/systemcalls.c,
++ * osfmk/arm64/bsd_arm64.c) only compare current_task() with sweet_sys_task.
++ */
++#define SWEET_SYS_BSD   576
++#define SWEET_SYS_MACH  128
++void *sweet_sys_task[2];
++static uint32_t sweet_sys_n[2][2][SWEET_SYS_BSD], sweet_sys_err[2][2][SWEET_SYS_BSD];
++static int32_t sweet_sys_last[2][2][SWEET_SYS_BSD];
++static char sweet_sys_names[64];
++static char sweet_sys_name[2][32];
++static int sweet_sys_pid[2];
++extern const char *syscallnames[];
++extern const unsigned int nsysent;
++extern const char * const mach_syscall_name_table[];
++extern task_t proc_task(proc_t);
++
++void sweet_sys_count(int which, int bsd, int num, int err);
++void
++sweet_sys_count(int which, int bsd, int num, int err)
++{
++	if (num < 0 || num >= (bsd ? SWEET_SYS_BSD : SWEET_SYS_MACH)) {
++		return;
++	}
++	sweet_sys_n[which][bsd][num]++;
++	if (err != 0) {
++		sweet_sys_err[which][bsd][num]++;
++		sweet_sys_last[which][bsd][num] = err;
++	}
++}
++
++static int
++sweet_sys_find(proc_t p, __unused void *arg)
++{
++	char name[32];
++	proc_name(proc_pid(p), name, sizeof(name));
++	for (int i = 0; i < 2; i++) {
++		if (sweet_sys_name[i][0] != 0 && strcmp(name, sweet_sys_name[i]) == 0) {
++			sweet_sys_pid[i] = proc_pid(p);
++			sweet_sys_task[i] = proc_task(p);
++		}
++	}
++	return PROC_RETURNED;
++}
++
++static void
++sweet_sys_report(uint64_t up)
++{
++	static bool init;
++	if (!init) {
++		init = true;
++		if (!PE_parse_boot_argn("sweetsys", sweet_sys_names, sizeof(sweet_sys_names))) {
++			strlcpy(sweet_sys_names, "launchd,mediaserverd", sizeof(sweet_sys_names));
++		}
++		if (sweet_sys_names[0] != '-') {
++			char *comma = strchr(sweet_sys_names, ',');
++			size_t l0 = comma ? (size_t)(comma - sweet_sys_names) : strlen(sweet_sys_names);
++			strlcpy(sweet_sys_name[0], sweet_sys_names, MIN(l0 + 1, sizeof(sweet_sys_name[0])));
++			if (comma) {
++				strlcpy(sweet_sys_name[1], comma + 1, sizeof(sweet_sys_name[1]));
++			}
++		}
++	}
++	if (sweet_sys_name[0][0] == 0) {
++		return;
++	}
++	for (int w = 0; w < 2; w++) {
++		if (sweet_sys_name[w][0] == 0 || sweet_sys_task[w] == NULL) {
++			continue;
++		}
++		/* static: 14 KB, too much for a kernel stack; only the perf thread calls this */
++		static uint32_t n[2][SWEET_SYS_BSD], e[2][SWEET_SYS_BSD];
++		static int32_t last[2][SWEET_SYS_BSD];
++		uint64_t tot[2] = {0, 0};
++		for (int b = 0; b < 2; b++) {
++			for (int i = 0; i < SWEET_SYS_BSD; i++) {
++				n[b][i] = sweet_sys_n[w][b][i];
++				e[b][i] = sweet_sys_err[w][b][i];
++				last[b][i] = sweet_sys_last[w][b][i];
++				sweet_sys_n[w][b][i] = sweet_sys_err[w][b][i] = 0;
++				tot[b] += n[b][i];
++			}
++		}
++		printf("SWEET SYS: %llu s %s[%d] 10 s: %llu bsd, %llu mach\n", (unsigned long long)up, sweet_sys_name[w],
++		    sweet_sys_pid[w], (unsigned long long)tot[1], (unsigned long long)tot[0]);
++		char line[240];
++		int m = 0;
++		for (int k = 0; k < 12; k++) {
++			int bb = -1, bi = -1;
++			for (int b = 0; b < 2; b++) {
++				for (int i = 0; i < SWEET_SYS_BSD; i++) {
++					if (n[b][i] > 0 && (bb < 0 || n[b][i] > n[bb][bi])) {
++						bb = b;
++						bi = i;
++					}
++				}
++			}
++			if (bb < 0) {
++				break;
++			}
++			const char *nm = bb ? ((unsigned)bi < nsysent ? syscallnames[bi] : "?") : mach_syscall_name_table[bi];
++			m += snprintf(line + m, sizeof(line) - m, " %s%s x%u", bb ? "" : "mach:", nm ? nm : "?", n[bb][bi]);
++			if (e[bb][bi] > 0 && bb) {
++				m += snprintf(line + m, sizeof(line) - m, " (e%u last %d)", e[bb][bi], last[bb][bi]);
++			} else if (e[bb][bi] > 0) {
++				m += snprintf(line + m, sizeof(line) - m, " (e%u last 0x%x)", e[bb][bi], (uint32_t)last[bb][bi]);
++			}
++			n[bb][bi] = 0;
++			if (k % 4 == 3 || m > 170) {
++				printf("SWEET SYS:%s\n", line);
++				m = 0;
++				line[0] = 0;
++			}
++		}
++		if (m > 0) {
++			printf("SWEET SYS:%s\n", line);
++		}
++	}
++	/* the processes may restart: look them up again */
++	proc_iterate(PROC_ALLPROCLIST, sweet_sys_find, NULL, NULL, NULL);
++}
++
+ #define CLK_APC0_PA     0x06400000u     /* pwr cluster PLL + mux */
+ #define CLK_APC1_PA     0x06480000u     /* perf cluster PLL + mux */
+ #define CLK_CBF_PA      0x09a11000u     /* CBF mux at +0x18 */
+@@ -674,6 +803,7 @@ static void
+ wp210_mhz_fast(void *arg, wait_result_t result)
+ {
+ 	int ncpu = (int)ml_get_cpu_count(), tries[3] = {0, 0, 0}, te_probes = 0;
++	uint64_t sys_last = 0;
+ 	uint64_t last[3] = {0, 0, 0};
+ 	(void)arg;
+ 	(void)result;
+@@ -767,6 +897,11 @@ wp210_mhz_fast(void *arg, wait_result_t result)
+ 			    (unsigned long long)up, sweet_fbcon_stat_kicks, sweet_fbcon_stat_busy, sweet_fbcon_stat_busy_timeout,
+ 			    sweet_fbcon_te_waits, sweet_fbcon_te_timeouts);
+ 		}
++		/* system calls of launchd and mediaserverd, every 10 s (0218) */
++		if (up >= 20 && up <= 400 && up % 10 < (up < 150 ? 1u : 5u) && up / 10 != sys_last) {
++			sys_last = up / 10;
++			sweet_sys_report(up);
++		}
+ 		/* the large images' bytes, when they change, while the system starts (0212: the magenta wallpaper) */
+ 		if (up >= 10 && up <= 75) {
+ 			sweet_surface_sample(up);
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index af65255..69e7dfc 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -522,6 +522,78 @@ AppleCLCD::startScaled(void)
+  * whose logical (nearest) pixel is inside it. Source rows are read once into
+  * fRow (the surface mapping is write-combined: slow to read piecemeal).
+  */
++/*
++ * 0218: a rectangle across two icons went black for one frame at the end
++ * of a page swipe (video 22:57 at 1:42.9, about 120 s uptime), with no
++ * error in the shim's log. Look for such a rectangle in every presented
++ * frame before it is scaled to the panel: on every 8th row, runs of 140 or
++ * more black pixels (B, G and R under 8) with non-black pixels at both
++ * ends, on 3 or more sampled rows in a row. Logged (at most 60, from 45 s,
++ * after the startup black wallpaper) with the swap number and time: if the
++ * presented picture holds it, CA or the shim drew it; if never, the kernel's
++ * copy to the panel made it.
++ */
++static void
++sweet_fb_black_scan(uintptr_t src, uint32_t bpr, int32_t sx, int32_t sy, int32_t w, int32_t h, uint32_t swap,
++    uint32_t id)
++{
++	static uint32_t logged;
++	if (logged >= 60 || w < 160 || h < 24) {
++		return;
++	}
++	uint64_t ns;
++	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
++	if (ns < 45ull * NSEC_PER_SEC) {
++		return;
++	}
++	int32_t rows = 0, y0 = -1, x0 = 0, x1 = 0, ry0 = 0;
++	for (int32_t y = 0; y < h; y += 8) {
++		const uint8_t *row = (const uint8_t *)(src + (uint64_t)(sy + y) * bpr + (uint64_t)sx * 4);
++		int32_t best0 = -1, best1 = -1;
++		for (int32_t x = 1; x < w - 1;) {
++			const uint8_t *p = row + x * 4;
++			if (p[0] < 8 && p[1] < 8 && p[2] < 8) {
++				int32_t start = x;
++				while (x < w - 1 && row[x * 4] < 8 && row[x * 4 + 1] < 8 && row[x * 4 + 2] < 8) {
++					x++;
++				}
++				const uint8_t *before = row + (start - 1) * 4;
++				bool bounded = x < w - 1 && (before[0] >= 8 || before[1] >= 8 || before[2] >= 8);
++				if (bounded && x - start >= 140 && x - start > best1 - best0) {
++					best0 = start;
++					best1 = x;
++				}
++			} else {
++				x++;
++			}
++		}
++		if (best0 >= 0) {
++			if (rows == 0) {
++				ry0 = y;
++				x0 = best0;
++				x1 = best1;
++			} else {
++				x0 = MIN(x0, best0);
++				x1 = MAX(x1, best1);
++			}
++			rows++;
++			y0 = y;
++		} else if (rows > 0) {
++			if (rows >= 3) {
++				logged++;
++				IOLog("SWEET BLACK: %llu ms swap %u surface %u: black x %d-%d y %d-%d (%d sampled rows)\n",
++				    (unsigned long long)(ns / 1000000), swap, id, x0, x1, ry0, y0 + 7, rows);
++			}
++			rows = 0;
++		}
++	}
++	if (rows >= 3) {
++		logged++;
++		IOLog("SWEET BLACK: %llu ms swap %u surface %u: black x %d-%d y %d-%d (%d sampled rows)\n",
++		    (unsigned long long)(ns / 1000000), swap, id, x0, x1, ry0, y0 + 7, rows);
++	}
++}
++
+ void
+ AppleCLCD::blitScaled(uintptr_t src, uint32_t bpr, int32_t sx, int32_t sy,
+     int32_t dx, int32_t dy, int32_t w, int32_t h)
+@@ -1014,6 +1086,7 @@ AppleCLCD::present(const uint8_t *rec)
+ 				}
+ 			}
+ 		} else if (src != 0 && bpe == 4 && fScaled) {
++			sweet_fb_black_scan(src + s->offset, s->bytesPerRow, sx, sy, w, h, get32(rec, 0x50), id);
+ 			/* not over the frame the DSI is still sending (0210) */
+ 			sweet_fbcon_wait_idle();
+ 			blitScaled(src + s->offset, s->bytesPerRow, sx, sy, dx, dy, w, h);
+diff --git a/osfmk/arm64/bsd_arm64.c b/osfmk/arm64/bsd_arm64.c
+index 6cb830d..7ec845c 100644
+--- a/osfmk/arm64/bsd_arm64.c
++++ b/osfmk/arm64/bsd_arm64.c
+@@ -279,6 +279,17 @@ mach_syscall(struct arm_saved_state *state)
+ 
+ 
+ 	retval = mach_call(&args);
++#if defined(SWEET)
++	{
++		/* 0218: Mach traps of the processes named in sweetsys (bsd/dev/sweet_perf.c) */
++		extern void *sweet_sys_task[2];
++		extern void sweet_sys_count(int which, int bsd, int num, int err);
++		void *t = (void *)current_task();
++		if (__improbable(t == sweet_sys_task[0] || t == sweet_sys_task[1])) {
++			sweet_sys_count(t == sweet_sys_task[0] ? 0 : 1, 0, call_number, (int)retval);
++		}
++	}
++#endif
+ 
+ skip_machcall:
+ 
