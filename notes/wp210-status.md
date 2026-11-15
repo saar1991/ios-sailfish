@@ -42,7 +42,7 @@ notes are kept under "History" at the end.
 | `main` | 1465988 | BGRA upload for format-0 4bpp IOSurfaces (the copy-error fix) |
 | `sweetgl-diag-0x502` | eed85c5 | shim work on top of 1465988 (table below) |
 | `wp210-auto-input` | 6c51db1 | kernel patches 0204-0207, `mkadt.py --bigfirst` |
-| `wp210-a55-step` | 393911e | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines); 0211: frames started on the panel's TE when found (`SWEET TE:`), wallpaper image bytes logged (`SWEET PIX:`); 0212: large images sampled once a second while booting; 0213: their bytes at lookup and free |
+| `wp210-a55-step` | a8e9079 | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines); 0211: frames started on the panel's TE when found (`SWEET TE:`), wallpaper image bytes logged (`SWEET PIX:`); 0212: large images sampled once a second while booting; 0213: their bytes at lookup and free; 0214: wallpaper file opens (`SWEET OPEN:`) |
 | `wp210-status-notes` | this file | notes, install scripts, tools, boot-args |
 
 ## Shim builds (sweetgl-diag-0x502)
@@ -283,6 +283,14 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## Trace run (log b763735b, 0213 kernel + SWEETGL_TRACE=1): the magenta is a cached snapshot picture
+
+- Just before the magenta frame backboardd uploads **one 750x1334 BGRA picture from memory** (`TexImage2D tex 4 … ifmt 0x1908 750x1334 fmt 0x80e1`, row 750); the frame's single full-screen opaque draw (prog 35) shows it.
+- No byte order of a blue pixel gives red = blue with little green, so the picture itself is magenta: a ready-made snapshot of the wallpaper (iOS shows one while the live poster loads; the live poster, the blue gradient, replaces it 2 s later).
+- That is why no kernel change touched it and why its dark specks never move. Whether the snapshot is a file from an earlier boot or made anew each boot is open.
+- iOS 16 keeps poster data under PosterBoard's container, `Library/Application Support/PRBPosterExtensionDataStore/<n>/Extensions/com.apple.WallpaperKit.CollectionsPoster/…`.
+- **Next kernel (a8e9079, patch 0214):** `SWEET OPEN: <proc> <r/w/c> <path>` for files with poster / snapshot / wallpaper / .ktx / .heic / .cpbitmap in the path, opened by PosterBoard, SpringBoard, backboardd or a *Poster* process (up to 300 lines).
 
 ## Kernel 0213 run (log 809f7331): the wallpaper app's YUV/BGRA images are never filled
 
