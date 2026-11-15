@@ -217,6 +217,7 @@ struct fp_rows {
 	/* FPK_BLUR: the texture, and per tap a column and a row table (fp_tap) */
 	const struct fp_img *bsrc;
 	const struct fp_tap *btc, *btr;
+	int chunk;              /* rows a work item */
 };
 
 static inline float
@@ -674,8 +675,8 @@ static void
 fp_chunk(void *ctx, size_t i)
 {
 	const struct fp_rows *R = ctx;
-	int y1 = (int)(i + 1) * FP_CHUNK;
-	for (int y = (int)i * FP_CHUNK; y < (y1 < R->h ? y1 : R->h); y++) {
+	int y1 = (int)(i + 1) * R->chunk;
+	for (int y = (int)i * R->chunk; y < (y1 < R->h ? y1 : R->h); y++) {
 		fp_row(R, y);
 	}
 }
@@ -782,8 +783,15 @@ fp_run(const struct fp_job *j, struct fp_img *dst, const struct fp_img *src, uin
 		}
 		R.ncols = ntab, R.nrows = ntab + w;
 	}
-	size_t chunks = ((size_t)h + FP_CHUNK - 1) / FP_CHUNK;
-	if (fp_threads && (size_t)w * (size_t)h >= 65536 && chunks > 1) {
+	/*
+	 * Threads from 4096 pixels (was 65536): the d8a55df run took about
+	 * 180 ns a pixel for small tints, 6-8 times the host's, as if the
+	 * drawing thread ran on an A55 at 1 GHz; the A78s can take part.
+	 * Rows a work item: 16, fewer for short rectangles (at least 8 items).
+	 */
+	R.chunk = h >= 8 * FP_CHUNK ? FP_CHUNK : h >= 8 ? h / 8 : 1;
+	size_t chunks = ((size_t)h + (size_t)R.chunk - 1) / (size_t)R.chunk;
+	if (fp_threads && (size_t)w * (size_t)h >= 4096 && chunks > 1) {
 		dispatch_apply_f(chunks, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), &R, fp_chunk);
 	} else {
 		for (size_t i = 0; i < chunks; i++) {

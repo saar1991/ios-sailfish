@@ -897,6 +897,7 @@ static struct {
 	uint64_t eligible_abs, fast_abs, no_abs[NO_COUNT], map_abs, run_abs;
 	uint64_t kind_abs[FPK_COUNT], kind_px[FPK_COUNT], wait_abs;    /* drawn here: time and pixels by kind */
 	uint32_t multi_checked;
+	uint64_t core_abs[8];   /* draw time by the CPU the drawing thread was on (0-3 A55, 4-7 A78) */
 	uint32_t blend[FPB_COUNT];
 } fst;
 /* per program over the 10 s window: draws, qualifying draws, time, reasons seen (bit per NO_) */
@@ -2161,12 +2162,19 @@ fast_verify(void)
 
 static uint64_t fs_ms(uint64_t abs);
 
+/* libsystem_pthread (iOS 14.2 and later); weak, so a missing one is just not counted */
+extern int pthread_cpu_number_np(size_t *cpu_number_out) __attribute__((weak_import));
+
 /* a draw's time (softpipe's, or ours) by outcome and by program */
 static void
 fast_account(GLint prog, int fp, uint64_t dt)
 {
 	fst.eligible_abs += fp == 2 ? dt : 0;
 	fst.fast_abs += fp == 1 ? dt : 0;
+	size_t cpu = 0;
+	if (pthread_cpu_number_np != NULL && pthread_cpu_number_np(&cpu) == 0 && cpu < 8) {
+		fst.core_abs[cpu] += dt;
+	}
 	fst.no_abs[fast_why] += fp == 0 ? dt : 0;
 	if (prog > 0 && prog < PROG_MAX) {
 		fpr[prog].draws++;
@@ -2211,6 +2219,9 @@ fast_log(void)
 		}
 	}
 	sweet_drm_log("%s", kl);
+	sweet_drm_log("sweetgl: fast draws by cpu, ms: %llu %llu %llu %llu | %llu %llu %llu %llu", fs_ms(fst.core_abs[0]),
+	    fs_ms(fst.core_abs[1]), fs_ms(fst.core_abs[2]), fs_ms(fst.core_abs[3]), fs_ms(fst.core_abs[4]),
+	    fs_ms(fst.core_abs[5]), fs_ms(fst.core_abs[6]), fs_ms(fst.core_abs[7]));
 	/* the 6 programs that took the most time; reasons as bits: 1 kind 2 mode 4 state 8 blend 16 array ... */
 	for (int r = 0; r < 6; r++) {
 		int best = 0;
