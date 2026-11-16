@@ -75,7 +75,8 @@ The installed file's catalog size is 17208704 bytes, and a build must fit that. 
 | 0e13161 | self-check: 3 draws covering 1M pixels is enough; nine-slices checked as a whole; CPU time by kind | 16310160 | `f9d8ab6d…` | yes (about 08:55) |
 | 47ab084 | threads from 4096 pixels; draw time by CPU | 16310432 | `a313176c…` | yes (about 09:16) |
 | e38a725 | spot checks the whole run (1 in 50 draws, 1 in 400 over 256K px); program in mismatch lines | 16310544 | `6eda66af…` | yes (about 10:40) |
-| 2e46631 | IOSurfaces written into immutable (glTexStorage) textures instead of failing with 0x502 | 16310592 | `4d5a9d63…` | **yes, current** (about 11:12) |
+| 2e46631 | IOSurfaces written into immutable (glTexStorage) textures instead of failing with 0x502 | 16310592 | `4d5a9d63…` | yes (about 11:12, 2026-11-15) |
+| af43d32 | `SGLFRAMES=A-B` frame listings (draws, clears, scissors, IOSurfaces); llvmpipe code is not in this softpipe build | 16310928 | `ec73133a…` | **script ready** (`install-sweetgl-diag-af43d32.sh`, OLD `4d5a9d63…`; simulated: check, install verified, refuses a second time) |
 
 bb529ae was checked before sending: signature page hashes all valid and the signature ends at EOF. The FILL and COPY shader patterns don't appear as strings because clang turned those two strcmp calls into inline 8-byte compares; the constants were confirmed in the disassembly. The padded file has 936816 zero bytes after the Mach-O.
 
