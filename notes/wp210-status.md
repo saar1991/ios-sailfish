@@ -42,7 +42,7 @@ notes are kept under "History" at the end.
 | `main` | 1465988 | BGRA upload for format-0 4bpp IOSurfaces (the copy-error fix) |
 | `sweetgl-diag-0x502` | eed85c5 | shim work on top of 1465988 (table below) |
 | `wp210-auto-input` | 6c51db1 | kernel patches 0204-0207, `mkadt.py --bigfirst` |
-| `wp210-a55-step` | b92fc4b | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines); 0211: frames started on the panel's TE when found (`SWEET TE:`), wallpaper image bytes logged (`SWEET PIX:`); 0212: large images sampled once a second while booting; 0213: their bytes at lookup and free; 0214: wallpaper file opens (`SWEET OPEN:`); 0215: without poster descriptors; 0216: posters' RuntimeSnapshot .atx hidden from readers (`sweetsnap=0` keeps them); 0217: 0216's use-after-free fixed; 0218: launchd/mediaserverd syscall counts (`SWEET SYS:`), black-rectangle scan of presented frames (`SWEET BLACK:`) |
+| `wp210-a55-step` | 198b359 | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines); 0211: frames started on the panel's TE when found (`SWEET TE:`), wallpaper image bytes logged (`SWEET PIX:`); 0212: large images sampled once a second while booting; 0213: their bytes at lookup and free; 0214: wallpaper file opens (`SWEET OPEN:`); 0215: without poster descriptors; 0216: posters' RuntimeSnapshot .atx hidden from readers (`sweetsnap=0` keeps them); 0217: 0216's use-after-free fixed; 0218: launchd/mediaserverd syscall counts (`SWEET SYS:`), black-rectangle scan of presented frames (`SWEET BLACK:`); 0219: launchd's received messages, mediaserverd's port flags |
 | `wp210-status-notes` | this file | notes, install scripts, tools, boot-args |
 
 ## Shim builds (sweetgl-diag-0x502)
@@ -283,6 +283,13 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## Kernel 0218 run (log 7e696cb0, video 07:31): the launchd/mediaserverd loop; the glitch again
+
+- **launchd** runs one cycle about **4,700 times a second**, idle or not: `kevent_id` x2, `__mac_syscall` x2, `proc_info`, `mach_msg2`, `mach_port_deallocate`, `bsdthread_ctl` — receive a request, check the sender, reply. Plus `sendto`/`lstat64` pairs (logging; at 30 s 1000 `sendto` failed with ENOBUFS).
+- **mediaserverd** constructs and destructs a port at the same rate, window by window (46,810 vs 46,851; 47,422 vs 47,666; 50,111 vs 50,319), but sends only ~610 messages a second, ~6% of its receives timing out (`0x10004003`). The two loops are one.
+- **Glitch** at video 107.6 s ≈ 119.2 s uptime, again in the scripted swipe from page 2 back to page 1 (r1 s3): a rectangle (right half, from the middle of the Calendar widget to the Clock/News row) shows only wallpaper, icons and widget missing, a thin black line on its top edge, for one frame. No `SWEET BLACK` (mostly wallpaper, not black), no odd swaps.
+- **Next:** kernel 0219 (198b359): launchd's received messages by id and sender, mediaserverd's `mach_port_construct` flags and results, in the `SWEET SYS` lines. Shim 5549066: `SGLFRAMES=A-B` lists every frame in that uptime window draw by draw with clears, scissors and IOSurfaces. Boot args `notes/bootargs/args-frames.txt` (args-big5 without `sweetprof`, with `SGLFRAMES=119-121`, 589 characters).
 
 ## Kernel 0217 run (log 89cc705b, video 22:57): magenta gone
 
