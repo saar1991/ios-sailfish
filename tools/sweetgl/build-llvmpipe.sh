@@ -42,8 +42,12 @@ pkg-config = 'false'
 llvm-config = '$L/bin/llvm-config'
 
 [built-in options]
-c_args = ['-I$H/include']
-cpp_args = ['-I$H/include']
+# UTIL_ARCH_*_ENDIAN: with -Dshader-cache=enabled the lexer's includes reach
+# util/u_endian.h's <endian.h> branch, which only knows BYTE_ORDER and
+# __BYTE_ORDER; the iOS SDK hides BYTE_ORDER under -std=c11 there (run
+# 43949620268, program_lex.yy.c). Same values u_endian.h would pick.
+c_args = ['-I$H/include', '-DUTIL_ARCH_LITTLE_ENDIAN=1', '-DUTIL_ARCH_BIG_ENDIAN=0']
+cpp_args = ['-I$H/include', '-DUTIL_ARCH_LITTLE_ENDIAN=1', '-DUTIL_ARCH_BIG_ENDIAN=0']
 
 [host_machine]
 system = 'darwin'
