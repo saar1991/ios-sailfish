@@ -15,6 +15,9 @@ on:
       llvm_version:
         description: LLVM release (llvm-project-VERSION.src.tar.xz)
         default: 19.1.7
+      runner:
+        description: runner label; macos-15-intel when no arm64 Mac is free (GitHub capacity), LLVM is then built again for that host
+        default: macos-15
 
 concurrency:
   group: sweetgl-llvmpipe-${{ github.ref }}
@@ -22,7 +25,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner || 'macos-15' }}
     timeout-minutes: 340
     env:
       LLVM_VERSION: ${{ inputs.llvm_version || '19.1.7' }}
@@ -46,7 +49,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: llvm-ios
-          key: llvm-ios-${{ env.LLVM_VERSION }}-aarch64-nortti-v1
+          key: llvm-ios-${{ env.LLVM_VERSION }}-aarch64-nortti-v1${{ runner.arch == 'X64' && '-x64host' || '' }}
 
       - name: Build LLVM for iOS
         if: steps.llvm-cache.outputs.cache-hit != 'true'
@@ -66,7 +69,9 @@ jobs:
             -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF
             -DLLVM_INCLUDE_DOCS=OFF -DLLVM_BUILD_LLVM_DYLIB=OFF"
           # host: the table generators and llvm-config
-          cmake -S src/llvm -B host $COMMON
+          # LLVM_TARGET_ARCH=AArch64: "native" means AArch64 for this
+          # llvm-config even on an Intel host, as it does for the iOS libraries
+          cmake -S src/llvm -B host $COMMON -DLLVM_TARGET_ARCH=AArch64
           tools="llvm-tblgen llvm-config"
           if ninja -C host -t targets all | grep -q '^llvm-min-tblgen:'; then tools="$tools llvm-min-tblgen"; fi
           ninja -C host $tools
@@ -108,7 +113,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: llvm-ios
-          key: llvm-ios-${{ env.LLVM_VERSION }}-aarch64-nortti-v1
+          key: llvm-ios-${{ env.LLVM_VERSION }}-aarch64-nortti-v1${{ runner.arch == 'X64' && '-x64host' || '' }}
 
       - name: Fetch Mesa
         run: |
