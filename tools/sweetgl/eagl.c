@@ -268,6 +268,8 @@ static int n_rect_shaders, n_rect_programs;
 /* level-0 sizes of 2D textures as created through us (rect scales without GL queries) */
 #define TEXSZ_MAX 8192
 static uint16_t tex_w[TEXSZ_MAX], tex_h[TEXSZ_MAX];
+/* the IOSurface last bound to each texture (frame listings, SGLFRAMES) */
+static uint32_t tex_sid[TEXSZ_MAX];
 
 static void
 tex_size_bound(GLenum target, GLint level, GLsizei w, GLsizei h)
@@ -2296,9 +2298,64 @@ static struct fs_rec {
 	GLuint fb, tex0;
 	GLsizei count;
 	uint16_t fbw, fbh, t0w, t0h;
-	uint32_t us;
+	uint32_t us, fbsid, t0sid;
+	GLbitfield clear;       /* a glClear's mask (prog -1) */
 } fs_rec[FS_DRAWS];
 static int fs_nrec;
+
+/*
+ * SGLFRAMES=A-B: list every frame that ends between A and B seconds after
+ * boot draw by draw, clears included (with their scissor: CA's partial
+ * redraws), with the IOSurfaces of the framebuffer and of texture unit 0,
+ * at most 3000 lines. Videos 22:57 and 07:31: in the scripted swipe from
+ * page 2 back to page 1 (about 119-120 s) one frame shows a rectangle of
+ * only wallpaper (icons missing) or black: redrawn wrongly, or a stale
+ * part of an older frame?
+ */
+static uint32_t fs_win_from, fs_win_to, fs_win_lines;
+static uint64_t fs_ms(uint64_t abs);
+
+static bool
+fs_in_window(void)
+{
+	if (fs_win_to == 0 || fs_win_lines >= 3000) {
+		return false;
+	}
+	uint64_t up = fs_ms(mach_absolute_time()) / 1000;
+	return up >= fs_win_from && up < fs_win_to;
+}
+
+static void
+fs_record(GLint prog, GLsizei count, uint64_t dt, GLbitfield clear)
+{
+	GLint att = 0;
+	struct fs_rec *r = &fs_rec[fs_nrec++];
+	r->prog = prog;
+	r->fb = fs_cur_fb;
+	r->count = count;
+	r->clear = clear;
+	r->us = (uint32_t)(fs_ms(dt * 1000));
+	glGetIntegerv(GL_VIEWPORT, r->vp);
+	r->sc[0] = r->sc[1] = r->sc[2] = r->sc[3] = -1;
+	if (glIsEnabled(GL_SCISSOR_TEST)) {
+		glGetIntegerv(GL_SCISSOR_BOX, r->sc);
+	}
+	r->fbw = r->fbh = 0;
+	r->fbsid = 0;
+	if (fs_cur_fb != 0) {
+		glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+		    GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &att);
+		if (att > 0 && att < TEXSZ_MAX) {
+			r->fbw = tex_w[att];
+			r->fbh = tex_h[att];
+			r->fbsid = tex_sid[att];
+		}
+	}
+	r->tex0 = unit_held[0];
+	r->t0w = r->tex0 < TEXSZ_MAX ? tex_w[r->tex0] : 0;
+	r->t0h = r->tex0 < TEXSZ_MAX ? tex_h[r->tex0] : 0;
+	r->t0sid = r->tex0 < TEXSZ_MAX ? tex_sid[r->tex0] : 0;
+}
 
 static uint64_t
 fs_ms(uint64_t abs)
@@ -2313,7 +2370,7 @@ fs_ms(uint64_t abs)
 static void
 fs_draw(uint64_t dt, GLsizei count)
 {
-	GLint prog = 0, att = 0;
+	GLint prog = 0;
 	int i;
 	glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
 	/* any single draw of 300 ms or more, whichever frame it is in */
@@ -2336,29 +2393,8 @@ fs_draw(uint64_t dt, GLsizei count)
 		    count, t0, t0 < TEXSZ_MAX ? tex_w[t0] : 0, t0 < TEXSZ_MAX ? tex_h[t0] : 0, t1,
 		    t1 < TEXSZ_MAX ? tex_w[t1] : 0, t1 < TEXSZ_MAX ? tex_h[t1] : 0);
 	}
-	if (fs_detailed < 4 && fs_nrec < FS_DRAWS) {
-		struct fs_rec *r = &fs_rec[fs_nrec++];
-		r->prog = prog;
-		r->fb = fs_cur_fb;
-		r->count = count;
-		r->us = (uint32_t)(fs_ms(dt * 1000));
-		glGetIntegerv(GL_VIEWPORT, r->vp);
-		r->sc[0] = r->sc[1] = r->sc[2] = r->sc[3] = -1;
-		if (glIsEnabled(GL_SCISSOR_TEST)) {
-			glGetIntegerv(GL_SCISSOR_BOX, r->sc);
-		}
-		r->fbw = r->fbh = 0;
-		if (fs_cur_fb != 0) {
-			glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-			    GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &att);
-			if (att > 0 && att < TEXSZ_MAX) {
-				r->fbw = tex_w[att];
-				r->fbh = tex_h[att];
-			}
-		}
-		r->tex0 = unit_held[0];
-		r->t0w = r->tex0 < TEXSZ_MAX ? tex_w[r->tex0] : 0;
-		r->t0h = r->tex0 < TEXSZ_MAX ? tex_h[r->tex0] : 0;
+	if ((fs_detailed < 4 || fs_in_window()) && fs_nrec < FS_DRAWS) {
+		fs_record(prog, count, dt, 0);
 	}
 	fs.draws++;
 	fs.draw_abs += dt;
@@ -2406,6 +2442,30 @@ fs_end(uint64_t finish_abs, uint64_t now)
 				sweet_drm_log("sweetgl:  draw %d prog %d fb %u %ux%u vp %d,%d %dx%d sc %d,%d %dx%d n %d tex0 %u %ux%u %u us",
 				    i, r->prog, r->fb, r->fbw, r->fbh, r->vp[0], r->vp[1], r->vp[2], r->vp[3], r->sc[0], r->sc[1],
 				    r->sc[2], r->sc[3], r->count, r->tex0, r->t0w, r->t0h, r->us);
+			}
+		}
+	}
+	if (fs_in_window()) {
+		GLint att = 0;
+		uint32_t sid = 0;
+		if (fs_cur_fb != 0) {
+			glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+			    GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &att);
+			sid = att > 0 && att < TEXSZ_MAX ? tex_sid[att] : 0;
+		}
+		sweet_drm_log("sweetgl: F %u at %llu ms: %u draws, %u clears, %d listed, ends in fb %u surface %u, %llu ms",
+		    fs_frame, fs_ms(now), fs.draws, fs.clears, fs_nrec, fs_cur_fb, sid, fs_ms(total));
+		fs_win_lines++;
+		for (int i = 0; i < fs_nrec && fs_win_lines < 3000; i++, fs_win_lines++) {
+			struct fs_rec *r = &fs_rec[i];
+			if (r->prog == -1) {
+				sweet_drm_log("sweetgl: F %u.%d clear %#x fb %u s%u %ux%u vp %d,%d %dx%d sc %d,%d %dx%d",
+				    fs_frame, i, r->clear, r->fb, r->fbsid, r->fbw, r->fbh, r->vp[0], r->vp[1], r->vp[2], r->vp[3],
+				    r->sc[0], r->sc[1], r->sc[2], r->sc[3]);
+			} else {
+				sweet_drm_log("sweetgl: F %u.%d prog %d fb %u s%u %ux%u vp %d,%d %dx%d sc %d,%d %dx%d n %d tex0 %u s%u %ux%u %u us",
+				    fs_frame, i, r->prog, r->fb, r->fbsid, r->fbw, r->fbh, r->vp[0], r->vp[1], r->vp[2], r->vp[3],
+				    r->sc[0], r->sc[1], r->sc[2], r->sc[3], r->count, r->tex0, r->t0sid, r->t0w, r->t0h, r->us);
 			}
 		}
 	}
@@ -2529,6 +2589,9 @@ sgl_Clear(void *rctx, GLbitfield mask)
 	SGL_CUR(rctx);
 	glClear(mask);
 	fs.clears++;
+	if (fs_in_window() && fs_nrec < FS_DRAWS) {
+		fs_record(-1, 0, 0, mask);
+	}
 	SGL_POST(10);
 }
 
@@ -2957,6 +3020,13 @@ bind_surface(IOSurfaceRef s, GLenum target, GLenum format, GLenum type, uint32_t
 	size_t pitch = IOSurfaceGetBytesPerRowOfPlane(s, plane);
 	struct sgl_image img = {0};
 	bool multi = IOSurfaceGetPlaneCount(s) > 1 || plane != 0;   /* ponytail: YUV surfaces not yet */
+	{
+		GLint bt = 0;
+		glGetIntegerv(GL_TEXTURE_BINDING_2D, &bt);
+		if (bt > 0 && bt < TEXSZ_MAX) {
+			tex_sid[bt] = IOSurfaceGetID(s);
+		}
+	}
 	/*
 	 * Format-0 IOSurfaces with 4 bytes per pixel (backboardd's own surfaces)
 	 * are B,G,R,A in memory, as upload_format() says. The app's texImage
@@ -3560,6 +3630,13 @@ sweetgl_eagl_install(void)
 	const char *fm = getenv("SGLFAST");
 	fast_mode = fm != NULL && fm[0] >= '0' && fm[0] <= '2' ? fm[0] - '0' : 0;
 	fp_threads = !(fm != NULL && fm[0] != 0 && fm[1] == 's');
+	const char *fw = getenv("SGLFRAMES");
+	if (fw != NULL) {
+		char *end = NULL;
+		fs_win_from = (uint32_t)strtoul(fw, &end, 10);
+		fs_win_to = end != NULL && *end == '-' ? (uint32_t)strtoul(end + 1, NULL, 10) : 0;
+		sweet_drm_log("sweetgl: frames from %u s to %u s listed", fs_win_from, fs_win_to);
+	}
 	const char *t = getenv("SWEETGL_TRACE");
 	trace_left = t && t[0] == '1' ? 20000 : 0;
 	dump_shaders = trace_left > 0;
