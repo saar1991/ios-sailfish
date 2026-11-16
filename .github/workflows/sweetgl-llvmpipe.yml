@@ -75,8 +75,13 @@ jobs:
             -DLLVM_HOST_TRIPLE=arm64-apple-ios16.0 -DLLVM_DEFAULT_TARGET_TRIPLE=arm64-apple-ios16.0 \
             -DLLVM_INCLUDE_TOOLS=OFF -DLLVM_INCLUDE_UTILS=OFF -DLLVM_BUILD_TOOLS=OFF -DLLVM_BUILD_UTILS=OFF \
             -DLLVM_TABLEGEN="$PWD/host/bin/llvm-tblgen" -DLLVM_NATIVE_TOOL_DIR="$PWD/host/bin" \
+            -DLLVM_NO_DEAD_STRIP=ON \
             -DCMAKE_INSTALL_PREFIX="$PWD/llvm-ios"
-          ninja -C ios install
+          # Libraries and headers only: utils/TableGen is always configured and
+          # its iOS llvm-tblgen failed to link (CMake treats iOS as not Darwin
+          # and passes --gc-sections to ld64; run 43818233580). The host
+          # llvm-tblgen does the table generation.
+          ninja -C ios install-llvm-headers install-llvm-libraries
           # llvm-config answers from its own location: a host binary in the
           # iOS prefix reports the iOS headers and libraries. The wrapper
           # drops host-only flags.
