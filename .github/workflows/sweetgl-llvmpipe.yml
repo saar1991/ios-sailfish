@@ -85,6 +85,7 @@ jobs:
           # llvm-config answers from its own location: a host binary in the
           # iOS prefix reports the iOS headers and libraries. The wrapper
           # drops host-only flags.
+          mkdir -p llvm-ios/bin
           cp host/bin/llvm-config llvm-ios/bin/llvm-config-host
           cat > llvm-ios/bin/llvm-config <<'SH'
           #!/bin/sh
