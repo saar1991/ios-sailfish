@@ -1,0 +1,290 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index ae8ed8e..9c21dd0 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -51,6 +51,9 @@ extern uint64_t sweet_fb_stat_swaps, sweet_fb_stat_presents, sweet_fb_stat_prese
+ extern uint64_t sweet_fbcon_stat_kicks, sweet_fbcon_stat_done, sweet_fbcon_stat_timeout;
+ extern uint64_t sweet_fbcon_stat_busy, sweet_fbcon_stat_busy_timeout;
+ extern uint64_t sweet_fbcon_te_waits, sweet_fbcon_te_timeouts;
++extern uint64_t sweet_fb_stat_swap_waits, sweet_fb_stat_swap_wait_abs, sweet_fb_stat_swap_wait_max,
++    sweet_fb_stat_swap_wait_timeouts, sweet_fb_stat_staged, sweet_fb_stat_stage_abs, sweet_fb_stat_stage_max,
++    sweet_fb_stat_blit_abs, sweet_fb_stat_blits;
+ extern bool sweet_fbcon_te_probe(uint32_t out[11]);
+ extern void sweet_surface_sample(uint64_t up);
+ extern uint64_t sweet_fb_stat_gap[4];
+@@ -139,6 +142,61 @@ sweet_sys_rcv(int which, uint32_t id, int pid)
+ 	sweet_sys_tab_add(which, 0, id, pid);
+ }
+ 
++/*
++ * 0221 (log 92a99cec): launchd gets id 0x40000324 from mediaserverd ~4,700
++ * times a second and answers with 0x20000000. What does mediaserverd ask
++ * for? The first 4 messages each way between the two sweetsys processes,
++ * from 20 s on: size, descriptors, the printable strings in the body (XPC
++ * keys and values, e.g. a service name) and the first 96 bytes in hex.
++ */
++void sweet_sys_body(int which, uint32_t id, int pid, const uint8_t *data, uint32_t len, uint32_t ndesc, uint32_t bits);
++void
++sweet_sys_body(int which, uint32_t id, int pid, const uint8_t *data, uint32_t len, uint32_t ndesc, uint32_t bits)
++{
++	static uint32_t shown[2];
++	if (pid == 0 || pid != sweet_sys_pid[1 - which] || shown[which] >= 4 || data == NULL) {
++		return;
++	}
++	uint64_t up;
++	absolutetime_to_nanoseconds(mach_absolute_time(), &up);
++	up /= NSEC_PER_SEC;
++	if (up < 20) {
++		return;
++	}
++	shown[which]++;
++	if (len > 4096) {
++		len = 4096;
++	}
++	char str[300];
++	int m = 0;
++	for (uint32_t i = 0; i < len && m < (int)sizeof(str) - 2;) {
++		uint32_t j = i;
++		while (j < len && data[j] >= 0x20 && data[j] < 0x7f) {
++			j++;
++		}
++		if (j - i >= 4) {
++			if (m != 0) {
++				str[m++] = '|';
++			}
++			for (uint32_t k = i; k < j && m < (int)sizeof(str) - 2; k++) {
++				str[m++] = (char)data[k];
++			}
++		}
++		i = j + 1;
++	}
++	str[m] = 0;
++	printf("SWEET MSG: %llu s %s[%d] got %#x from %s[%d]: %u bytes, %u descriptors, bits %#x, strings: %s\n",
++	    (unsigned long long)up, sweet_sys_name[which], sweet_sys_pid[which], id, sweet_sys_name[1 - which], pid,
++	    len, ndesc, bits, m ? str : "(none)");
++	char hex[3 * 96 + 1];
++	uint32_t n = len < 96 ? len : 96;
++	for (uint32_t i = 0; i < n; i++) {
++		snprintf(hex + 3 * i, 4, "%02x ", data[i]);
++	}
++	hex[n ? 3 * n - 1 : 0] = 0;
++	printf("SWEET MSG: hex %s\n", hex);
++}
++
+ void sweet_sys_construct(int which, uint32_t flags, int rv);
+ void
+ sweet_sys_construct(int which, uint32_t flags, int rv)
+@@ -991,6 +1049,15 @@ wp210_mhz_fast(void *arg, wait_result_t result)
+ 			    "for TE %llu times (%llu gave up after 20 ms)\n",
+ 			    (unsigned long long)up, sweet_fbcon_stat_kicks, sweet_fbcon_stat_busy, sweet_fbcon_stat_busy_timeout,
+ 			    sweet_fbcon_te_waits, sweet_fbcon_te_timeouts);
++			/* 0221: the presenter's copies, and swaps held until it stopped reading a surface */
++			uint64_t sn = sweet_fb_stat_staged, bn = sweet_fb_stat_blits, wn = sweet_fb_stat_swap_waits;
++			printf("SWEET COPY: %llu s presents %llu, staged %llu (avg %llu us, max %llu us), panel copy avg %llu us, "
++			    "swaps waited %llu times (avg %llu us, max %llu us, %llu after 50 ms)\n",
++			    (unsigned long long)up, sweet_fb_stat_presents, sn,
++			    sn ? perf_ns(sweet_fb_stat_stage_abs) / 1000 / sn : 0, perf_ns(sweet_fb_stat_stage_max) / 1000,
++			    bn ? perf_ns(sweet_fb_stat_blit_abs) / 1000 / bn : 0,
++			    wn, wn ? perf_ns(sweet_fb_stat_swap_wait_abs) / 1000 / wn : 0,
++			    perf_ns(sweet_fb_stat_swap_wait_max) / 1000, sweet_fb_stat_swap_wait_timeouts);
+ 		}
+ 		/* system calls of launchd and mediaserverd, every 10 s (0218) */
+ 		if (up >= 20 && up <= 400 && up % 10 < (up < 150 ? 1u : 5u) && up / 10 != sys_last) {
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 69e7dfc..f5a911f 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -103,6 +103,13 @@ extern "C" vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
+ /* Read by bsd/dev/sweet_perf.c. */
+ extern "C" uint64_t sweet_fb_stat_swaps, sweet_fb_stat_presents, sweet_fb_stat_present_abs;
+ uint64_t sweet_fb_stat_swaps, sweet_fb_stat_presents, sweet_fb_stat_present_abs;
++/* 0221: swaps that waited for the presenter to finish reading a surface, presents copied first */
++extern "C" uint64_t sweet_fb_stat_swap_waits, sweet_fb_stat_swap_wait_abs, sweet_fb_stat_swap_wait_max,
++    sweet_fb_stat_swap_wait_timeouts, sweet_fb_stat_staged, sweet_fb_stat_stage_abs, sweet_fb_stat_stage_max,
++    sweet_fb_stat_blit_abs, sweet_fb_stat_blits;
++uint64_t sweet_fb_stat_swap_waits, sweet_fb_stat_swap_wait_abs, sweet_fb_stat_swap_wait_max,
++    sweet_fb_stat_swap_wait_timeouts, sweet_fb_stat_staged, sweet_fb_stat_stage_abs, sweet_fb_stat_stage_max,
++    sweet_fb_stat_blit_abs, sweet_fb_stat_blits;
+ 
+ class IOMobileFramebuffer : public IOService {
+ 	OSDeclareDefaultStructors(IOMobileFramebuffer);
+@@ -140,6 +147,16 @@ public:
+ 	uint64_t      fMinAbs;          /* least time between panel copy starts, minus slack */
+ 	uint64_t      fLastPresent;
+ 	bool          fBlanked;         /* display asleep: swaps are kept, not shown */
++	/*
++	 * 0221: the surface the presenter is reading (0 = none). backboardd draws
++	 * into its other surface right after a swap, so a swap of any other
++	 * surface waits until the presenter is done with this one. The CPU path
++	 * copies the surface into fStage first (~0.5 ms) and reads that.
++	 */
++	uint32_t      fReading;
++	bool          fStageOn;         /* boot-arg sweetfb_stage, default 1 */
++	uint8_t      *fStage;
++	size_t        fStageSize;
+ 	/* Pixel 1: fPhys..fRowBytes describe the 750x1334 RAM surface, these the panel */
+ 	bool          fScaled;
+ 	uintptr_t     fPanel;
+@@ -172,6 +189,8 @@ public:
+ 	void swap(const uint8_t *rec);
+ 	void present(const uint8_t *rec);
+ 	void presentPending(void);
++	void doneReading(void);
++	uintptr_t stage(uintptr_t src, uint32_t bpr, int32_t sy, int32_t h);
+ 	void setPower(bool on);
+ 	bool startScaled(void);
+ 	bool gpuStart(void);
+@@ -435,6 +454,11 @@ AppleCLCD::start(IOService *provider)
+ 	 * through, ~20 frames/s. Time from the copy's start, 3/4 period.
+ 	 */
+ 	nanoseconds_to_absolutetime(hz ? NSEC_PER_SEC / hz * 3 / 4 : 0, &fMinAbs);
++	int stage_on = 1;
++	PE_parse_boot_argn("sweetfb_stage", &stage_on, sizeof(stage_on));
++	fStageOn = stage_on != 0;
++	IOLog("SWEET FB: swaps wait for the presenter to finish reading a surface: %s (sweetfb_stage)\n",
++	    fStageOn ? "yes" : "no");
+ 	uint32_t vhz = 60;
+ 	PE_parse_boot_argn("sweetfb_vsync_hz", &vhz, sizeof(vhz));
+ 	sweet_fb_vsync_us = 1000000 / MAX(vhz, 10u);
+@@ -886,11 +910,37 @@ extern "C" void sweet_user_backtrace(const char *tag);
+  * in its render thread. It draws the next frame into its other surface; the
+  * one being presented is drawn into again only a frame later, by which time
+  * the ~2 ms GPU quad has read it.
++ *
++ * 0221: not so on the wp210, where there is no GPU quad: the CPU copy to the
++ * panel starts up to ~12 ms after the swap, waits for the DSI and takes
++ * several ms, while a partial redraw of backboardd's next frame takes as
++ * little as ~20 ms. The copy then caught the frame after next half drawn
++ * (log 92a99cec, F 763 at 120.48 s: icons missing in the redrawn rectangle
++ * 352,160 384x512, video 08:28:55 at 111.87 s). Now the presenter copies the
++ * surface first (stage()), and a swap waits while it does.
+  */
+ void
+ AppleCLCD::swap(const uint8_t *rec)
+ {
+ 	IOLockLock(fLock);
++	uint32_t id = get32(rec, 0x54);
++	if (fStageOn && fReading != 0 && fReading != id) {
++		/* backboardd will draw into fReading next: let the presenter finish reading it */
++		uint64_t t0 = mach_absolute_time(), deadline;
++		clock_interval_to_deadline(50, NSEC_PER_MSEC, &deadline);
++		while (fReading != 0 && fReading != id) {
++			if (IOLockSleepDeadline(fLock, &fReading, deadline, THREAD_UNINT) == THREAD_TIMED_OUT) {
++				sweet_fb_stat_swap_wait_timeouts++;
++				break;
++			}
++		}
++		uint64_t d = mach_absolute_time() - t0;
++		sweet_fb_stat_swap_waits++;
++		sweet_fb_stat_swap_wait_abs += d;
++		if (d > sweet_fb_stat_swap_wait_max) {
++			sweet_fb_stat_swap_wait_max = d;
++		}
++	}
+ 	memcpy(fPending, rec, SWEET_FB_SWAP_REC_SIZE);
+ 	fDirty = true;
+ 	sweet_fb_stat_swaps++;
+@@ -941,14 +991,63 @@ AppleCLCD::presentPending(void)
+ 	IOLockLock(fLock);
+ 	memcpy(rec, fPending, sizeof(rec));
+ 	fDirty = false;
++	fReading = fStageOn ? get32(rec, 0x54) : 0;
+ 	IOLockUnlock(fLock);
+ 	uint64_t t0 = mach_absolute_time();
+ 	present(rec);
++	doneReading();
+ 	fLastPresent = t0;
+ 	sweet_fb_stat_present_abs += mach_absolute_time() - t0;
+ 	sweet_fb_stat_presents++;
+ }
+ 
++/* 0221: the presenter no longer reads the swapped surface; a waiting swap goes on. */
++void
++AppleCLCD::doneReading(void)
++{
++	IOLockLock(fLock);
++	if (fReading != 0) {
++		fReading = 0;
++		IOLockWakeup(fLock, &fReading, false);
++	}
++	IOLockUnlock(fLock);
++}
++
++/*
++ * 0221: copy rows 0..sy+h of a surface into fStage and stop reading the
++ * surface. Returns the copy, or src when there is no room (the surface is
++ * then read directly, and swaps wait until the panel copy is done).
++ */
++uintptr_t
++AppleCLCD::stage(uintptr_t src, uint32_t bpr, int32_t sy, int32_t h)
++{
++	size_t len = (size_t)(sy + h) * bpr;
++	if (!fStageOn || len == 0) {
++		return src;
++	}
++	if (len > fStageSize) {
++		if (fStage != NULL) {
++			IOFreeData(fStage, fStageSize);
++		}
++		fStage = (uint8_t *)IOMallocData(len);
++		fStageSize = fStage != NULL ? len : 0;
++		IOLog("SWEET FB: stage buffer %zu bytes%s\n", len, fStage != NULL ? "" : " not allocated");
++		if (fStage == NULL) {
++			return src;
++		}
++	}
++	uint64_t t0 = mach_absolute_time();
++	memcpy(fStage, (const void *)src, len);
++	uint64_t d = mach_absolute_time() - t0;
++	sweet_fb_stat_staged++;
++	sweet_fb_stat_stage_abs += d;
++	if (d > sweet_fb_stat_stage_max) {
++		sweet_fb_stat_stage_max = d;
++	}
++	doneReading();
++	return (uintptr_t)fStage;
++}
++
+ /* Display sleep/wake (lock button): black panel, frames held back meanwhile. */
+ void
+ AppleCLCD::setPower(bool on)
+@@ -1086,10 +1185,15 @@ AppleCLCD::present(const uint8_t *rec)
+ 				}
+ 			}
+ 		} else if (src != 0 && bpe == 4 && fScaled) {
+-			sweet_fb_black_scan(src + s->offset, s->bytesPerRow, sx, sy, w, h, get32(rec, 0x50), id);
++			/* 0221: one layer: copy it now, backboardd may draw into it again while the DSI is busy */
++			uintptr_t pix = mask == 1 ? stage(src + s->offset, s->bytesPerRow, sy, h) : src + s->offset;
++			sweet_fb_black_scan(pix, s->bytesPerRow, sx, sy, w, h, get32(rec, 0x50), id);
+ 			/* not over the frame the DSI is still sending (0210) */
+ 			sweet_fbcon_wait_idle();
+-			blitScaled(src + s->offset, s->bytesPerRow, sx, sy, dx, dy, w, h);
++			uint64_t b0 = mach_absolute_time();
++			blitScaled(pix, s->bytesPerRow, sx, sy, dx, dy, w, h);
++			sweet_fb_stat_blit_abs += mach_absolute_time() - b0;
++			sweet_fb_stat_blits++;
+ 		} else if (src != 0 && bpe == 4) {
+ 			for (int32_t y = 0; y < h; y++) {
+ 				const void *row = (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4);
+diff --git a/osfmk/ipc/ipc_kmsg.c b/osfmk/ipc/ipc_kmsg.c
+index f84b3c0..6170c0f 100644
+--- a/osfmk/ipc/ipc_kmsg.c
++++ b/osfmk/ipc/ipc_kmsg.c
+@@ -6413,6 +6413,17 @@ ipc_kmsg_copyout(
+ 		if (__improbable(t == sweet_sys_task[0] || t == sweet_sys_task[1])) {
+ 			mach_msg_max_trailer_t *tr = ipc_kmsg_get_trailer(kmsg, false);
+ 			sweet_sys_rcv(t == sweet_sys_task[0] ? 0 : 1, (uint32_t)ikm_header(kmsg)->msgh_id, (int)tr->msgh_audit.val[5]);
++			/* 0221: the body of the first messages between the two (the service mediaserverd looks up?) */
++			extern void sweet_sys_body(int which, uint32_t id, int pid, const uint8_t *data, uint32_t len,
++			    uint32_t ndesc, uint32_t bits);
++			mach_msg_header_t *h = ikm_header(kmsg);
++			bool cx = (h->msgh_bits & MACH_MSGH_BITS_COMPLEX) != 0;
++			mach_msg_size_t nd = cx ? ((mach_msg_base_t *)h)->body.msgh_descriptor_count : 0;
++			const uint8_t *ud = (const uint8_t *)ikm_udata(kmsg, nd, cx);
++			if ((const uint8_t *)tr > ud) {
++				sweet_sys_body(t == sweet_sys_task[0] ? 0 : 1, (uint32_t)h->msgh_id, (int)tr->msgh_audit.val[5],
++				    ud, (uint32_t)((const uint8_t *)tr - ud), nd, h->msgh_bits);
++			}
+ 		}
+ 	}
+ #endif
