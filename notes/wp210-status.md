@@ -305,6 +305,14 @@ Goal: compare softpipe + fast path (today) with llvmpipe (shaders compiled to AA
 - **Comparison:** the same scripted test, kernel 0221 in both; baseline = today's shim with `args-big5` minus `sweetprof`. Compare `SWEET PERF` swaps/s, slow frames (count, mean, worst), the `WP210 AUTO` step times (first_ms, last_ms; Phone launch), CPU per core (`SWEET TOP`), and the video.
 - **Still to do:** install script for the ramdisk allocation (field-level catalog check on node 19291, backup of the 108 MB region first), once the dylib exists.
 
+## llvmpipe works: kernel 0224 run (log 4db271f5, video 21:24:07), compared with softpipe on 0223 (log bfac827b)
+
+- No backboardd crash; the display buffer is now mapped with its spare rows (`physical with managed page 0x1c41a8000:0x3d8000`). Home screen, Spotlight, Phone, Control Centre all draw correctly; no glitch in the video (the only transients are the boot console scrolling).
+- **Frames per scripted step** (rounds 2 and 3, ~3 s each; softpipe → llvmpipe): swipe back 23 → 56–57 (~8 → ~19 fps); home after Phone 17–18 → 33–37; home after Spotlight 17–18 → 18–51; Spotlight 4–11 → 16–19; Control Centre 0–1 → 8. All steps over the whole run: 414 → 616 frames.
+- **CPU:** idle `SWEET TOP` ~40% → ~20%; during animations backboardd uses about the same CPU (65–140%) for 2–3x the frames. The presenter's copies averaged 3.7 / 4.9 ms (softpipe 0223 run: 10 / 11.5 ms; 0221: 5 / 6 ms), so that spread is not the driver.
+- **The cost: compiling shaders.** Each new shader/state combination is compiled by LLVM on first use, inside the frame: 21 slow frames, 8 over 1 s, up to 6.1 s (first Spotlight, first Phone, first Control Centre in round 1). Rounds 2 and 3 are smooth. Mesa was built with `-Dshader-cache=disabled`, so this repeats every boot.
+- **Next:** Mesa's disk shader cache (build with `-Dshader-cache=enabled`, cache directory writable by backboardd, `MESA_SHADER_CACHE_DIR` in sweetenv) so compiles happen once; possibly fewer LLVM optimisation passes for the first compile.
+
 ## Kernel 0223 runs (softpipe log bfac827b + video `softpipe.mp4`; llvmpipe log 0a58836c)
 
 - **launchd spin: fixed by 0222.** `SWEET DENY: 2 read opens refused`; launchd's syscalls per 10 s fell from ~246,000 BSD + 98,000 Mach (0221, 30 s) to 429 + 245 (50 s) and lower. Idle `SWEET TOP` went from ~140% (launchd 56%, mediaserverd 51%) to ~40% (kernel_task ~25%, backboardd ~11%); launchd and mediaserverd no longer show.
