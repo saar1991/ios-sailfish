@@ -42,7 +42,7 @@ notes are kept under "History" at the end.
 | `main` | 1465988 | BGRA upload for format-0 4bpp IOSurfaces (the copy-error fix) |
 | `sweetgl-diag-0x502` | eed85c5 | shim work on top of 1465988 (table below) |
 | `wp210-auto-input` | 6c51db1 | kernel patches 0204-0207, `mkadt.py --bigfirst` |
-| `wp210-a55-step` | 198b359 | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines); 0211: frames started on the panel's TE when found (`SWEET TE:`), wallpaper image bytes logged (`SWEET PIX:`); 0212: large images sampled once a second while booting; 0213: their bytes at lookup and free; 0214: wallpaper file opens (`SWEET OPEN:`); 0215: without poster descriptors; 0216: posters' RuntimeSnapshot .atx hidden from readers (`sweetsnap=0` keeps them); 0217: 0216's use-after-free fixed; 0218: launchd/mediaserverd syscall counts (`SWEET SYS:`), black-rectangle scan of presented frames (`SWEET BLACK:`); 0219: launchd's received messages, mediaserverd's port flags |
+| `wp210-a55-step` | 73da167 | 0208 cpufreq step; 0209 once-a-second clocks, domain 1 re-requested when halved; 0210: no more domain 0 re-requests, the DSI waited for (DSI_INTSTA bit 31) before writing the panel buffer and before START, planar surface layouts logged (`SWEET PANEL:` / `SWEET SURF: id N fmt … plane …` lines); 0211: frames started on the panel's TE when found (`SWEET TE:`), wallpaper image bytes logged (`SWEET PIX:`); 0212: large images sampled once a second while booting; 0213: their bytes at lookup and free; 0214: wallpaper file opens (`SWEET OPEN:`); 0215: without poster descriptors; 0216: posters' RuntimeSnapshot .atx hidden from readers (`sweetsnap=0` keeps them); 0217: 0216's use-after-free fixed; 0218: launchd/mediaserverd syscall counts (`SWEET SYS:`), black-rectangle scan of presented frames (`SWEET BLACK:`); 0219: launchd's received messages, mediaserverd's port flags; 0220: `sweetjit=NAME` (code-signing enforcement off for NAME, for llvmpipe) |
 | `wp210-status-notes` | this file | notes, install scripts, tools, boot-args |
 
 ## Shim builds (sweetgl-diag-0x502)
@@ -283,6 +283,19 @@ cp ~/ios-sailfish/wp210-boot-X.img /mnt/c/Users/artzi123/Downloads/wp210-shim/
   - dispatch_apply over cores
   - verify budget of 60 per kind and blend
   - map vs pixel-loop timing
+
+## llvmpipe (started 2026-11-16): plan and state
+
+Goal: compare softpipe + fast path (today) with llvmpipe (shaders compiled to AArch64 by LLVM, rasterization on all CPUs).
+
+- **Feasibility checked:**
+  - *Space:* the llvmpipe dylib (LLVM inside) will be far over sweetgl.dylib's 17 MB. It goes into **`/usr/standalone/update/ramdisk/arm64SURamDisk.dmg`** (software update ramdisk, never used here): file ID 315534, catalog node 19291, owner 0:0 mode 0644, not compressed, data fork 113246235 bytes = 27649 blocks in **one extent at volume block 2164422 = device block 121877958** (catalog dump of 2026-11-14). Same in-place write as the shim, loaded by `DYLD_INSERT_LIBRARIES` from that path. Other big files seen: PingFang.ttc 74 MB, AppleColorEmoji-160px.ttc 130 MB (in use).
+  - *Trust:* ad-hoc signatures pass the built-in AMFI (0025/0035), as the shim's does.
+  - *JIT:* `MAP_JIT` is allowed (the built-in AMFI has no map_anon hook). Executing unsigned anonymous pages is decided by the map's code-signing enforcement (vm_fault: no violation without it). `cs_enforcement_disable=1` is already in the boot args; kernel patch **0220** (`sweetjit=NAME`) turns enforcement off for NAME explicitly and logs `SWEET JIT:`.
+- **Build:** workflow `sweetgl-llvmpipe` (branch `sweetgl-diag-0x502`, af43d32): LLVM 19.1.7 for iOS arm64 (AArch64 only, static, no RTTI), built once and cached; host `llvm-config` of the same configuration in the iOS prefix behind a wrapper; Mesa with softpipe and llvmpipe; `build-llvmpipe.sh`. One dylib, both drivers: llvmpipe by default, `SGLDRIVER=softpipe` for softpipe; the fast path is off under llvmpipe.
+- **Boot args:** `notes/bootargs/args-llvmpipe.txt` (597 characters): args-big5 without `sweetprof`, `keepsyms=1` and `SGLFAST=1`, with the ramdisk path and `sweetjit=backboardd`.
+- **Comparison:** the same scripted test, kernel 0220 in both; baseline = today's shim with `args-big5` minus `sweetprof`. Compare `SWEET PERF` swaps/s, slow frames (count, mean, worst), the `WP210 AUTO` step times (first_ms, last_ms; Phone launch), CPU per core (`SWEET TOP`), and the video.
+- **Still to do:** install script for the ramdisk allocation (field-level catalog check on node 19291, backup of the 108 MB region first), once the dylib exists.
 
 ## Kernel 0218 run (log 7e696cb0, video 07:31): the launchd/mediaserverd loop; the glitch again
 
