@@ -1,0 +1,88 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 9c21dd0..0b52077 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1049,6 +1049,10 @@ wp210_mhz_fast(void *arg, wait_result_t result)
+ 			    "for TE %llu times (%llu gave up after 20 ms)\n",
+ 			    (unsigned long long)up, sweet_fbcon_stat_kicks, sweet_fbcon_stat_busy, sweet_fbcon_stat_busy_timeout,
+ 			    sweet_fbcon_te_waits, sweet_fbcon_te_timeouts);
++			/* 0222: opens refused by sweetdeny (the Bluetooth audio HAL plug-in) */
++			extern uint64_t sweet_open_bundle_denials;
++			printf("SWEET DENY: %llu s %llu read opens refused (sweetdeny)\n", (unsigned long long)up,
++			    sweet_open_bundle_denials);
+ 			/* 0221: the presenter's copies, and swaps held until it stopped reading a surface */
+ 			uint64_t sn = sweet_fb_stat_staged, bn = sweet_fb_stat_blits, wn = sweet_fb_stat_swap_waits;
+ 			printf("SWEET COPY: %llu s presents %llu, staged %llu (avg %llu us, max %llu us), panel copy avg %llu us, "
+diff --git a/bsd/vfs/vfs_vnops.c b/bsd/vfs/vfs_vnops.c
+index 289fa98..4e9e4c5 100644
+--- a/bsd/vfs/vfs_vnops.c
++++ b/bsd/vfs/vfs_vnops.c
+@@ -256,6 +256,43 @@ sweet_open_log(vnode_t vp, int fmode)
+  * ni_cnd.cn_nameptr, whose buffer vn_open_auth has already freed
+  * (nameidone) by then: a kernel data abort in strncmp (video 22:30:15).
+  */
++/*
++ * 0222: read opens of anything named in boot-arg sweetdeny (comma-separated,
++ * default BTAudioHALPlugin.driver), or directly inside it, fail with ENOENT.
++ * mediaserverd's Bluetooth audio HAL plug-in looks up the XPC service
++ * com.apple.BTAudioHALPlugin.xpc, which is not there (launchd answers
++ * error 3), and retries ~4,700 times a second (log fdc99a88). Without its
++ * Info.plist and executable the plug-in is not loaded. sweetdeny=- : off.
++ */
++uint64_t sweet_open_bundle_denials;
++static bool
++sweet_open_denied_name(const char *nm)
++{
++	static char list[96];
++	static int init;
++	if (!init) {
++		strlcpy(list, "BTAudioHALPlugin.driver", sizeof(list));
++		PE_parse_boot_argn("sweetdeny", list, sizeof(list));
++		init = 1;
++	}
++	if (list[0] == '-' || list[0] == 0) {
++		return false;
++	}
++	size_t n = strlen(nm);
++	for (const char *p = list; *p != 0;) {
++		const char *e = strchr(p, ',');
++		size_t l = e != NULL ? (size_t)(e - p) : strlen(p);
++		if (l == n && strncmp(p, nm, n) == 0) {
++			return true;
++		}
++		if (e == NULL) {
++			break;
++		}
++		p = e + 1;
++	}
++	return false;
++}
++
+ static bool
+ sweet_open_deny(vnode_t vp, int fmode)
+ {
+@@ -269,7 +306,24 @@ sweet_open_deny(vnode_t vp, int fmode)
+ 	}
+ 	size_t n = strlen(nm);
+ 	bool match = n >= 20 && strncmp(nm, "RuntimeSnapshot-", 16) == 0 && strncmp(nm + n - 4, ".atx", 4) == 0;
++	bool bundle = !match && sweet_open_denied_name(nm);
+ 	vnode_putname(nm);
++	if (!match && !bundle) {
++		vnode_t dvp = vnode_getparent(vp);
++		if (dvp != NULLVP) {
++			const char *dn = vnode_getname(dvp);
++			if (dn != NULL) {
++				bundle = sweet_open_denied_name(dn);
++				vnode_putname(dn);
++			}
++			vnode_put(dvp);
++		}
++	}
++	if (bundle) {
++		sweet_open_bundle_denials++;
++		sweet_open_print(vp, fmode, "denied (sweetdeny) ");
++		return true;
++	}
+ 	if (!match) {
+ 		return false;
+ 	}
