@@ -1,0 +1,48 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index ece474b..c2ccd16 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -7483,6 +7483,43 @@ process_signature(proc_t p, struct image_params *imgp)
+ 	} else {
+ 		vm_map_cs_enforcement_set(get_task_map(proc_task(p)), FALSE);
+ 	}
++#if defined(SWEET)
++	/*
++	 * 0220: boot-arg sweetjit=NAME[,NAME]: let NAME run code it generates.
++	 * llvmpipe (sweetgl-llvmpipe) turns shaders into AArch64 code in
++	 * anonymous memory (mmap, then mprotect to read+execute); with code
++	 * signing enforced those pages are unsigned and the process is killed
++	 * at the first one. Without the boot-arg nothing changes.
++	 */
++	{
++		static char sweet_jit_names[64];
++		static int sweet_jit_init;
++		if (!sweet_jit_init) {
++			sweet_jit_init = 1;
++			if (!PE_parse_boot_argn("sweetjit", sweet_jit_names, sizeof(sweet_jit_names))) {
++				sweet_jit_names[0] = 0;
++			}
++		}
++		size_t nl = strlen(p->p_comm);
++		for (const char *t = sweet_jit_names; nl > 0 && *t;) {
++			const char *end = strchr(t, ',');
++			size_t tl = end ? (size_t)(end - t) : strlen(t);
++			if (tl == nl && strncmp(t, p->p_comm, nl) == 0) {
++				proc_lock(p);
++				proc_csflags_clear(p, CS_ENFORCEMENT | CS_KILL | CS_HARD);
++				proc_unlock(p);
++				vm_map_cs_enforcement_set(get_task_map(proc_task(p)), FALSE);
++				printf("SWEET JIT: %s[%d] may run code it generates (code signing enforcement off)\n",
++				    p->p_comm, proc_getpid(p));
++				break;
++			}
++			if (!end) {
++				break;
++			}
++			t = end + 1;
++		}
++	}
++#endif
+ 
+ 	/*
+ 	 * image activation may be failed due to policy
