@@ -1,0 +1,75 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index e8ae6e6..9c98296 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -90,6 +90,13 @@ static uint32_t sweet_fb_vsync_us = 16667;
+ #define SWEET_FB_FORMAT_BGRA            0x42475241
+ #define SWEET_FB_P1_W                   750     /* Pixel 1: iPhone 8 points @2x */
+ #define SWEET_FB_P1_H                   1334
++/*
++ * 0224: spare rows after the 750x1334 buffer. llvmpipe draws in 4x4 blocks
++ * and reads whole blocks at the bottom edge, rows 1332-1335: backboardd
++ * crashed reading row 1335 of this buffer (logs 61934921, 0a58836c: the
++ * mapping of 0x3d4000 bytes ended 1408 bytes after row 1333).
++ */
++#define SWEET_FB_SPARE_ROWS     4
+ #define SWEET_FB_P1_DOT_PITCH           326
+ 
+ extern "C" void sweet_fbcon_kick(bool force);           /* pexpert/arm/pe_serial.c */
+@@ -432,7 +439,9 @@ AppleCLCD::start(IOService *provider)
+ 	fLock = IOLockAlloc();
+ 	fPresentLock = IOLockAlloc();
+ 	fClients = OSArray::withCapacity(4);
+-	fSurface = sweet_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, SWEET_FB_FORMAT_BGRA);
++	/* 0224: the scaled path's own buffer has spare rows (fShadow); the boot framebuffer has none */
++	fSurface = sweet_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, SWEET_FB_FORMAT_BGRA,
++	    fScaled ? SWEET_FB_SPARE_ROWS * fRowBytes : 0);
+ 	fPixels = fSurface != NULL ? fSurface->kernelAddress() : 0;
+ 	fWorkLoop = IOWorkLoop::workLoop();
+ 	if (fLock == NULL || fPresentLock == NULL || fClients == NULL || fPixels == 0 || fWorkLoop == NULL) {
+@@ -525,7 +534,7 @@ AppleCLCD::startScaled(void)
+ 	fPanel = ml_io_map_wcomb((vm_offset_t)fPhys, (vm_size_t)fRowBytes * fHeight);
+ 	fShadow = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+ 	    kIODirectionInOut | kIOMemoryPhysicallyContiguous,
+-	    round_page(SWEET_FB_P1_STRIDE * SWEET_FB_P1_H), 0xFFFFFFFFFULL & ~(uint64_t)PAGE_MASK);
++	    round_page(SWEET_FB_P1_STRIDE * (SWEET_FB_P1_H + SWEET_FB_SPARE_ROWS)), 0xFFFFFFFFFULL & ~(uint64_t)PAGE_MASK);
+ 	fRow = (uint8_t *)IOMallocData(SWEET_FB_P1_W * 4);
+ 	fOut = (uint8_t *)IOMallocData(fPanelW * 4);    /* 3 or 4 bytes a pixel */
+ 	fXmap = (uint32_t *)IOMallocData(fPanelW * sizeof(uint32_t));
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 07ca69e..fc9fa63 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -240,7 +240,7 @@ sweet_surface_publish(SweetSurface *s)
+ 
+ SweetSurface *
+ sweet_surface_create_physical(uint64_t phys, uint32_t width, uint32_t height,
+-    uint32_t bytesPerRow, uint32_t pixelFormat)
++    uint32_t bytesPerRow, uint32_t pixelFormat, uint32_t spareBytes)
+ {
+ 	SweetSurface *s = sweet_surface_alloc();
+ 	if (s == NULL) {
+@@ -253,7 +253,9 @@ sweet_surface_create_physical(uint64_t phys, uint32_t width, uint32_t height,
+ 	s->elementWidth = s->elementHeight = 1;
+ 	s->pixelFormat = pixelFormat;
+ 	s->allocSize = (uint32_t)round_page(bytesPerRow * height);
+-	s->memory = IOMemoryDescriptor::withPhysicalAddress(phys, s->allocSize, kIODirectionInOut);
++	/* 0224: spareBytes after the rows, mapped but not counted (llvmpipe's 4x4 blocks) */
++	s->memory = IOMemoryDescriptor::withPhysicalAddress(phys,
++	    round_page((uint64_t)bytesPerRow * height + spareBytes), kIODirectionInOut);
+ 	s->mapCache = kIOMapWriteCombineCache;
+ 	if (s->memory == NULL || !sweet_surface_publish(s)) {
+ 		s->release();
+diff --git a/iokit/Kernel/arm/SweetSurface.h b/iokit/Kernel/arm/SweetSurface.h
+index 41be9ea..dc03891 100644
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -58,7 +58,7 @@ SweetSurface *sweet_surface_copy(uint32_t id);
+  * and every user.
+  */
+ SweetSurface *sweet_surface_create_physical(uint64_t phys, uint32_t width,
+-    uint32_t height, uint32_t bytesPerRow, uint32_t pixelFormat);
++    uint32_t height, uint32_t bytesPerRow, uint32_t pixelFormat, uint32_t spareBytes);
+ 
+ /* Send right for the surface in task (IOSurfaceLookupFromMachPort). */
+ mach_port_name_t sweet_surface_port_in_task(SweetSurface *surface, task_t task);
