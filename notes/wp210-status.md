@@ -305,6 +305,14 @@ Goal: compare softpipe + fast path (today) with llvmpipe (shaders compiled to AA
 - **Comparison:** the same scripted test, kernel 0221 in both; baseline = today's shim with `args-big5` minus `sweetprof`. Compare `SWEET PERF` swaps/s, slow frames (count, mean, worst), the `WP210 AUTO` step times (first_ms, last_ms; Phone launch), CPU per core (`SWEET TOP`), and the video.
 - **Still to do:** install script for the ramdisk allocation (field-level catalog check on node 19291, backup of the 108 MB region first), once the dylib exists.
 
+## llvmpipe, 3 GHz, 4 threads, kernel 0225 profiler (log 3cb6b869)
+
+- **4 threads is worse:** rounds 2-3 480 → 445 frames (swipe back 61-62 → 55-62, home after Spotlight 29-32 → 14-25). Keep the default 5 (`args-llvmpipe-3g.txt`).
+- **Where backboardd's CPU goes** (0225 per-thread samples, all rounds): llvmpipe's rasterizer threads `llvmpipe-0..3` **90.8%**, CA's render thread `com.apple.coreanimation.display.primary` 5.5%, unnamed 3%, `render-server` 0.6%.
+- **The slow core is not the bottleneck:** 15% of the rasterizer samples and 16% of CA's land on cpu0 (the 999 MHz A55), less than its 1-in-5 share. Busy rounds: cpu0 1353-1769, cpu1-4 2000-4600 each.
+- **Inside those samples** (shim symbolized: load address 0x107aa8000, found from the `thread_function`/`impl_thrd_routine`/`rasterize_scene` return addresses): self time JIT shader code 57%, kernel 33%, shared cache 7%, shim C code 4%. Of the kernel part, 83% is one pc, `ml_set_interrupts_enabled_with_debug` called from `Call_continuation` (kernel 0225 = 0221's symbols + 0x1000 here): a timer tick that came while the CPU was idle or switching, counted when the woken thread enables interrupts. Mostly idle time charged to backboardd, not real work. The rest (~6% of all): psynch condition variables (llvmpipe's thread hand-offs), `gate_handoff` 10% of kernel.
+- **So:** frames cost pixel shading in llvmpipe's JIT code. More clock helps only in proportion. Next: which CA passes cost most (per-framebuffer timing in the shim with llvmpipe), Mesa's shader cache (the multi-second first-use stalls), llvmpipe's linear path for plain textured quads.
+
 ## llvmpipe at 3 GHz (log 16ff718b, video 21:40:53, kernel 0224, `args-llvmpipe-3g.txt`)
 
 - **Clocks held:** domain 1 index 0 (3000 MHz), domain 2 index 0 (3100); `SWEET MHZ` 2985-3015 / 3088-3112 for the whole run, state 0/0/0, never rewritten, limit words 0, cap words unchanged. The A55 still 999 after ~40 s.
