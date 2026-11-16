@@ -1,0 +1,119 @@
+name: sweetgl-llvmpipe
+
+# wp210: sweetgl.dylib with Mesa llvmpipe (JIT shaders, all cores) and
+# softpipe, for iOS 16 arm64. LLVM is built for iOS here once and cached.
+#
+# Runs on an arm64 Mac: the host llvm-config that Mesa's meson asks about
+# the iOS libraries is built from the same LLVM with the same options, so
+# its components ("native" = AArch64) match the iOS build.
+on:
+  workflow_dispatch:
+    inputs:
+      mesa_ref:
+        description: Mesa commit (github.com/mirror/mesa); the default is the one the softpipe port was checked against
+        default: e24dc5bd1e7fe6101bdc866fb16a15a8fcae1aae
+      llvm_version:
+        description: LLVM release (llvm-project-VERSION.src.tar.xz)
+        default: 19.1.7
+
+concurrency:
+  group: sweetgl-llvmpipe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 340
+    env:
+      LLVM_VERSION: ${{ inputs.llvm_version || '19.1.7' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deps
+        run: |
+          brew install ninja bison flex
+          python3 -m pip install --break-system-packages meson mako pyyaml packaging
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
+          uname -m
+          cmake --version
+          xcrun -sdk iphoneos --show-sdk-path
+
+      - name: LLVM cache
+        id: llvm-cache
+        uses: actions/cache@v4
+        with:
+          path: llvm-ios
+          key: llvm-ios-${{ env.LLVM_VERSION }}-aarch64-nortti-v1
+
+      - name: Build LLVM for iOS
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -sSfL -o llvm.tar.xz "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/llvm-project-$LLVM_VERSION.src.tar.xz"
+          if [ "$LLVM_VERSION" = 19.1.7 ]; then
+            echo "82401fea7b79d0078043f7598b835284d6650a75b93e64b6f761ea7b63097501  llvm.tar.xz" | shasum -a 256 -c
+          fi
+          mkdir src
+          tar -xJf llvm.tar.xz -C src --strip-components=1 "llvm-project-$LLVM_VERSION.src/llvm" "llvm-project-$LLVM_VERSION.src/cmake" "llvm-project-$LLVM_VERSION.src/third-party"
+          COMMON="-G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD=AArch64
+            -DLLVM_ENABLE_RTTI=OFF -DLLVM_ENABLE_EH=OFF
+            -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_LIBXML2=OFF
+            -DLLVM_ENABLE_TERMINFO=OFF -DLLVM_ENABLE_LIBEDIT=OFF -DLLVM_ENABLE_LIBPFM=OFF
+            -DLLVM_ENABLE_CURL=OFF -DLLVM_ENABLE_HTTPLIB=OFF
+            -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF
+            -DLLVM_INCLUDE_DOCS=OFF -DLLVM_BUILD_LLVM_DYLIB=OFF"
+          # host: the table generators and llvm-config
+          cmake -S src/llvm -B host $COMMON
+          tools="llvm-tblgen llvm-config"
+          if ninja -C host -t targets all | grep -q '^llvm-min-tblgen:'; then tools="$tools llvm-min-tblgen"; fi
+          ninja -C host $tools
+          # iOS arm64: static libraries and headers only
+          cmake -S src/llvm -B ios $COMMON \
+            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+            -DLLVM_HOST_TRIPLE=arm64-apple-ios16.0 -DLLVM_DEFAULT_TARGET_TRIPLE=arm64-apple-ios16.0 \
+            -DLLVM_INCLUDE_TOOLS=OFF -DLLVM_INCLUDE_UTILS=OFF -DLLVM_BUILD_TOOLS=OFF -DLLVM_BUILD_UTILS=OFF \
+            -DLLVM_TABLEGEN="$PWD/host/bin/llvm-tblgen" -DLLVM_NATIVE_TOOL_DIR="$PWD/host/bin" \
+            -DCMAKE_INSTALL_PREFIX="$PWD/llvm-ios"
+          ninja -C ios install
+          # llvm-config answers from its own location: a host binary in the
+          # iOS prefix reports the iOS headers and libraries. The wrapper
+          # drops host-only flags.
+          cp host/bin/llvm-config llvm-ios/bin/llvm-config-host
+          cat > llvm-ios/bin/llvm-config <<'SH'
+          #!/bin/sh
+          "$(dirname "$0")/llvm-config-host" "$@" | sed -E 's/ -isysroot [^ ]+//g; s/(^| )-arch [^ ]+//g; s/ -mmacosx-version-min=[^ ]+//g'
+          SH
+          chmod +x llvm-ios/bin/llvm-config
+          lipo -info llvm-ios/lib/libLLVMCore.a
+          du -sh llvm-ios/lib
+
+      - name: LLVM check
+        run: |
+          llvm-ios/bin/llvm-config --version --libdir --includedir --has-rtti --shared-mode --targets-built
+          llvm-ios/bin/llvm-config --cxxflags
+          ls llvm-ios/lib | head -80
+
+      - name: Fetch Mesa
+        run: |
+          git init -q mesa
+          git -C mesa fetch -q --depth 1 https://github.com/mirror/mesa.git "${{ inputs.mesa_ref || 'e24dc5bd1e7fe6101bdc866fb16a15a8fcae1aae' }}"
+          git -C mesa checkout -q FETCH_HEAD
+          cat mesa/VERSION
+
+      - name: Build
+        run: MESA_SRC=$PWD/mesa MESA_BUILD=$PWD/mesa-ios-lp LLVM_IOS=$PWD/llvm-ios bash tools/sweetgl/build-llvmpipe.sh
+
+      - name: Meson log
+        if: failure()
+        run: tail -200 mesa-ios-lp/meson-logs/meson-log.txt || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sweetgl-llvmpipe
+          path: |
+            tools/sweetgl/out-lp/sweetgl.dylib
+            tools/sweetgl/out-lp/sweetgl.unstripped.dylib
+          if-no-files-found: warn

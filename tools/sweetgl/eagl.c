@@ -3630,6 +3630,18 @@ sweetgl_eagl_install(void)
 	const char *fm = getenv("SGLFAST");
 	fast_mode = fm != NULL && fm[0] >= '0' && fm[0] <= '2' ? fm[0] - '0' : 0;
 	fp_threads = !(fm != NULL && fm[0] != 0 && fm[1] == 's');
+#ifdef SWEETGL_LLVMPIPE
+	/*
+	 * The fast path writes IOSurface memory itself between the driver's
+	 * draws: fine with softpipe, which has finished each draw by then, not
+	 * with llvmpipe, whose threads rasterize binned scenes later.
+	 */
+	const char *drv = getenv("SGLDRIVER");
+	if ((drv == NULL || strcmp(drv, "softpipe") != 0) && fast_mode != 0) {
+		sweet_drm_log("sweetgl: fast path off under llvmpipe (SGLFAST=%d ignored)", fast_mode);
+		fast_mode = 0;
+	}
+#endif
 	const char *fw = getenv("SGLFRAMES");
 	if (fw != NULL) {
 		char *end = NULL;

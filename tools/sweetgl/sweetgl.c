@@ -27,6 +27,9 @@
 #include "util/xmlconfig.h"
 #ifdef SWEETGL_SOFTPIPE
 #include "softpipe/sp_public.h"
+#ifdef SWEETGL_LLVMPIPE
+#include "llvmpipe/lp_public.h"
+#endif
 #else
 #include "freedreno/drm/freedreno_drm_public.h"
 #include "renderonly/renderonly.h"
@@ -114,7 +117,26 @@ sweetgl_init(void)
 		 * (sweet_sw.c), so CoreAnimation renders straight into them.
 		 */
 		driParseOptionInfo(&opt_info, sweetgl_driconf, ARRAY_SIZE(sweetgl_driconf));
-		struct pipe_screen *sscreen = softpipe_create_screen(sweet_sw_winsys_create());
+		struct pipe_screen *sscreen = NULL;
+#ifdef SWEETGL_LLVMPIPE
+		/*
+		 * The llvmpipe build (build-llvmpipe.sh) also carries softpipe:
+		 * SGLDRIVER=softpipe picks it, anything else llvmpipe, which turns
+		 * shaders into AArch64 code with LLVM (the kernel must let the
+		 * process run unsigned pages: boot-arg sweetjit) and spreads the
+		 * rasterization over LP_NUM_THREADS threads (default: every CPU).
+		 */
+		const char *drv = getenv("SGLDRIVER");
+		if (drv == NULL || strcmp(drv, "softpipe") != 0) {
+			sscreen = llvmpipe_create_screen(sweet_sw_winsys_create());
+			if (sscreen == NULL) {
+				sweet_drm_log("sweetgl: llvmpipe screen creation failed, trying softpipe");
+			}
+		}
+#endif
+		if (sscreen == NULL) {
+			sscreen = softpipe_create_screen(sweet_sw_winsys_create());
+		}
 		if (sscreen == NULL) {
 			sweet_drm_log("sweetgl: softpipe screen creation failed");
 		} else {
