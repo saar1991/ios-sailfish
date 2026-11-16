@@ -1,0 +1,159 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 2a56790..ae8ed8e 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -100,6 +100,100 @@ sweet_sys_count(int which, int bsd, int num, int err)
+ 	}
+ }
+ 
++/*
++ * 0219 (log 7e696cb0): launchd runs one cycle ~4,700 times a second
++ * (kevent_id x2, __mac_syscall x2, proc_info, mach_msg2, port_deallocate,
++ * bsdthread_ctl), and mediaserverd constructs and destructs a port at the
++ * same rate, window by window, with few messages of its own. Which messages
++ * does launchd receive (id, sender pid; 0 = the kernel), and which ports
++ * does mediaserverd make (mach_port_construct flags, result)?
++ */
++#define SWEET_SYS_TAB 16
++static struct { uint32_t a; int32_t b; uint32_t n; } sweet_sys_tab[2][2][SWEET_SYS_TAB];   /* [which][0 rcv, 1 construct] */
++static uint32_t sweet_sys_tab_other[2][2];
++
++static void
++sweet_sys_tab_add(int w, int k, uint32_t a, int32_t b)
++{
++	for (int i = 0; i < SWEET_SYS_TAB; i++) {
++		if (sweet_sys_tab[w][k][i].n != 0 && sweet_sys_tab[w][k][i].a == a && sweet_sys_tab[w][k][i].b == b) {
++			sweet_sys_tab[w][k][i].n++;
++			return;
++		}
++	}
++	for (int i = 0; i < SWEET_SYS_TAB; i++) {
++		if (sweet_sys_tab[w][k][i].n == 0) {
++			sweet_sys_tab[w][k][i].a = a;
++			sweet_sys_tab[w][k][i].b = b;
++			sweet_sys_tab[w][k][i].n = 1;
++			return;
++		}
++	}
++	sweet_sys_tab_other[w][k]++;
++}
++
++void sweet_sys_rcv(int which, uint32_t id, int pid);
++void
++sweet_sys_rcv(int which, uint32_t id, int pid)
++{
++	sweet_sys_tab_add(which, 0, id, pid);
++}
++
++void sweet_sys_construct(int which, uint32_t flags, int rv);
++void
++sweet_sys_construct(int which, uint32_t flags, int rv)
++{
++	sweet_sys_tab_add(which, 1, flags, rv);
++}
++
++static void
++sweet_sys_tab_report(int w)
++{
++	static const char *const what[2] = {"received id/from", "constructed flags/result"};
++	for (int k = 0; k < 2; k++) {
++		char line[240];
++		int m = snprintf(line, sizeof(line), " %s:", what[k]);
++		int shown = 0;
++		for (int round = 0; round < SWEET_SYS_TAB; round++) {
++			int bi = -1;
++			for (int i = 0; i < SWEET_SYS_TAB; i++) {
++				if (sweet_sys_tab[w][k][i].n != 0 && (bi < 0 || sweet_sys_tab[w][k][i].n > sweet_sys_tab[w][k][bi].n)) {
++					bi = i;
++				}
++			}
++			if (bi < 0) {
++				break;
++			}
++			char who[32] = "";
++			if (k == 0) {
++				if (sweet_sys_tab[w][k][bi].b == 0) {
++					strlcpy(who, "kernel", sizeof(who));
++				} else {
++					proc_name(sweet_sys_tab[w][k][bi].b, who, sizeof(who));
++				}
++				m += snprintf(line + m, sizeof(line) - m, " 0x%x/%s[%d] x%u", sweet_sys_tab[w][k][bi].a, who,
++				    sweet_sys_tab[w][k][bi].b, sweet_sys_tab[w][k][bi].n);
++			} else {
++				m += snprintf(line + m, sizeof(line) - m, " 0x%x/0x%x x%u", sweet_sys_tab[w][k][bi].a,
++				    (uint32_t)sweet_sys_tab[w][k][bi].b, sweet_sys_tab[w][k][bi].n);
++			}
++			sweet_sys_tab[w][k][bi].n = 0;
++			if (++shown % 4 == 0 || m > 170) {
++				printf("SWEET SYS:%s\n", line);
++				m = 0;
++				line[0] = 0;
++			}
++		}
++		if (sweet_sys_tab_other[w][k] != 0) {
++			m += snprintf(line + m, sizeof(line) - m, " other x%u", sweet_sys_tab_other[w][k]);
++			sweet_sys_tab_other[w][k] = 0;
++		}
++		if (m > 0) {
++			printf("SWEET SYS:%s\n", line);
++		}
++	}
++}
++
+ static int
+ sweet_sys_find(proc_t p, __unused void *arg)
+ {
+@@ -186,6 +280,7 @@ sweet_sys_report(uint64_t up)
+ 		if (m > 0) {
+ 			printf("SWEET SYS:%s\n", line);
+ 		}
++		sweet_sys_tab_report(w);
+ 	}
+ 	/* the processes may restart: look them up again */
+ 	proc_iterate(PROC_ALLPROCLIST, sweet_sys_find, NULL, NULL, NULL);
+diff --git a/osfmk/ipc/ipc_kmsg.c b/osfmk/ipc/ipc_kmsg.c
+index b4d1276..f84b3c0 100644
+--- a/osfmk/ipc/ipc_kmsg.c
++++ b/osfmk/ipc/ipc_kmsg.c
+@@ -6404,6 +6404,19 @@ ipc_kmsg_copyout(
+ 
+ 	ikm_validate_sig(kmsg);
+ 
++#if defined(SWEET)
++	{
++		/* 0219: messages received by the processes named in sweetsys: id and sender (bsd/dev/sweet_perf.c) */
++		extern void *sweet_sys_task[2];
++		extern void sweet_sys_rcv(int which, uint32_t id, int pid);
++		void *t = (void *)current_task();
++		if (__improbable(t == sweet_sys_task[0] || t == sweet_sys_task[1])) {
++			mach_msg_max_trailer_t *tr = ipc_kmsg_get_trailer(kmsg, false);
++			sweet_sys_rcv(t == sweet_sys_task[0] ? 0 : 1, (uint32_t)ikm_header(kmsg)->msgh_id, (int)tr->msgh_audit.val[5]);
++		}
++	}
++#endif
++
+ 	mr = ipc_kmsg_copyout_header(kmsg, space, option);
+ 	if (mr != MACH_MSG_SUCCESS) {
+ 		return mr;
+diff --git a/osfmk/ipc/mach_kernelrpc.c b/osfmk/ipc/mach_kernelrpc.c
+index 4b6dc6f..f001502 100644
+--- a/osfmk/ipc/mach_kernelrpc.c
++++ b/osfmk/ipc/mach_kernelrpc.c
+@@ -360,6 +360,17 @@ _kernelrpc_mach_port_construct_trap(struct _kernelrpc_mach_port_construct_args *
+ 	if (rv == KERN_SUCCESS) {
+ 		rv = mach_copyout(&name, args->name, sizeof(name));
+ 	}
++#if defined(SWEET)
++	{
++		/* 0219: the flags of the ports the processes named in sweetsys construct (bsd/dev/sweet_perf.c) */
++		extern void *sweet_sys_task[2];
++		extern void sweet_sys_construct(int which, uint32_t flags, int rv);
++		void *t = (void *)current_task();
++		if (__improbable(t == sweet_sys_task[0] || t == sweet_sys_task[1])) {
++			sweet_sys_construct(t == sweet_sys_task[0] ? 0 : 1, options.flags, rv);
++		}
++	}
++#endif
+ 
+ done:
+ 	return rv;
