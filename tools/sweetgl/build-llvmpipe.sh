@@ -20,6 +20,9 @@ M=${MESA_SRC:?set MESA_SRC to a Mesa source tree}
 B=${MESA_BUILD:-$H/../../research/mesa-ios-lp}
 L=${LLVM_IOS:?set LLVM_IOS to the iOS LLVM install}
 O=$H/out-lp
+# per-build shader cache directory (sweetgl.c sweetgl_cache_setup): the CI run, else a timestamp
+BUILD_ID=${SWEETGL_BUILD_ID:-${GITHUB_RUN_ID:+run${GITHUB_RUN_ID}}}
+BUILD_ID=${BUILD_ID:-local$(date +%s)}
 mkdir -p "$O"
 
 SDK=$(xcrun -sdk iphoneos --show-sdk-path)
@@ -57,9 +60,9 @@ if [ ! -f "$B/build.ninja" ]; then
 		-Dgallium-drivers=softpipe,llvmpipe -Dvulkan-drivers= \
 		-Dllvm=enabled -Dshared-llvm=disabled -Dcpp_rtti=false -Ddraw-use-llvm=true \
 		-Dgles1=disabled -Dgles2=enabled -Dopengl=true \
-		-Dzstd=disabled -Dzlib=disabled -Dexpat=disabled -Dxmlconfig=disabled \
+		-Dzstd=disabled -Dzlib=enabled -Dexpat=disabled -Dxmlconfig=disabled \
 		-Dvalgrind=disabled -Dlibunwind=disabled -Dlmsensors=disabled \
-		-Dbuild-tests=false -Dshader-cache=disabled -Dperfetto=false \
+		-Dbuild-tests=false -Dshader-cache=enabled -Dperfetto=false \
 		-Dgallium-va=disabled -Dgallium-rusticl=false -Dtools= \
 		-Dhtml-docs=disabled -Ddisplay-info=disabled -Dteflon=false)
 fi
@@ -87,7 +90,7 @@ print("\n".join(shlex.quote(a) for a in shlex.split(e["command"]) if a.startswit
 python3 -I "$H/gen-dispatch.py" "$H/ios-dispatch.txt" "$M/include" "$O/bridge.nm" "$O/dispatch.c"
 for f in sweetgl sweet_sw eagl fastpath layerdump "$O/dispatch"; do
 	case $f in /*) src=$f.c ;; *) src=$H/$f.c ;; esac
-	$CC -O2 -Wall -fvisibility=hidden -DSWEETGL_SOFTPIPE -DSWEETGL_LLVMPIPE @"$O/mesa-defines.rsp" $INC -I"$H" -c "$src" -o "$O/$(basename "$f").o"
+	$CC -O2 -Wall -fvisibility=hidden -DSWEETGL_SOFTPIPE -DSWEETGL_LLVMPIPE -DSWEETGL_BUILD_ID="\"$BUILD_ID\"" @"$O/mesa-defines.rsp" $INC -I"$H" -c "$src" -o "$O/$(basename "$f").o"
 done
 printf '_sweetgl_init\n_sweetgl_create\n_sweetgl_make_current\n_sweetgl_destroy\n_sweetgl_selftest\n' > "$O/exports.txt"
 xcrun -sdk iphoneos clang++ -arch arm64 -miphoneos-version-min=16.0 -dynamiclib -dead_strip \

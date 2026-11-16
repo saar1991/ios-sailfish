@@ -17,6 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
+#include <sys/stat.h>
 #include <mach/mach_time.h>
 
 #include "pipe/p_screen.h"
@@ -105,6 +107,61 @@ sweet_drm_log(const char *fmt, ...)
 	(void)write(fd, line, n);
 }
 
+#ifdef SWEETGL_LLVMPIPE
+#ifndef SWEETGL_BUILD_ID
+#define SWEETGL_BUILD_ID "local"
+#endif
+/*
+ * Mesa's on-disk shader cache (built with -Dshader-cache=enabled): llvmpipe
+ * keeps the AArch64 code of every shader variant it compiled, Mesa the
+ * compiled GLSL, so the 1-6 s first-use stalls happen once, not every boot.
+ * Mesa keys llvmpipe's cache on the dylib file's mtime, which a raw install
+ * into the ramdisk's blocks does not change: each build gets its own
+ * directory (SWEETGL_BUILD_ID, the CI run). MESA_SHADER_CACHE_DIR in the
+ * environment wins; SGLCACHE=0 turns the cache off.
+ */
+static void
+sweetgl_cache_setup(void)
+{
+	const char *off = getenv("SGLCACHE");
+	if (off != NULL && strcmp(off, "0") == 0) {
+		setenv("MESA_SHADER_CACHE_DISABLE", "true", 1);
+		sweet_drm_log("sweetgl: shader cache off (SGLCACHE=0)");
+		return;
+	}
+	const char *dir = getenv("MESA_SHADER_CACHE_DIR");
+	if (dir != NULL) {
+		sweet_drm_log("sweetgl: shader cache in %s (environment)", dir);
+		return;
+	}
+	static const char *roots[] = {
+		"/private/var/mobile/Library/Caches/sweetgl",
+		"/private/var/tmp/sweetgl",
+	};
+	for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
+		char path[256];
+		if (mkdir(roots[i], 0755) != 0 && errno != EEXIST) {
+			sweet_drm_log("sweetgl: shader cache: mkdir %s: %s", roots[i], strerror(errno));
+			continue;
+		}
+		snprintf(path, sizeof(path), "%s/%s", roots[i], SWEETGL_BUILD_ID);
+		if (mkdir(path, 0755) != 0 && errno != EEXIST) {
+			sweet_drm_log("sweetgl: shader cache: mkdir %s: %s", path, strerror(errno));
+			continue;
+		}
+		if (access(path, W_OK) != 0) {
+			sweet_drm_log("sweetgl: shader cache: %s not writable: %s", path, strerror(errno));
+			continue;
+		}
+		setenv("MESA_SHADER_CACHE_DIR", path, 1);
+		sweet_drm_log("sweetgl: shader cache in %s (uid %d)", path, (int)getuid());
+		return;
+	}
+	sweet_drm_log("sweetgl: shader cache: no writable directory, off");
+	setenv("MESA_SHADER_CACHE_DISABLE", "true", 1);
+}
+#endif
+
 bool
 sweetgl_init(void)
 {
@@ -127,6 +184,7 @@ sweetgl_init(void)
 		 * rasterization over LP_NUM_THREADS threads (default: every CPU).
 		 */
 		const char *drv = getenv("SGLDRIVER");
+		sweetgl_cache_setup();
 		if (drv == NULL || strcmp(drv, "softpipe") != 0) {
 			sscreen = llvmpipe_create_screen(sweet_sw_winsys_create());
 			if (sscreen == NULL) {
@@ -146,6 +204,11 @@ sweetgl_init(void)
 			sweetgl_image_hooks(fscreen);
 			sweet_drm_log("sweetgl: screen %s (%s)", sscreen->get_name(sscreen),
 			    sscreen->get_vendor(sscreen));
+#ifdef SWEETGL_LLVMPIPE
+			sweet_drm_log("sweetgl: build %s, disk shader cache %s", SWEETGL_BUILD_ID,
+			    sscreen->get_disk_shader_cache != NULL && sscreen->get_disk_shader_cache(sscreen) != NULL ?
+			    "on" : "off");
+#endif
 		}
 #else
 		int fd = sweet_drm_open();
