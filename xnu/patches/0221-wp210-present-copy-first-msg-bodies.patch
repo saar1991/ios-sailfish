@@ -91,7 +91,7 @@ index ae8ed8e..9c21dd0 100644
  		/* system calls of launchd and mediaserverd, every 10 s (0218) */
  		if (up >= 20 && up <= 400 && up % 10 < (up < 150 ? 1u : 5u) && up / 10 != sys_last) {
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 69e7dfc..f5a911f 100644
+index 69e7dfc..e8ae6e6 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
 @@ -103,6 +103,13 @@ extern "C" vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
@@ -156,7 +156,7 @@ index 69e7dfc..f5a911f 100644
 + * several ms, while a partial redraw of backboardd's next frame takes as
 + * little as ~20 ms. The copy then caught the frame after next half drawn
 + * (log 92a99cec, F 763 at 120.48 s: icons missing in the redrawn rectangle
-+ * 352,160 384x512, video 08:28:55 at 111.87 s). Now the presenter copies the
++ * 352,160 384x512, video 08:28:55 at 111.73 s). Now the presenter copies the
 + * surface first (stage()), and a swap waits while it does.
   */
  void
