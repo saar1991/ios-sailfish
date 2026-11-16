@@ -39,9 +39,11 @@ jobs:
           cmake --version
           xcrun -sdk iphoneos --show-sdk-path
 
+      # restore here, save right after the LLVM check: a later failure
+      # (Mesa, the shim) no longer throws the ~30 min LLVM build away
       - name: LLVM cache
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: llvm-ios
           key: llvm-ios-${{ env.LLVM_VERSION }}-aarch64-nortti-v1
@@ -100,6 +102,13 @@ jobs:
           llvm-ios/bin/llvm-config --version --libdir --includedir --has-rtti --shared-mode --targets-built
           llvm-ios/bin/llvm-config --cxxflags
           ls llvm-ios/lib | head -80
+
+      - name: Save LLVM cache
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: llvm-ios
+          key: llvm-ios-${{ env.LLVM_VERSION }}-aarch64-nortti-v1
 
       - name: Fetch Mesa
         run: |
