@@ -1,0 +1,54 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 37b120e..07ca69e 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -41,6 +41,7 @@ extern "C" void sweet_user_backtrace(const char *tag);   /* osfmk/kern/exception
+ #include <IOKit/IOLib.h>
+ #include <IOKit/IOLocks.h>
+ #include <IOKit/system.h>
++#include <pexpert/pexpert.h>
+ #include <libkern/c++/OSArray.h>
+ #include <libkern/c++/OSDictionary.h>
+ #include <libkern/c++/OSNumber.h>
+@@ -770,16 +771,39 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 		}
+ 	} else if (ret == kIOReturnSuccess) {
+ 		IOBufferMemoryDescriptor *mem = NULL;
++		/*
++		 * 0222: spare rows after the surface, mapped with it but not in its
++		 * size. llvmpipe draws in 4x4 blocks and reads a whole block at the
++		 * bottom edge: a 1334-row target is read to row 1335. A 752x1334
++		 * surface (bpr 3008) had only 1408 bytes of page slack, and backboardd
++		 * crashed reading row 1334 (log 61934921). sweetsurfpad=N rows, 0 = off.
++		 */
++		static int pad_rows = -1;
++		if (pad_rows < 0) {
++			int v = 4;
++			PE_parse_boot_argn("sweetsurfpad", &v, sizeof(v));
++			pad_rows = v < 0 ? 0 : (v > 64 ? 64 : v);
++		}
++		uint64_t rowmax = s->bytesPerRow;
++		for (unsigned int i = 0; i < s->planeCount; i++) {
++			if (s->planes[i].bytesPerRow > rowmax) {
++				rowmax = s->planes[i].bytesPerRow;
++			}
++		}
++		uint64_t length = round_page_64((uint64_t)s->allocSize + rowmax * (uint64_t)pad_rows);
++		if (length > SWEET_SURFACE_MAX_ALLOC + (uint64_t)64 * 65536) {
++			length = s->allocSize;
++		}
+ 		if ((uint64_t)OSAddAtomic64(s->allocSize, (volatile SInt64 *)&sweet_surface_wired) +
+ 		    s->allocSize <= SWEET_SURFACE_WIRED_MAX) {
+ 			mem = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+-			    kIODirectionInOut | kIOMemoryKernelUserShared, s->allocSize, page_size);
++			    kIODirectionInOut | kIOMemoryKernelUserShared, (vm_size_t)length, page_size);
+ 		}
+ 		if (mem == NULL) {
+ 			OSAddAtomic64(-(SInt64)s->allocSize, (volatile SInt64 *)&sweet_surface_wired);
+ 			ret = kIOReturnNoMemory;
+ 		} else {
+-			bzero(mem->getBytesNoCopy(), s->allocSize);
++			bzero(mem->getBytesNoCopy(), (size_t)length);
+ 			s->memory = mem;
+ 			s->mapCache = kIOMapDefaultCache;
+ 			if (!sweet_surface_publish(s)) {
