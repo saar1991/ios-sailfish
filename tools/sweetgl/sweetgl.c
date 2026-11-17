@@ -18,6 +18,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <dlfcn.h>
 #include <sys/stat.h>
 #include <mach/mach_time.h>
 
@@ -205,9 +206,21 @@ sweetgl_init(void)
 			sweet_drm_log("sweetgl: screen %s (%s)", sscreen->get_name(sscreen),
 			    sscreen->get_vendor(sscreen));
 #ifdef SWEETGL_LLVMPIPE
-			sweet_drm_log("sweetgl: build %s, disk shader cache %s", SWEETGL_BUILD_ID,
-			    sscreen->get_disk_shader_cache != NULL && sscreen->get_disk_shader_cache(sscreen) != NULL ?
-			    "on" : "off");
+			{
+				/* why Mesa could not name the dylib's mtime (the cache id): log 2fbde5ff */
+				extern int sweetgl_lp_cache_id_fallback;
+				Dl_info di;
+				struct stat st;
+				int ok = dladdr((void *)sweetgl_init, &di) != 0 && di.dli_fname != NULL;
+				int sr = ok ? stat(di.dli_fname, &st) : -1;
+				int se = sr == 0 ? 0 : errno;
+				sweet_drm_log("sweetgl: build %s, disk shader cache %s, id %s; dladdr %s, stat %d errno %d mtime %ld; "
+				    "uid %d/%d gid %d/%d", SWEETGL_BUILD_ID,
+				    sscreen->get_disk_shader_cache != NULL && sscreen->get_disk_shader_cache(sscreen) != NULL ?
+				    "on" : "off", sweetgl_lp_cache_id_fallback ? "from the build id" : "from the dylib's mtime",
+				    ok ? di.dli_fname : "failed", sr, se, sr == 0 ? (long)st.st_mtime : 0L,
+				    (int)getuid(), (int)geteuid(), (int)getgid(), (int)getegid());
+			}
 #endif
 		}
 #else

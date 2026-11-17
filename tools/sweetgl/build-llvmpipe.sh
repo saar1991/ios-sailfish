@@ -46,8 +46,10 @@ llvm-config = '$L/bin/llvm-config'
 # util/u_endian.h's <endian.h> branch, which only knows BYTE_ORDER and
 # __BYTE_ORDER; the iOS SDK hides BYTE_ORDER under -std=c11 there (run
 # 43949620268, program_lex.yy.c). Same values u_endian.h would pick.
-c_args = ['-I$H/include', '-DUTIL_ARCH_LITTLE_ENDIAN=1', '-DUTIL_ARCH_BIG_ENDIAN=0']
-cpp_args = ['-I$H/include', '-DUTIL_ARCH_LITTLE_ENDIAN=1', '-DUTIL_ARCH_BIG_ENDIAN=0']
+# SWEETGL_CACHE_ID: llvmpipe's shader cache id when dladdr+stat of the dylib
+# fails (the patch to lp_screen.c below).
+c_args = ['-I$H/include', '-DUTIL_ARCH_LITTLE_ENDIAN=1', '-DUTIL_ARCH_BIG_ENDIAN=0', '-DSWEETGL_CACHE_ID="sweetgl-$BUILD_ID"']
+cpp_args = ['-I$H/include', '-DUTIL_ARCH_LITTLE_ENDIAN=1', '-DUTIL_ARCH_BIG_ENDIAN=0', '-DSWEETGL_CACHE_ID="sweetgl-$BUILD_ID"']
 
 [host_machine]
 system = 'darwin'
@@ -56,6 +58,40 @@ cpu_family = 'aarch64'
 cpu = 'arm64'
 endian = 'little'
 CROSS
+
+# llvmpipe makes its disk cache only if Mesa can name the dylib's mtime
+# (dladdr + stat of lp_disk_cache_create and LLVMLinkInMCJIT); on the phone
+# that failed ("disk shader cache off", log 2fbde5ff), so the cache was never
+# made. Fall back to the build id (each build has its own cache directory
+# anyway, sweetgl.c) and tell sweetgl.c that it did.
+python3 - "$M/src/gallium/drivers/llvmpipe/lp_screen.c" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+if 'sweetgl_lp_cache_id_fallback' not in s:
+    a = '''   if (!disk_cache_get_function_identifier(lp_disk_cache_create, &ctx) ||
+       !disk_cache_get_function_identifier(LLVMLinkInMCJIT, &ctx))
+      return;
+'''
+    assert s.count(a) == 1, 'lp_disk_cache_create changed'
+    s = s.replace(a, '''   if (!disk_cache_get_function_identifier(lp_disk_cache_create, &ctx) ||
+       !disk_cache_get_function_identifier(LLVMLinkInMCJIT, &ctx)) {
+#ifdef SWEETGL_CACHE_ID
+      /* sweetgl: no mtime for the dylib on iOS; the build id instead */
+      _mesa_blake3_init(&ctx);
+      _mesa_blake3_update(&ctx, SWEETGL_CACHE_ID, sizeof(SWEETGL_CACHE_ID));
+      sweetgl_lp_cache_id_fallback = 1;
+#else
+      return;
+#endif
+   }
+''')
+    a = 'static void\nlp_disk_cache_create(struct llvmpipe_screen *screen)\n'
+    assert s.count(a) == 1, 'lp_disk_cache_create signature changed'
+    s = s.replace(a, 'int sweetgl_lp_cache_id_fallback;\n\n' + a)
+    open(p, 'w').write(s)
+    print('patched', p)
+PY
 
 if [ ! -f "$B/build.ninja" ]; then
 	(cd "$M" && meson setup "$B" --cross-file "$O/ios-cross.txt" \
