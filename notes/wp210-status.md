@@ -310,7 +310,7 @@ Goal: compare softpipe + fast path (today) with llvmpipe (shaders compiled to AA
 - Layout with `cpus=8` (log 03157eac MHz line): cpu0 A55, cpus 1-3 A78 3.0 GHz, cpu4 A78 3.1 GHz, cpus 5-7 A55. With `cpus=5` the one A55 is cpu0 (the 0229 copies by CPU: cpu0 0.83 ms, the others 0.4 ms).
 - **0230 (kwt df0f2e6):** `wp210slow=N` takes the A55s (physical cores 0-3, from MPIDR in the 1-second clock thread) out of the scheduler's recommended set (`sched_perfcontrol_update_recommended_cores`, the performance controller's mechanism: a core out of the set runs only threads bound to it). llvmpipe's workers `llvmpipe-N`, `llvmpipe-N+1`, … bind themselves to the A55s, one each, when they name themselves (hook in `proc_info` `PROC_SELFSET_THREADNAME`). Everything else, CA's render thread included, runs on the 4 big cores. Logs `SWEET SLOW:` lines (applied mask, each bind, and every 30 s: recommended mask, failsafe, threads named/bound).
 - Boot args `args-8core-slow.txt`: `args-8core.txt` without `sweetgpu=0` (off is the default) plus `wp210slow=4` (llvmpipe-4..7 on the A55s, llvmpipe-0..3 on the big cores), 598 characters.
-- First build failed (the declaration isn't visible from BSD code; fixed); then GitHub had no macOS Intel runner twice (runs 44149185357). Retry: run 44155246115.
+- First build failed (the declaration isn't visible from BSD code; fixed); then GitHub had no macOS Intel runner twice (runs 44149185357). Built: **xnu run 44155246115** (success).
 
 ## Frame copy 4-11 ms: the framebuffer's own surface was write-combined (kernel 0229)
 
