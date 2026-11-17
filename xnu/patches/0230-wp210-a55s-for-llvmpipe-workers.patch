@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
-index 7e832cd..9de0f2d 100644
+index 7e832cd..b2bfd0e 100644
 --- a/bsd/dev/sweet_perf.c
 +++ b/bsd/dev/sweet_perf.c
 @@ -44,6 +44,8 @@
@@ -11,7 +11,7 @@ index 7e832cd..9de0f2d 100644
  
  extern struct processor *cpu_to_processor(int cpu);
  extern struct processor *thread_bind(struct processor *processor);
-@@ -1035,6 +1037,80 @@ wp210_clktree(uint64_t up)
+@@ -1035,6 +1037,81 @@ wp210_clktree(uint64_t up)
  	}
  }
  
@@ -26,6 +26,7 @@ index 7e832cd..9de0f2d 100644
 + * llvmpipe hands out bins as threads ask, so slower workers just take fewer.
 + */
 +extern bool perfcontrol_failsafe_active;
++extern void sched_perfcontrol_update_recommended_cores(uint32_t recommended_cores);
 +extern uint64_t perfcontrol_requested_recommended_cores;
 +static int sweet_slow_first;		/* wp210slow, 0 = off */
 +static int sweet_slow_cpu[PERF_SAFE_CPUS];
@@ -92,7 +93,7 @@ index 7e832cd..9de0f2d 100644
  /*
   * sweetperf=2: every CPU's clock once a second for the first 150 s after
   * boot, with the cpufreq state of each domain. The CPUs XNU numbers 0-3
-@@ -1069,6 +1145,7 @@ wp210_mhz_fast(void *arg, wait_result_t result)
+@@ -1069,6 +1146,7 @@ wp210_mhz_fast(void *arg, wait_result_t result)
  			dom[c] = core < 4 ? 0 : core < 7 ? 1 : 2;
  		}
  		thread_bind(NULL);
@@ -100,7 +101,7 @@ index 7e832cd..9de0f2d 100644
  		uint32_t st[3] = {0, 0, 0};
  		for (int d = 0; d < 3 && wp210_csram != 0; d++) {
  			st[d] = ((volatile uint32_t *)(wp210_csram + wp210_cpufreq_dom[d]))[0x88 / 4];
-@@ -1167,6 +1244,12 @@ wp210_mhz_fast(void *arg, wait_result_t result)
+@@ -1167,6 +1245,12 @@ wp210_mhz_fast(void *arg, wait_result_t result)
  				}
  			}
  			printf("\n");
@@ -113,7 +114,7 @@ index 7e832cd..9de0f2d 100644
  		}
  		/* system calls of launchd and mediaserverd, every 10 s (0218) */
  		if (up >= 20 && up <= 400 && up % 10 < (up < 150 ? 1u : 5u) && up / 10 != sys_last) {
-@@ -1371,6 +1454,7 @@ sweet_perf_init(void)
+@@ -1371,6 +1455,7 @@ sweet_perf_init(void)
  		return;
  	}
  	/* sweetperf=2: also the once-a-second clocks of the first 150 s */
