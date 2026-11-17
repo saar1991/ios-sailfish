@@ -1,0 +1,35 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 9ec2096..441e787 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -964,6 +964,11 @@ wp210_cpufreq_watch(void)
+  * the PLL. Writing the old word back put cpu0 at 1999 MHz from 42 s to the
+  * end of the log. Bit 16 reads back set right after the write and clears
+  * itself (0x030102ff, an acknowledge?), so it is ignored in the compare.
++ *
++ * 0228: clear bit 12 itself instead of restoring the first sample: with 8
++ * cores online MCUPM's init runs before the first sample (the A55s were
++ * already at 999 MHz at 18 s in the 8-core runs), so the first sample may
++ * already have the bit.
+  */
+ #define WP210_APMIXED_PA        0x1000c000u
+ #define WP210_CLKDIV_PA         0x0c53a000u
+@@ -1016,13 +1021,14 @@ wp210_clktree(uint64_t up)
+ 		memcpy(last, w, sizeof(w));
+ 		seen = 1;
+ 	}
+-	if (fix == 1 && (w[8] & ~(1u << 16)) != first_div && fixes < 20) {
++	if (fix == 1 && (w[8] & (1u << 12)) != 0 && fixes < 20) {
++		uint32_t want = w[8] & ~((1u << 12) | (1u << 16));
+ 		fixes++;
+-		*(volatile uint32_t *)(wp210_div + wp210_clkdiv[0]) = first_div;
++		*(volatile uint32_t *)(wp210_div + wp210_clkdiv[0]) = want;
+ 		__asm__ volatile ("dsb sy" ::: "memory");
+ 		delay(100);
+-		printf("SWEET CLKTREE: %llu s LL divider %#x -> wrote back %#x, reads %#x (fix %d)\n",
+-		    (unsigned long long)up, w[8], first_div, *(volatile uint32_t *)(wp210_div + wp210_clkdiv[0]), fixes);
++		printf("SWEET CLKTREE: %llu s LL divider %#x -> wrote %#x (bit 12 clear), reads %#x (fix %d, first sample %#x)\n",
++		    (unsigned long long)up, w[8], want, *(volatile uint32_t *)(wp210_div + wp210_clkdiv[0]), fixes, first_div);
+ 	}
+ }
+ 
