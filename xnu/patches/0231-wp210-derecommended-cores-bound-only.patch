@@ -1,0 +1,71 @@
+diff --git a/osfmk/kern/sched_clutch.c b/osfmk/kern/sched_clutch.c
+index 3657d83..c9c9216 100644
+--- a/osfmk/kern/sched_clutch.c
++++ b/osfmk/kern/sched_clutch.c
+@@ -2908,6 +2908,16 @@ sched_clutch_choose_thread(
+ 	run_queue_t bound_runq = sched_clutch_bound_runq(processor);
+ 	boolean_t choose_from_boundq = false;
+ 
++	/*
++	 * 0231 (wp210slow): a processor out of the recommended set runs only
++	 * its bound threads. With bound threads queued it went on to take
++	 * shared threads too (the presenter's copies: 11% on the A55s, log 60c5f619).
++	 */
++	if (!processor->is_recommended) {
++		clutch_pri = NOPRI;
++		clutch_count = 0;
++	}
++
+ 	if (bound_runq->highq < priority &&
+ 	    clutch_pri < priority) {
+ 		return THREAD_NULL;
+@@ -2973,9 +2983,16 @@ sched_clutch_processor_csw_check(processor_t processor)
+ 
+ 	run_queue_t bound_runq = sched_clutch_bound_runq(processor);
+ 	int clutch_pri = sched_clutch_root_priority(sched_clutch_processor_root_clutch(processor));
++	bool clutch_urgent = sched_clutch_root_urgency(sched_clutch_processor_root_clutch(processor)) > 0;
+ 
+ 	assert(processor->active_thread != NULL);
+ 
++	/* 0231: out of the recommended set: only bound threads count */
++	if (!processor->is_recommended) {
++		clutch_pri = NOPRI;
++		clutch_urgent = false;
++	}
++
+ 	pri = MAX(clutch_pri, bound_runq->highq);
+ 
+ 	if (processor->first_timeslice) {
+@@ -2985,7 +3002,7 @@ sched_clutch_processor_csw_check(processor_t processor)
+ 	}
+ 
+ 	if (has_higher) {
+-		if (sched_clutch_root_urgency(sched_clutch_processor_root_clutch(processor)) > 0) {
++		if (clutch_urgent) {
+ 			return AST_PREEMPT | AST_URGENT;
+ 		}
+ 
+@@ -3006,7 +3023,11 @@ sched_clutch_processor_queue_has_priority(processor_t    processor,
+ {
+ 	run_queue_t bound_runq = sched_clutch_bound_runq(processor);
+ 
+-	int qpri = MAX(sched_clutch_root_priority(sched_clutch_processor_root_clutch(processor)), bound_runq->highq);
++	int clutch_pri = sched_clutch_root_priority(sched_clutch_processor_root_clutch(processor));
++	if (!processor->is_recommended) {
++		clutch_pri = NOPRI;	/* 0231 */
++	}
++	int qpri = MAX(clutch_pri, bound_runq->highq);
+ 
+ 	if (gte) {
+ 		return qpri >= priority;
+@@ -3204,6 +3225,10 @@ extern int sched_allow_rt_smt;
+ static bool
+ sched_clutch_thread_avoid_processor(processor_t processor, thread_t thread)
+ {
++	/* 0231: unbound threads leave a processor that is out of the recommended set */
++	if (!processor->is_recommended && thread->bound_processor != processor) {
++		return true;
++	}
+ 	if (processor->processor_primary != processor) {
+ 		/*
+ 		 * This is a secondary SMT processor.  If the primary is running
