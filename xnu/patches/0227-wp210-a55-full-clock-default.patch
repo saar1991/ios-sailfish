@@ -1,0 +1,37 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 1ade02f..9ec2096 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -956,6 +956,14 @@ wp210_cpufreq_watch(void)
+  * the drop at ~41 s shows which one moved. wp210lldiv=1: when the A55
+  * divider leaves the value it had at the first sample, write that value
+  * back (logged; at most 20 times).
++ *
++ * 0227: the A55 fix is on by default (wp210lldiv=0 turns it off). Log
++ * cff94a30: the MCUPM firmware's CPU DVFS init (payload 0x12be4: after 8
++ * cores report ready, or a timeout, ~41 s with cpus=5) clears bit 13 and
++ * sets bit 12 of 0x0c53a2a0/a4/a8; with bit 12 set the A55s run at half
++ * the PLL. Writing the old word back put cpu0 at 1999 MHz from 42 s to the
++ * end of the log. Bit 16 reads back set right after the write and clears
++ * itself (0x030102ff, an acknowledge?), so it is ignored in the compare.
+  */
+ #define WP210_APMIXED_PA        0x1000c000u
+ #define WP210_CLKDIV_PA         0x0c53a000u
+@@ -977,7 +985,7 @@ wp210_clktree(uint64_t up)
+ 	static uint32_t last[12], first_div = 0xffffffff;
+ 	static int seen, fixes, fix = -1;
+ 	if (fix < 0) {
+-		fix = 0;
++		fix = 1;
+ 		(void)PE_parse_boot_argn("wp210lldiv", &fix, sizeof(fix));
+ 		wp210_apmixed = ml_io_map(WP210_APMIXED_PA, 0x1000);
+ 		wp210_div = ml_io_map(WP210_CLKDIV_PA, 0x1000);
+@@ -1008,7 +1016,7 @@ wp210_clktree(uint64_t up)
+ 		memcpy(last, w, sizeof(w));
+ 		seen = 1;
+ 	}
+-	if (fix == 1 && w[8] != first_div && fixes < 20) {
++	if (fix == 1 && (w[8] & ~(1u << 16)) != first_div && fixes < 20) {
+ 		fixes++;
+ 		*(volatile uint32_t *)(wp210_div + wp210_clkdiv[0]) = first_div;
+ 		__asm__ volatile ("dsb sy" ::: "memory");
