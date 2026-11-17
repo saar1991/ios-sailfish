@@ -312,6 +312,8 @@ Goal: compare softpipe + fast path (today) with llvmpipe (shaders compiled to AA
 - How fast a run's copy was depended on how much of the copy came from surface 1, and on which core did it (A55s and memory contention with the rasterizer).
 - **0229 (kwt 47feb9f, xnu run 44033305723):** surface 1 mapped cached (`sweetfb_cached=0` = write-combined as before; `sweetgpu=1` keeps write-combined by default, since the GPU path reads it by DMA). Logs `SWEET FB: own surface mapped cached` and a second `SWEET COPY` line every 30 s: own-surface copies against other surfaces, and copies by CPU.
 - Test: kernel 0229 + `args-default.txt` (the shader cache is already filled), compare with log ca95c935.
+- **Result (log 100a1caf, video 20:04:09): the copy is 11x faster and frames are up 16%.** Staged copy **0.48 ms** average (was 3.5-8.6 ms), max 1.1 ms (was 38-40 ms every run), own surface 0.48 ms and other surfaces 0.50 ms alike; by CPU: cpu0 0.83 ms, cpus 1-4 0.39-0.41 ms. Swaps that waited for the copy: 3 (was 20). Frames, all 30 steps: 836 → **968**; round 1 300 → 338, rounds 2-3 536 → 630 (+18%). Slow frames 10 / 6.7 s → **4 / 2.0 s**, none over 1 s (max 856 ms). A55s 1999 MHz. The video has no one-frame glitches. The panel copy (scaling into the DSI buffer) is still ~4.9 ms.
+- **Default now: kernel 0229 + `args-default.txt`** (`wp210-boot-0229.img`).
 
 ## Shader cache works (c5543ad; logs 4048b139 = boot 1, ca95c935 = boot 2, video 08:31:20)
 
