@@ -305,7 +305,15 @@ Goal: compare softpipe + fast path (today) with llvmpipe (shaders compiled to AA
 - **Comparison:** the same scripted test, kernel 0221 in both; baseline = today's shim with `args-big5` minus `sweetprof`. Compare `SWEET PERF` swaps/s, slow frames (count, mean, worst), the `WP210 AUTO` step times (first_ms, last_ms; Phone launch), CPU per core (`SWEET TOP`), and the video.
 - **Still to do:** install script for the ramdisk allocation (field-level catalog check on node 19291, backup of the 108 MB region first), once the dylib exists.
 
+## Shader-cache shim: install script (2026-11-17 07:45)
+
+- Artifact `sweetgl-llvmpipe_1.zip` (run 43962007014, b6214f5): `sweetgl.dylib` 51,323,952 bytes, SHA-256 `ec59bc2a…`, signature valid (12,429 pages), contains `run43962007014` and the cache strings; new imports only libz (deflate/inflate/crc32) and libSystem file calls (flock, rename, fstatat, rmdir, utime, ...).
+- `tools/install/install-sweetgl-llvmpipe-b6214f5.sh`: same ramdisk space; current content must be the 894eeac payload (OLD `5bd83463…`), NEW `26f658c5…` (dylib padded to 27,649 blocks); field-level catalog checks as before; the dylib goes to `/data/local/tmp/sweetgl-llvmpipe-cache.dylib`. Simulated: check, install verified, a second run refuses.
+- Boot: kernel 0228 + `args-default.txt`, twice: the first boot fills the cache, the second should have no compile stalls.
+
 ## 8-core layout with the A55s at 2 GHz (prepared 2026-11-17 07:15)
+
+- **Result (log 03157eac, video 07:36:23, kernel 0228 + `args-8core.txt`): 8 cores lose.** The first sample (19 s) already had bit 12 set (0x030012ff, MCUPM's init ran early with 8 cores); 0228 cleared it at 19 s and **all four A55s ran at 1999 MHz from 21 s**, A78s 3000, prime 3100, to the end. But frames: all steps 790 → **685**, rounds 2-3 524 → 492 (-6%); compile stalls 25.3 → 29.0 s. `PROF`: CA's render thread on the A55s 35% of its samples (16% with 5 cores), llvmpipe's 8 threads 37% on A55s. The A55s add throughput to the rasterizer but the single-threaded work lands on them too often. **Stay on 5 cores** (`args-default.txt`); 0228 is fine for both.
 
 - Idea: with the A55s at 2 GHz, 8 cores (4x A55 2 GHz + 3x A78 3 GHz + prime 3.1 GHz) may beat 5; llvmpipe's rasterizer gets 8 threads. Risk: single-threaded work (CA's render thread, LLVM compiles) lands on an A55 more often (4 of 8 cores instead of 1 of 5); an A55 at 2 GHz does much less per clock than an A78.
 - **Kernel 0228 (f370f40, xnu run 44022472551):** the A55 fix clears bit 12 whenever it is set, instead of restoring the first sample: with 8 cores online MCUPM's init (which waits for 8 cores ready) runs before our first sample at ~19 s.
