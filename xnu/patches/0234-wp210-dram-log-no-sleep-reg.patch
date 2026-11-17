@@ -1,0 +1,62 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 8196abf..911b7d5 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1004,7 +1004,7 @@ wp210_pll_mhz(uint32_t con1)
+ #define WP210_DDRPHY_AO0_PA     0x10238000
+ #define WP210_DVFSRC_PA         0x1c00f000
+ #define WP210_DVFSRC_SPM_PA     0x1c001000
+-static vm_offset_t wp210_sleep, wp210_phy, wp210_dvfsrc;
++static vm_offset_t wp210_phy, wp210_dvfsrc;
+ extern void sweet_log_kick(void);
+ /* before a risky read: flush the persistent log, give it 2 s, let the console show the line */
+ static void
+@@ -1049,35 +1049,26 @@ wp210_dram(uint64_t up)
+ 		return;
+ 	}
+ 	if (stage == 0) {
+-		printf("SWEET DRAM: mapping sleep 0x10006000, DDRPHY_AO 0x10238000, DVFSRC 0x1c00f000\n");
+-		wp210_sleep = ml_io_map(WP210_SLEEP_PA, 0x1000);
++		printf("SWEET DRAM: mapping DDRPHY_AO 0x10238000, DVFSRC 0x1c00f000\n");
+ 		wp210_phy = ml_io_map(WP210_DDRPHY_AO0_PA, 0x2000);
+ 		wp210_dvfsrc = ml_io_map(WP210_DVFSRC_PA, 0x1000);
+-		printf("SWEET DRAM: about to read sleep+0x50c\n");
+-		wp210_dram_flush();
+-		uint32_t sl = wp210_rd(wp210_sleep, 0x50c, 0x1000);
+-		printf("SWEET DRAM: sleep+0x50c = %#x; about to read the DDRPHY fields\n", sl);
++		/* 0234: sleep+0x50c raised an SError (log a0696775): not read; every PLL slot instead */
++		printf("SWEET DRAM: about to read the DDRPHY fields (sleep+0x50c skipped: SError)\n");
+ 		wp210_dram_flush();
+ 		stage = 1;
+ 	}
+-	uint32_t sl = wp210_rd(wp210_sleep, 0x50c, 0x1000);
+-	uint32_t shu = (sl >> 16) & 3, so = 0x900 * shu;
+-	static const uint32_t offs[10] = {0x904, 0x924, 0x908, 0x928, 0x90c, 0x944, 0xef4, 0xf34, 0xef0, 0xe74};
++	/* both shuffle slots (+0 and +0x900) of each field */
++	static const uint32_t offs[8] = {0x904, 0x924, 0x908, 0x928, 0x90c, 0x944, 0xef4, 0xf34};
+ 	uint32_t v[16];
+-	v[0] = sl;
+-	for (int i = 0; i < 10; i++) {
+-		v[1 + i] = wp210_rd(wp210_phy, offs[i] + so, 0x2000);
+-	}
+-	v[11] = wp210_rd(wp210_phy, 0x904, 0x2000);
+-	v[12] = wp210_rd(wp210_phy, 0x924, 0x2000);
+-	v[13] = wp210_rd(wp210_phy, 0x904 + 0x900, 0x2000);
+-	v[14] = wp210_rd(wp210_phy, 0x924 + 0x900, 0x2000);
+-	v[15] = 0;
++	for (int i = 0; i < 8; i++) {
++		v[i] = wp210_rd(wp210_phy, offs[i], 0x2000);
++		v[8 + i] = wp210_rd(wp210_phy, offs[i] + 0x900, 0x2000);
++	}
+ 	if ((stage == 1 || memcmp(v, last, sizeof(v)) != 0) && lines < 300) {
+-		printf("SWEET DRAM: %llu s sleep50c %#x (pll %u shu %u) 904 %#x 924 %#x 908 %#x 928 %#x 90c %#x 944 %#x "
+-		    "ef4 %#x f34 %#x ef0 %#x e74 %#x | slots 904 %#x 924 %#x 1204 %#x 1224 %#x\n",
+-		    (unsigned long long)up, v[0], (v[0] >> 8) & 1, shu, v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8],
+-		    v[9], v[10], v[11], v[12], v[13], v[14]);
++		printf("SWEET DRAM: %llu s shu0 904 %#x 924 %#x 908 %#x 928 %#x 90c %#x 944 %#x ef4 %#x f34 %#x | "
++		    "shu1 904 %#x 924 %#x 908 %#x 928 %#x 90c %#x 944 %#x ef4 %#x f34 %#x\n",
++		    (unsigned long long)up, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
++		    v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15]);
+ 		memcpy(last, v, sizeof(v));
+ 		lines++;
+ 	}
