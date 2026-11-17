@@ -305,6 +305,13 @@ Goal: compare softpipe + fast path (today) with llvmpipe (shaders compiled to AA
 - **Comparison:** the same scripted test, kernel 0221 in both; baseline = today's shim with `args-big5` minus `sweetprof`. Compare `SWEET PERF` swaps/s, slow frames (count, mean, worst), the `WP210 AUTO` step times (first_ms, last_ms; Phone launch), CPU per core (`SWEET TOP`), and the video.
 - **Still to do:** install script for the ramdisk allocation (field-level catalog check on node 19291, backup of the 108 MB region first), once the dylib exists.
 
+## Shader cache works (c5543ad; logs 4048b139 = boot 1, ca95c935 = boot 2, video 08:31:20)
+
+- The `disk shader cache off` line is printed too early to mean anything: llvmpipe creates its cache in `llvmpipe_screen_late_init` (first shader), after screen creation. Mesa could name the dylib's mtime (dladdr `/usr/standalone/update/ramdisk/arm64SURamDisk.dmg`, stat 0, mtime 1777518794, uid/gid 501), so the build-id fallback isn't used.
+- **Boot 1** (fills the cache): 20 slow frames, 21.9 s, 6 over 1 s (max 4.9 s). **Boot 2:** **10 slow frames, 6.7 s, 2 over 1 s (max 1.4 s)**. Round 1 233 → 300 frames: first Spotlight 2 → 15 frames, home after Spotlight 12 → 55, Control Centre 2 → 6. Whole run 788 → 836.
+- llvmpipe at 3 GHz, A55 at 2 GHz, 5 cores, shader cache = the default now (`wp210-boot-0228.img` = kernel 0228 + `args-default.txt`, shim c5543ad in the ramdisk space). Softpipe fallback: `args-softpipe.txt` (`/usr/lib/sweetgl.dylib`).
+- To do: print the cache state after the first frame instead of at screen creation.
+
 ## Shader-cache shim: install script (2026-11-17 07:45)
 
 - **First boot with it (log 2fbde5ff; the user rebooted twice by accident, the log holds only the last boot):** `sweetgl: shader cache in /private/var/mobile/Library/Caches/sweetgl/run43962007014 (uid 501)` but `disk shader cache off`. Mesa's `disk_cache_create` returns a cache even when the directory fails, so the cache was never created: `lp_disk_cache_create` returns early when `disk_cache_get_function_identifier` (dladdr + stat of the dylib, for its mtime) fails for `lp_disk_cache_create` or `LLVMLinkInMCJIT`. Frames as before (733; rounds 2-3 523), 19 slow frames, 20.1 s, 5 over 1 s. A55 fix at 41 s, cpu0 1999 to the end.
