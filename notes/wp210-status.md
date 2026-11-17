@@ -309,6 +309,7 @@ Goal: compare softpipe + fast path (today) with llvmpipe (shaders compiled to AA
 
 - At 41 s MCUPM's init set bit 12 (all three words 0x030012ff), cpu0 999, cpu1-3 1499. Kernel 0226 wrote 0x030002ff back to 0x0c53a2a0: it read 0x030102ff (bit 16 set for a moment), wrote again at 42 s, then 0x030002ff stayed. **cpu0 1999 MHz from 42 s to the end of the log (98 s)**, cpu1-3 3000 (domain 1 re-request as before), prime 3100. No panic; crashes the same as in earlier runs (MusicWidgets 8, assetsd 8, driverkitd 4). The log ended before the scripted test (90 s), so no frame numbers yet.
 - **Kernel 0227 (473007e, xnu run 44019151975):** the write-back is on by default (`wp210lldiv=0` turns it off), and bit 16 is ignored in the compare.
+- **Kernel 0227 run (log cab9e7a4, video 07:06:39, `args-default.txt`):** one write-back at 41 s, then cpu0 1999-2000 MHz to the end (210 s), cpu1-3 3000, prime 3100. No panic, no glitch in the video. Against the 3 GHz run with the A55 at 999 (log 16ff718b): all steps 701 → **790 frames (+13%)**, rounds 2-3 480 → 524 (+9%); swipe back 61-62 → 61-66, home after Spotlight 29-32 → 32-47, home after Phone 31-44 → 43-44; shader-compile stalls 30.4 s → 25.3 s (23 slow frames, 8 over 1 s, as before). Presenter copies 6.3 / 5.2 ms.
 - Next: the scripted test with 0227 + `args-default.txt`, frames against 0226/3 GHz; then maybe the 8-core layout again, now that the four A55s would run at 2 GHz (llvmpipe could use 8 threads).
 
 ## The A55 halving, again (2026-11-16 night): the clock tree
