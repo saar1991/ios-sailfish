@@ -1,0 +1,140 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index b2bfd0e..3b88892 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -989,6 +989,127 @@ wp210_pll_mhz(uint32_t con1)
+ 	return (uint32_t)((26ull * pcw >> 14) >> post);
+ }
+ 
++/*
++ * 0232: the DRAM clock, read-only. The mt6895 device tree's dramc@10230000
++ * (LPDDR5, freq_step 6400 6400 5500 4266 3200 2667 2133 1866 800 Mbps,
++ * fmeter_version 1, crystal 26 MHz): pll_id = sleep[0x50c] bit 8, shu_lv =
++ * bits 16-17; sdmpcw at DDRPHY_AO ch0 + 0x904 (PHYPLL) / 0x924 (CLRPLL) +
++ * 0x900 * shu_lv, bits 16-31; prediv 0x908/0x928 bits 18-19, posdiv bits
++ * 0-2; fbksel 0x90c bit 6; pll_md 0x944 bit 8; ckdiv4 0xef4 bit 2; cldiv2
++ * 0xf34 bit 1; dqs/dq open 0xef0 bits 20/21; ckdiv4_ca 0xe74 bit 2. Logged
++ * raw (decoded offline), with the DVFSRC page (0x1c00f000), its SPM page
++ * (0x1c001000) and the sleep page dumped once, then DVFSRC words that change.
++ * wp210dram=0: off.
++ */
++#define WP210_SLEEP_PA          0x10006000
++#define WP210_DDRPHY_AO0_PA     0x10238000
++#define WP210_DVFSRC_PA         0x1c00f000
++#define WP210_DVFSRC_SPM_PA     0x1c001000
++static vm_offset_t wp210_sleep, wp210_phy, wp210_dvfsrc, wp210_dvfsrc_spm;
++static uint32_t wp210_dvfsrc_copy[1024];
++static uint8_t wp210_dvfsrc_changes[1024];
++
++static uint32_t
++wp210_rd(vm_offset_t base, uint32_t off, uint32_t size)
++{
++	if (base == 0 || off + 4 > size) {
++		return 0xdeadbeef;
++	}
++	return *(volatile uint32_t *)(base + off);
++}
++
++static void
++wp210_dump_page(const char *tag, vm_offset_t base)
++{
++	char line[300];
++	int m = 0, n = 0, total = 0;
++	for (uint32_t o = 0; o < 0x1000 && base != 0; o += 4) {
++		uint32_t v = *(volatile uint32_t *)(base + o);
++		if (v == 0) {
++			continue;
++		}
++		if (n == 0) {
++			m = snprintf(line, sizeof(line), "SWEET DRAMDUMP: %s", tag);
++		}
++		m += snprintf(line + m, sizeof(line) - m, " %03x=%x", o, v);
++		total++;
++		if (++n == 8) {
++			printf("%s\n", line);
++			n = 0;
++		}
++	}
++	if (n != 0) {
++		printf("%s\n", line);
++	}
++	printf("SWEET DRAMDUMP: %s %d non-zero words\n", tag, total);
++}
++
++static void
++wp210_dram(uint64_t up)
++{
++	static int on = -1, seen, lines, dvlines;
++	static uint32_t last[16];
++	if (on < 0) {
++		on = 1;
++		(void)PE_parse_boot_argn("wp210dram", &on, sizeof(on));
++		if (on) {
++			wp210_sleep = ml_io_map(WP210_SLEEP_PA, 0x1000);
++			wp210_phy = ml_io_map(WP210_DDRPHY_AO0_PA, 0x2000);
++			wp210_dvfsrc = ml_io_map(WP210_DVFSRC_PA, 0x1000);
++			wp210_dvfsrc_spm = ml_io_map(WP210_DVFSRC_SPM_PA, 0x1000);
++		}
++		printf("SWEET DRAM: wp210dram=%d, sleep %s, ddrphy %s, dvfsrc %s, spm %s\n", on,
++		    wp210_sleep ? "mapped" : "-", wp210_phy ? "mapped" : "-",
++		    wp210_dvfsrc ? "mapped" : "-", wp210_dvfsrc_spm ? "mapped" : "-");
++		if (on) {
++			wp210_dump_page("sleep", wp210_sleep);
++			wp210_dump_page("dvfsrc", wp210_dvfsrc);
++			wp210_dump_page("spm", wp210_dvfsrc_spm);
++			for (int i = 0; i < 1024 && wp210_dvfsrc != 0; i++) {
++				wp210_dvfsrc_copy[i] = *(volatile uint32_t *)(wp210_dvfsrc + i * 4);
++			}
++		}
++	}
++	if (!on) {
++		return;
++	}
++	uint32_t sl = wp210_rd(wp210_sleep, 0x50c, 0x1000);
++	uint32_t shu = (sl >> 16) & 3, so = 0x900 * shu;
++	static const uint32_t offs[10] = {0x904, 0x924, 0x908, 0x928, 0x90c, 0x944, 0xef4, 0xf34, 0xef0, 0xe74};
++	uint32_t v[16];
++	v[0] = sl;
++	for (int i = 0; i < 10; i++) {
++		v[1 + i] = wp210_rd(wp210_phy, offs[i] + so, 0x2000);
++	}
++	/* both shuffle slots' sdmpcw, both PLLs */
++	v[11] = wp210_rd(wp210_phy, 0x904, 0x2000);
++	v[12] = wp210_rd(wp210_phy, 0x924, 0x2000);
++	v[13] = wp210_rd(wp210_phy, 0x904 + 0x900, 0x2000);
++	v[14] = wp210_rd(wp210_phy, 0x924 + 0x900, 0x2000);
++	v[15] = 0;
++	if ((!seen || memcmp(v, last, sizeof(v)) != 0) && lines < 300) {
++		printf("SWEET DRAM: %llu s sleep50c %#x (pll %u shu %u) 904 %#x 924 %#x 908 %#x 928 %#x 90c %#x 944 %#x "
++		    "ef4 %#x f34 %#x ef0 %#x e74 %#x | slots 904 %#x 924 %#x 1204 %#x 1224 %#x\n",
++		    (unsigned long long)up, v[0], (v[0] >> 8) & 1, shu, v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8],
++		    v[9], v[10], v[11], v[12], v[13], v[14]);
++		memcpy(last, v, sizeof(v));
++		seen = 1;
++		lines++;
++	}
++	for (int i = 0; i < 1024 && wp210_dvfsrc != 0 && dvlines < 400; i++) {
++		uint32_t x = *(volatile uint32_t *)(wp210_dvfsrc + i * 4);
++		if (x != wp210_dvfsrc_copy[i]) {
++			if (wp210_dvfsrc_changes[i] < 6) {
++				wp210_dvfsrc_changes[i]++;
++				dvlines++;
++				printf("SWEET DVFSRC: %llu s +%03x %#x -> %#x%s\n", (unsigned long long)up, i * 4,
++				    wp210_dvfsrc_copy[i], x, wp210_dvfsrc_changes[i] == 6 ? " (no more for this word)" : "");
++			}
++			wp210_dvfsrc_copy[i] = x;
++		}
++	}
++}
++
+ static void
+ wp210_clktree(uint64_t up)
+ {
+@@ -1152,6 +1273,7 @@ wp210_mhz_fast(void *arg, wait_result_t result)
+ 			st[d] = ((volatile uint32_t *)(wp210_csram + wp210_cpufreq_dom[d]))[0x88 / 4];
+ 		}
+ 		wp210_clktree(up);
++		wp210_dram(up);
+ 		if (up <= 150) {
+ 			printf("SWEET MHZ: %llu s %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu state %u/%u/%u\n",
+ 			    (unsigned long long)up, (unsigned long long)mhz[0], (unsigned long long)mhz[1],
