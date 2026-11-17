@@ -1,0 +1,52 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 911b7d5..9bd52ea 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1090,7 +1090,46 @@ wp210_dram(uint64_t up)
+ 		printf("%s\n", line);
+ 		memcpy(dvlast, dv, sizeof(dv));
+ 		dvlines++;
+-		stage = 3;
++		if (stage == 2) {
++			stage = 3;
++		}
++	}
++	/*
++	 * 0235: once, at 90 s: dqsopen/dqopen (0xef0) and ckdiv4_ca (0xe74) for
++	 * both shuffle slots, then the DVFSRC page in four announced quarters
++	 * (0232's hang was the sleep page, read first; the DVFSRC page was never
++	 * reached). For the mt6895 layout: which word holds the current level.
++	 */
++	if (stage == 3 && up >= (uint64_t)at + 30) {
++		stage = 4;
++		printf("SWEET DRAM: %llu s ef0 %#x e74 %#x | shu1 ef0 %#x e74 %#x\n", (unsigned long long)up,
++		    wp210_rd(wp210_phy, 0xef0, 0x2000), wp210_rd(wp210_phy, 0xe74, 0x2000),
++		    wp210_rd(wp210_phy, 0xef0 + 0x900, 0x2000), wp210_rd(wp210_phy, 0xe74 + 0x900, 0x2000));
++		for (uint32_t q = 0; q < 0x1000 && wp210_dvfsrc != 0; q += 0x400) {
++			printf("SWEET DRAM: about to read DVFSRC %#x-%#x\n", q, q + 0x3ff);
++			wp210_dram_flush();
++			char dl[300];
++			int m = 0, n = 0, total = 0;
++			for (uint32_t o = q; o < q + 0x400; o += 4) {
++				uint32_t x = *(volatile uint32_t *)(wp210_dvfsrc + o);
++				if (x == 0) {
++					continue;
++				}
++				if (n == 0) {
++					m = snprintf(dl, sizeof(dl), "SWEET DRAMDUMP: dvfsrc");
++				}
++				m += snprintf(dl + m, sizeof(dl) - m, " %03x=%x", o, x);
++				total++;
++				if (++n == 8) {
++					printf("%s\n", dl);
++					n = 0;
++				}
++			}
++			if (n != 0) {
++				printf("%s\n", dl);
++			}
++			printf("SWEET DRAMDUMP: dvfsrc %#x-%#x: %d non-zero words\n", q, q + 0x3ff, total);
++		}
+ 	}
+ }
+ 
