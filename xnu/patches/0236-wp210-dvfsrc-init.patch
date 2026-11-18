@@ -1,0 +1,96 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 9bd52ea..9fb3c61 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1038,7 +1038,8 @@ wp210_dram(uint64_t up)
+ 	static int on = -1, stage, lines, dvlines;
+ 	static int at = 60;
+ 	static uint32_t last[16], dvlast[12];
+-	static const uint32_t dvoffs[12] = {0x0, 0x4, 0x8, 0xc, 0x10, 0x6c, 0x26c, 0x278, 0x290, 0xd44, 0xd48, 0xd4c};
++	/* 0236: the mt6983 layout, which the vendor driver uses for "mediatek,mt6895-dvfsrc" */
++	static const uint32_t dvoffs[12] = {0x0, 0x18, 0x80, 0x1e8, 0x1f4, 0x20c, 0x22c, 0x230, 0x5dc, 0x5e0, 0x5ec, 0x5f0};
+ 	if (on < 0) {
+ 		on = 1;
+ 		(void)PE_parse_boot_argn("wp210dram", &on, sizeof(on));
+@@ -1073,7 +1074,7 @@ wp210_dram(uint64_t up)
+ 		lines++;
+ 	}
+ 	if (stage == 1) {
+-		printf("SWEET DRAM: about to read DVFSRC words 0x0-0x10, 0x6c, 0x26c, 0x278, 0x290, 0xd44-0xd4c\n");
++		printf("SWEET DRAM: about to read DVFSRC words (basic 0x0, sw_req 0x18, level 0x5f0, ...)\n");
+ 		wp210_dram_flush();
+ 		stage = 2;
+ 	}
+@@ -1095,41 +1096,40 @@ wp210_dram(uint64_t up)
+ 		}
+ 	}
+ 	/*
+-	 * 0235: once, at 90 s: dqsopen/dqopen (0xef0) and ckdiv4_ca (0xe74) for
+-	 * both shuffle slots, then the DVFSRC page in four announced quarters
+-	 * (0232's hang was the sleep page, read first; the DVFSRC page was never
+-	 * reached). For the mt6895 layout: which word holds the current level.
++	 * 0236: start the DVFSRC the way the vendor kernel does (mtk-dvfsrc.c
++	 * probe): SMC MTK_SIP_VCOREFS_CONTROL (0xc2000506), MTK_SIP_DVFSRC_INIT
++	 * (0), dvfsrc-flag 0, dvfsrc-vmode 0 (the device tree sets neither).
++	 * a0 = 0 is success, a1 the DRAM type. Per mtk-dvfsrc-start.c the
++	 * DVFSRC then holds the high OPP until MTK_SIP_DVFSRC_START, which we
++	 * never send. 0234/0235: DRAM at 3068 Mbps, DVFSRC idle (level 0).
++	 * wp210dvfsrc=0: skip.
+ 	 */
+-	if (stage == 3 && up >= (uint64_t)at + 30) {
++	static int dvfsrc_init = -1;
++	if (dvfsrc_init < 0) {
++		dvfsrc_init = 1;
++		(void)PE_parse_boot_argn("wp210dvfsrc", &dvfsrc_init, sizeof(dvfsrc_init));
++	}
++	if (stage == 3 && up >= (uint64_t)at + 5) {
+ 		stage = 4;
+-		printf("SWEET DRAM: %llu s ef0 %#x e74 %#x | shu1 ef0 %#x e74 %#x\n", (unsigned long long)up,
+-		    wp210_rd(wp210_phy, 0xef0, 0x2000), wp210_rd(wp210_phy, 0xe74, 0x2000),
+-		    wp210_rd(wp210_phy, 0xef0 + 0x900, 0x2000), wp210_rd(wp210_phy, 0xe74 + 0x900, 0x2000));
+-		for (uint32_t q = 0; q < 0x1000 && wp210_dvfsrc != 0; q += 0x400) {
+-			printf("SWEET DRAM: about to read DVFSRC %#x-%#x\n", q, q + 0x3ff);
+-			wp210_dram_flush();
+-			char dl[300];
+-			int m = 0, n = 0, total = 0;
+-			for (uint32_t o = q; o < q + 0x400; o += 4) {
+-				uint32_t x = *(volatile uint32_t *)(wp210_dvfsrc + o);
+-				if (x == 0) {
+-					continue;
+-				}
+-				if (n == 0) {
+-					m = snprintf(dl, sizeof(dl), "SWEET DRAMDUMP: dvfsrc");
+-				}
+-				m += snprintf(dl + m, sizeof(dl) - m, " %03x=%x", o, x);
+-				total++;
+-				if (++n == 8) {
+-					printf("%s\n", dl);
+-					n = 0;
+-				}
+-			}
+-			if (n != 0) {
+-				printf("%s\n", dl);
+-			}
+-			printf("SWEET DRAMDUMP: dvfsrc %#x-%#x: %d non-zero words\n", q, q + 0x3ff, total);
++		if (dvfsrc_init == 0) {
++			printf("SWEET DRAM: DVFSRC init skipped (wp210dvfsrc=0)\n");
++			return;
+ 		}
++		printf("SWEET DRAM: %llu s about to call MTK_SIP_VCOREFS_CONTROL DVFSRC_INIT (smc 0xc2000506, 0, 0, 0)\n",
++		    (unsigned long long)up);
++		wp210_dram_flush();
++		register uint64_t x0 __asm__("x0") = 0xc2000506ull;
++		register uint64_t x1 __asm__("x1") = 0;     /* MTK_SIP_DVFSRC_INIT */
++		register uint64_t x2 __asm__("x2") = 0;     /* dvfsrc-flag */
++		register uint64_t x3 __asm__("x3") = 0;     /* dvfsrc-vmode */
++		uint64_t t0 = mach_absolute_time();
++		__asm__ volatile ("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3) : :
++		    "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14",
++		    "x15", "x16", "x17", "memory");
++		uint64_t ns = perf_ns(mach_absolute_time() - t0);
++		printf("SWEET DRAM: DVFSRC_INIT returned a0 %#llx a1 %#llx a2 %#llx a3 %#llx in %llu us (%s)\n",
++		    x0, x1, x2, x3, ns / 1000, x0 == 0 ? "ok: high OPP held" : "refused");
++		wp210_dram_flush();
+ 	}
+ }
+ 
