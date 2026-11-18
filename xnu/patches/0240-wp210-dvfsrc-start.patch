@@ -1,0 +1,65 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 640329b..cc5a325 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1288,9 +1288,58 @@ wp210_dram(uint64_t up)
+ 		}
+ 		wp210_dram_flush();
+ 	}
+-	if (stage == 6 && up >= (uint64_t)at + 26) {
++	/*
++	 * 0240: 0239 showed the SPM firmware parked (MD32PCM_PC 0x6b0 all along)
++	 * and DVFSRC_EVENT_STA 0: the DVFSRC never signalled it. The vendor's
++	 * mtk-dvfsrc-start.c sends SMC VCOREFS_CONTROL MTK_SIP_DVFSRC_START (1)
++	 * at late init to let the DVFSRC run free; without it the DVFSRC only
++	 * holds requests. wp210dvfsrcstart=0 skips.
++	 */
++	static int dvstart = -1;
++	if (dvstart < 0) {
++		dvstart = 1;
++		(void)PE_parse_boot_argn("wp210dvfsrcstart", &dvstart, sizeof(dvstart));
++	}
++	if (stage == 6 && up >= (uint64_t)at + 24) {
++		stage = 60;
++		if (dvstart == 0 || dvfsrc_init == 0) {
++			printf("SWEET DRAM: DVFSRC_START skipped\n");
++		} else {
++			printf("SWEET DRAM: %llu s about to call MTK_SIP_VCOREFS_CONTROL DVFSRC_START (smc 0xc2000506, 1)\n",
++			    (unsigned long long)up);
++			wp210_dram_flush();
++			register uint64_t x0 __asm__("x0") = 0xc2000506ull;
++			register uint64_t x1 __asm__("x1") = 1;     /* MTK_SIP_DVFSRC_START */
++			register uint64_t x2 __asm__("x2") = 0;
++			register uint64_t x3 __asm__("x3") = 0;
++			__asm__ volatile ("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3) : :
++			    "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14",
++			    "x15", "x16", "x17", "memory");
++			printf("SWEET DRAM: DVFSRC_START returned a0 %#llx a1 %#llx\n", x0, x1);
++			uint32_t last904 = 0xffffffff, lastlv = 0xffffffff;
++			uint64_t t0 = mach_absolute_time();
++			for (int i = 0; i < 200; i++) {         /* 2 s, every 10 ms */
++				uint32_t p904 = *(volatile uint32_t *)(wp210_phy + 0x904);
++				uint32_t lv = *(volatile uint32_t *)(wp210_dvfsrc + 0x5f0);
++				if (p904 != last904 || lv != lastlv) {
++					printf("SWEET DRAM: start +%llu us BASIC %#x SW_REQ %#x LEVEL %#x 904 %#x 1204 %#x\n",
++					    perf_ns(mach_absolute_time() - t0) / 1000,
++					    *(volatile uint32_t *)(wp210_dvfsrc + 0x0), *(volatile uint32_t *)(wp210_dvfsrc + 0x18),
++					    lv, p904, *(volatile uint32_t *)(wp210_phy + 0x904 + 0x900));
++					last904 = p904;
++					lastlv = lv;
++				}
++				if (i == 1 || i == 10 || i == 50 || i == 199) {
++					wp210_spm_line(i == 1 ? "after START +10 ms" : i == 10 ? "+100 ms" : i == 50 ? "+500 ms" : "+2 s");
++				}
++				delay(10000);
++			}
++			wp210_dram_flush();
++		}
++	}
++	if (stage == 60 && up >= (uint64_t)at + 30) {
+ 		stage = 7;
+-		wp210_bw("after the DRAM level request");
++		wp210_bw("after the DRAM level request and DVFSRC_START");
+ 	}
+ 	if (stage == 30 && up >= (uint64_t)at + 5) {
+ 		stage = 4;
