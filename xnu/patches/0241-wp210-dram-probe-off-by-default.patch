@@ -1,0 +1,14 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index cc5a325..05de86f 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1156,7 +1156,8 @@ wp210_dram(uint64_t up)
+ 	/* 0236: the mt6983 layout, which the vendor driver uses for "mediatek,mt6895-dvfsrc" */
+ 	static const uint32_t dvoffs[12] = {0x0, 0x18, 0x80, 0x1e8, 0x1f4, 0x20c, 0x22c, 0x230, 0x5dc, 0x5e0, 0x5ec, 0x5f0};
+ 	if (on < 0) {
+-		on = 1;
++		/* 0241: off by default; wp210dram=1 runs the DRAM probe, the bandwidth tests and the DVFSRC steps */
++		on = 0;
+ 		(void)PE_parse_boot_argn("wp210dram", &on, sizeof(on));
+ 		(void)PE_parse_boot_argn("wp210dramat", &at, sizeof(at));
+ 		printf("SWEET DRAM: wp210dram=%d from %d s\n", on, at);
