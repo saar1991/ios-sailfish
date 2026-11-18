@@ -1,0 +1,201 @@
+Wed Nov 18 18:39:58 IST 2026
+OUKITEL/WP210_Pro_EEA/WP210_Pro:15/AP3A.240905.015.A2/2025481:user/release-keys
+Linux localhost 5.10.236-android12-9-00020-gf997514b333d-ab13743839 #1 SMP PREEMPT Mon Jul 7 16:32:37 UTC 2025 aarch64 Toybox
+== /sys/devices/platform/soc/1c00f000.dvfsrc/1c00f000.dvfsrc:dvfsrc-helper/dvfsrc_get_dvfs_time
+Not in force mode
+== /sys/devices/platform/soc/1c00f000.dvfsrc/1c00f000.dvfsrc:dvfsrc-helper/dvfsrc_ddr_opp_table
+800000000 1866000000 2133000000 2667000000 3200000000 4266000000 5500000000 6400000000 6400000000 
+== /sys/devices/platform/soc/1c00f000.dvfsrc/1c00f000.dvfsrc:dvfsrc-helper/dvfsrc_num_opps
+27
+== /sys/devices/platform/soc/1c00f000.dvfsrc/1c00f000.dvfsrc:dvfsrc-helper/dvfsrc_opp_table
+NUM_VCORE_OPP : 5
+NUM_DDR_OPP : 9
+NUM_DVFSRC_OPP : 27
+
+[OPP0 ]: 787500   uv 6400000  khz
+[OPP1 ]: 787500   uv 6400000  khz
+[OPP2 ]: 787500   uv 5500000  khz
+[OPP3 ]: 725000   uv 5500000  khz
+[OPP4 ]: 787500   uv 4266000  khz
+[OPP5 ]: 725000   uv 4266000  khz
+[OPP6 ]: 787500   uv 3200000  khz
+[OPP7 ]: 725000   uv 3200000  khz
+[OPP8 ]: 625000   uv 3200000  khz
+[OPP9 ]: 787500   uv 2667000  khz
+[OPP10]: 725000   uv 2667000  khz
+[OPP11]: 625000   uv 2667000  khz
+[OPP12]: 575000   uv 2667000  khz
+[OPP13]: 787500   uv 2133000  khz
+[OPP14]: 725000   uv 2133000  khz
+[OPP15]: 625000   uv 2133000  khz
+[OPP16]: 575000   uv 2133000  khz
+[OPP17]: 787500   uv 1866000  khz
+[OPP18]: 725000   uv 1866000  khz
+[OPP19]: 625000   uv 1866000  khz
+[OPP20]: 575000   uv 1866000  khz
+[OPP21]: 550000   uv 1866000  khz
+[OPP22]: 787500   uv 800000   khz
+[OPP23]: 725000   uv 800000   khz
+[OPP24]: 625000   uv 800000   khz
+[OPP25]: 575000   uv 800000   khz
+[OPP26]: 550000   uv 800000   khz
+== /sys/devices/platform/soc/1c00f000.dvfsrc/1c00f000.dvfsrc:dvfsrc-helper/spm_cmd_dump
+CMD0: 0x024e0058
+CMD1: 0x024e005c
+CMD2: 0x024e0064
+CMD3: 0x024e0074
+CMD4: 0x024e007e
+CMD5: 0x04110001
+CMD6: 0x04110000
+CMD7: 0x04110001
+CMD8: 0x04110000
+CMD9: 0x00000000
+CMD10: 0x02420020
+CMD11: 0x02410020
+CMD12: 0x024e005c
+CMD13: 0x024e0060
+CMD14: 0x024e0068
+CMD15: 0x024e0074
+CMD16: 0x024e007e
+CMD17: 0x02510050
+CMD18: 0x02510030
+CMD19: 0x0252005c
+CMD20: 0x02520060
+CMD21: 0x02520068
+CMD22: 0x02520078
+CMD23: 0x00000000
+== /sys/devices/platform/soc/1c00f000.dvfsrc/1c00f000.dvfsrc:dvfsrc-helper/dvfsrc_dump
+Vcore     : 550000   uv
+DDR       : 1866000  khz
+FORCE_OPP_IDX  : 255
+CURR_DVFS_OPP  : 26
+CURR_VCORE_OPP : 4
+CURR_DRAM_OPP  : 8
+
+VBINFO_0: 1539f09b
+VBINFO_1: 0db40000
+VBINFO_2: 00000000
+V_MODE: 0x60400020
+CONTROL     : 65ac02ab
+CURRENT     : 0000001a
+TARGET      : 0000001a
+SW_REQ 1~4  : 00000000, 00000000, 00000000, 00000000
+SW_REQ 5~8  : 00000000, 00000000, 00000000, 00000000
+SW_BW_0~6   : 0, 0, 0, 0, 0, 0, 0
+SW_BW_7~9   : 0, 0, 0
+INT         : 0
+INT_EN      : 2
+ISP_HRT     : 0
+DEBUG_STA_0 : 00000000, 00000000, 00000f00, 00000003
+DEBUG_STA_4 : 00000000, 00000000, 00000004
+DEBUG_STA_7 : 00000000, 00000000, 000000d2
+MD_RISING   : 0
+MD_HRT_BW   : 3
+HRT_BW_REQ  : 0
+HIFI_VCORE  : 0
+HIFI_DDR    : 0
+HIFI_RISING : 0
+SCP_VCORE   : 0, 0
+
+DVFSRC_LAST: 1
+[0]0~3 :6b0ace3c,00000002,00003c02,00000000
+[0]4~7 :00000008,0000031a,00000000,00000000
+[1]0~3 :6b0adc8b,00000002,00003c02,00000000
+[1]4~7 :00000008,00000680,00000000,00000000
+[2]0~3 :6ae4d900,00000002,00003c02,00000000
+[2]4~7 :00000008,0003068c,00000003,00000000
+[3]0~3 :6ae4e71f,00000002,00003c02,00000000
+[3]4~7 :00000008,00030300,00000003,00000000
+[4]0~3 :6aec4157,00000002,00003c02,00000000
+[4]4~7 :00000008,0000031a,00000000,00000000
+[5]0~3 :6aec4f9c,00000002,00003c02,00000000
+[5]4~7 :00000008,00000680,00000000,00000000
+[6]0~3 :6af915a3,00000002,00003c02,00000000
+[6]4~7 :00000008,0003068c,00000003,00000000
+[7]0~3 :6af923ac,00000002,00003c02,00000000
+[7]4~7 :00000008,00030300,00000003,00000000
+
+POWERON_CONFIG_EN       : 0x00000001
+SPM_SW_FLAG_0           : 0x02190067
+SPM_PC_STA              : 0x000006b0
+SPM_DVFS_LEVEL          : 0x00000002
+SPM_DVS_DFS_LEVEL       : 0x00010080
+SPM_DVFS_STA            : 0x00000000
+SPM_DVFS_CMD0~4         : 0x024e0058, 0x024e005c, 0x024e0064, 0x024e0074, 0x024e007e
+== /sys/bus/platform/drivers/dramc_drv/dram_data_rate
+DRAM data rate = 1866
+== /sys/firmware/devicetree/base/soc/dramc@10230000/dram_type
+== devmem
+ls: /dev/mem: No such file or directory
+0x1c00f000 devmem: can't open '/dev/mem': No such file or directory
+0x1c00f018 devmem: can't open '/dev/mem': No such file or directory
+0x1c00f5f0 devmem: can't open '/dev/mem': No such file or directory
+0x1c001194 devmem: can't open '/dev/mem': No such file or directory
+0x1c001194 devmem: can't open '/dev/mem': No such file or directory
+0x1c001194 devmem: can't open '/dev/mem': No such file or directory
+0x1c001380 devmem: can't open '/dev/mem': No such file or directory
+0x1c001388 devmem: can't open '/dev/mem': No such file or directory
+0x1c00138c devmem: can't open '/dev/mem': No such file or directory
+0x1c001390 devmem: can't open '/dev/mem': No such file or directory
+0x1c001394 devmem: can't open '/dev/mem': No such file or directory
+0x10238904 devmem: can't open '/dev/mem': No such file or directory
+0x10238908 devmem: can't open '/dev/mem': No such file or directory
+0x10239204 devmem: can't open '/dev/mem': No such file or directory
+== dump again
+Vcore     : 550000   uv
+DDR       : 1866000  khz
+FORCE_OPP_IDX  : 255
+CURR_DVFS_OPP  : 26
+CURR_VCORE_OPP : 4
+CURR_DRAM_OPP  : 8
+
+VBINFO_0: 1539f09b
+VBINFO_1: 0db40000
+VBINFO_2: 00000000
+V_MODE: 0x60400020
+CONTROL     : 65ac02ab
+CURRENT     : 0000001a
+TARGET      : 0000001a
+SW_REQ 1~4  : 00000000, 00000000, 00000000, 00000000
+SW_REQ 5~8  : 00000000, 00000000, 00000000, 00000000
+SW_BW_0~6   : 0, 0, 0, 0, 0, 0, 0
+SW_BW_7~9   : 0, 0, 0
+INT         : 0
+INT_EN      : 2
+ISP_HRT     : 0
+DEBUG_STA_0 : 00000000, 00000000, 00000f00, 00000003
+DEBUG_STA_4 : 00000000, 00000000, 00000004
+DEBUG_STA_7 : 00000000, 00000000, 000000d2
+MD_RISING   : 0
+MD_HRT_BW   : 3
+HRT_BW_REQ  : 0
+HIFI_VCORE  : 0
+HIFI_DDR    : 0
+HIFI_RISING : 0
+SCP_VCORE   : 0, 0
+
+DVFSRC_LAST: 1
+[0]0~3 :6b0ace3c,00000002,00003c02,00000000
+[0]4~7 :00000008,0000031a,00000000,00000000
+[1]0~3 :6b0adc8b,00000002,00003c02,00000000
+[1]4~7 :00000008,00000680,00000000,00000000
+[2]0~3 :6ae4d900,00000002,00003c02,00000000
+[2]4~7 :00000008,0003068c,00000003,00000000
+[3]0~3 :6ae4e71f,00000002,00003c02,00000000
+[3]4~7 :00000008,00030300,00000003,00000000
+[4]0~3 :6aec4157,00000002,00003c02,00000000
+[4]4~7 :00000008,0000031a,00000000,00000000
+[5]0~3 :6aec4f9c,00000002,00003c02,00000000
+[5]4~7 :00000008,00000680,00000000,00000000
+[6]0~3 :6af915a3,00000002,00003c02,00000000
+[6]4~7 :00000008,0003068c,00000003,00000000
+[7]0~3 :6af923ac,00000002,00003c02,00000000
+[7]4~7 :00000008,00030300,00000003,00000000
+
+POWERON_CONFIG_EN       : 0x00000001
+SPM_SW_FLAG_0           : 0x02190067
+SPM_PC_STA              : 0x000006b0
+SPM_DVFS_LEVEL          : 0x00000002
+SPM_DVS_DFS_LEVEL       : 0x00010080
+SPM_DVFS_STA            : 0x00000000
+SPM_DVFS_CMD0~4         : 0x024e0058, 0x024e005c, 0x024e0064, 0x024e0074, 0x024e007e
