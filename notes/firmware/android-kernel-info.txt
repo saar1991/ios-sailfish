@@ -1,0 +1,432 @@
+uid=0(root) gid=0(root) groups=0(root) context=u:r:magisk:s0
+Linux localhost 5.10.236-android12-9-00020-gf997514b333d-ab13743839 #1 SMP PREEMPT Mon Jul 7 16:32:37 UTC 2025 aarch64 Toybox
+CONFIG_KALLSYMS_ALL=y
+CONFIG_KPROBES=y
+CONFIG_SHADOW_CALL_STACK=y
+CONFIG_LTO_CLANG=y
+CONFIG_CFI_CLANG=y
+CONFIG_MODULES=y
+CONFIG_MODVERSIONS=y
+CONFIG_TRIM_UNUSED_KSYMS=y
+CONFIG_DEBUG_FS=y
+CONFIG_FTRACE=y
+CONFIG_KPROBE_EVENTS=y
+== tracing
+README
+available_events
+available_tracers
+buffer_percent
+buffer_size_kb
+buffer_total_size_kb
+current_tracer
+dynamic_events
+error_log
+events
+free_buffer
+instances
+kprobe_events
+kprobe_profile
+options
+per_cpu
+printk_formats
+saved_cmdlines
+saved_cmdlines_size
+saved_tgids
+set_event
+set_event_notrace_pid
+set_event_pid
+synthetic_events
+timestamp_mode
+trace
+trace_clock
+trace_marker
+trace_marker_raw
+trace_options
+-rw-r--r-- 1 root readtracefs 0 1970-01-01 02:00 /sys/kernel/tracing/kprobe_events
+== modules
+wlan_drv_gen4m_6895 3895296 0 - Live 0x0000000000000000 (O)
+wmt_chrdev_wifi_connac2 73728 1 wlan_drv_gen4m_6895, Live 0x0000000000000000 (O)
+gps_scp 135168 2 - Live 0x0000000000000000 (O)
+gps_pwr 20480 2 - Live 0x0000000000000000 (O)
+gps_drv_dl_v050 585728 2 - Live 0x0000000000000000 (O)
+fmradio_drv_connac2x 282624 0 - Live 0x0000000000000000 (O)
+bt_drv_6895 299008 1 - Live 0x0000000000000000 (O)
+conninfra 782336 5 wlan_drv_gen4m_6895,wmt_chrdev_wifi_connac2,gps_drv_dl_v050,fmradio_drv_connac2x,bt_drv_6895, Live 0x0000000000000000 (O)
+connfem 57344 2 wlan_drv_gen4m_6895,bt_drv_6895, Live 0x0000000000000000 (O)
+msync2_frd 16384 0 - Live 0x0000000000000000 (PO)
+emi_mpu_hook_v1 16384 0 [permanent], Live 0x0000000000000000
+spmtwam 32768 0 - Live 0x0000000000000000
+sec 94208 0 - Live 0x0000000000000000
+trace_mmstat 36864 0 - Live 0x0000000000000000
+uload_ind 36864 0 - Live 0x0000000000000000
+load_track 16384 1 uload_ind, Live 0x0000000000000000
+widevine_driver 24576 0 - Live 0x0000000000000000
+silead_tee 53248 2 - Live 0x0000000000000000
+mtk_irtx_pwm 16384 0 - Live 0x0000000000000000
+mtk_pwm 86016 1 mtk_irtx_pwm, Live 0x0000000000000000
+vdec_fmt 143360 0 - Live 0x0000000000000000
+task_turbo 86016 0 - Live 0x0000000000000000
+mtk_perf_common 57344 0 - Live 0x0000000000000000
+frs 16384 1 - Live 0x0000000000000000
+mtk_perf_ioctl_magt 24576 0 - Live 0x0000000000000000
+fpsgo 1150976 0 - Live 0x0000000000000000 (PO)
+mtk_fpsgo 425984 3 msync2_frd,frs,fpsgo, Live 0x0000000000000000
+mtk_perf_ioctl 32768 1 mtk_fpsgo, Live 0x0000000000000000
+cpuqos_v3 61440 1 mtk_perf_ioctl, Live 0x0000000000000000
+mtk_core_ctl 73728 1 mtk_perf_ioctl, Live 0x0000000000000000
+scheduler 159744 2 mtk_perf_ioctl,mtk_core_ctl, Live 0x0000000000000000
+cpufreq_sugov_ext 57344 6 mtk_fpsgo,mtk_core_ctl,scheduler, Live 0x0000000000000000
+mtk_cam_isp 1695744 0 - Live 0x0000000000000000
+mtk_cam_plat_mt6895 16384 0 [permanent], Live 0x0000000000000000
+mtk_cam_plat_util 20480 2 mtk_cam_isp,mtk_cam_plat_mt6895,[permanent], Live 0x0000000000000000
+camera_eeprom 73728 0 - Live 0x0000000000000000
+imgsensor 335872 4 mtk_cam_isp, Live 0x0000000000000000
+imgsensor_glue 16384 1 imgsensor, Live 0x0000000000000000
+v4l2_fwnode 24576 2 mtk_cam_isp,imgsensor, Live 0x0000000000000000
+mtk_ccd_remoteproc 32768 1 mtk_cam_isp, Live 0x0000000000000000
+ccd_rpmsg 36864 2 mtk_cam_isp,mtk_ccd_remoteproc, Live 0x0000000000000000
+jpeg_driver 73728 0 - Live 0x0000000000000000
+pmsr 16384 0 - Live 0x0000000000000000
+mtk_swpm_dbg_v6895 53248 0 - Live 0x0000000000000000
+mtk_swpm_dbg_common_v1 16384 1 mtk_swpm_dbg_v6895, Live 0x0000000000000000
+mtk_swpm 36864 2 mtk_swpm_dbg_v6895,mtk_swpm_dbg_common_v1, Live 0x0000000000000000
+arm_dsu_pmu 28672 0 - Live 0x0000000000000000
+mtk_pm_domain_disable_unused 16384 0 - Live 0x0000000000000000
+clk_disable_unused 16384 0 - Live 0x0000000000000000
+sgm3140 24576 1 - Live 0x0000000000000000
+sensorhub 69632 0 - Live 0x0000000000000000
+hxy_finger 20480 0 - Live 0x0000000000000000
+hf_manager 49152 5 sensorhub, Live 0x0000000000000000
+mtk_dvfsrc_start 16384 0 - Live 0x0000000000000000
+cpudvfs 24576 1 mtk_swpm_dbg_v6895, Live 0x0000000000000000
+mtk_vmm_dbg 16384 0 - Live 0x0000000000000000
+mtk_ssc_dbg_v2 16384 0 - Live 0x0000000000000000
+mtk_lpm_dbg_mt6895 90112 0 - Live 0x0000000000000000
+mtk_lpm_plat_v1 32768 0 - Live 0x0000000000000000
+mtk_lpm_dbg_common_v1 110592 2 mtk_lpm_dbg_mt6895,mtk_lpm_plat_v1, Live 0x0000000000000000
+mtk_lpm 65536 3 mtk_lpm_dbg_mt6895,mtk_lpm_plat_v1,mtk_lpm_dbg_common_v1, Live 0x0000000000000000
+lm3644 24576 0 - Live 0x0000000000000000
+flashlight 57344 2 sgm3140,lm3644, Live 0x0000000000000000
+mtk_composite 16384 0 - Live 0x0000000000000000
+fhctl 159744 0 - Live 0x0000000000000000
+pda_drv_mt6895 90112 0 - Live 0x0000000000000000
+bu64253gwz 16384 1 - Live 0x0000000000000000
+ak7375c 16384 1 - Live 0x0000000000000000
+ak7377a 16384 1 - Live 0x0000000000000000
+dw9800w 16384 0 - Live 0x0000000000000000
+gt9772b 16384 1 - Live 0x0000000000000000
+gt9772a 16384 0 - Live 0x0000000000000000
+gt9764 16384 1 - Live 0x0000000000000000
+lc898229 16384 1 - Live 0x0000000000000000
+camera_af_media 16384 0 - Live 0x0000000000000000
+camera_dpe_isp70 278528 1 - Live 0x0000000000000000
+mtk_aie 5812224 0 - Live 0x0000000000000000
+mtk_imgsys_v4l2 458752 0 - Live 0x0000000000000000
+mtk_ipesys_me 24576 1 mtk_imgsys_v4l2, Live 0x0000000000000000
+mtk_hcp 90112 1 mtk_imgsys_v4l2, Live 0x0000000000000000
+/vendor/lib/modules:
+ak7375c.ko
+ak7377a.ko
+apu_top.ko
+apusys.ko
+arm_dsu_pmu.ko
+atf_logger.ko
+auxiliarycamera.ko
+aw883xx_driver.ko
+backlight_cooling.ko
+board_temp.ko
+bt_drv_6895.ko
+btif_drv.ko
+bu64253gwz.ko
+c2k_usb.ko
+c2k_usb_f_via_atc.ko
+c2k_usb_f_via_ets.ko
+c2k_usb_f_via_gps.ko
+c2k_usb_f_via_modem.ko
+c2k_usb_f_via_pcv.ko
+camera_af_media.ko
+camera_dpe_isp70.ko
+camera_eeprom.ko
+ccci_auxadc.ko
+ccci_ccif.ko
+ccci_dpmaif.ko
+ccci_fsm_scp.ko
+ccci_md_all.ko
+ccci_md_clk.ko
+ccci_rtc.ko
+ccci_util_lib.ko
+ccd_rpmsg.ko
+ccmni.ko
+charger_cooling.ko
+clk-dbg-mt6895.ko
+clk-disable-unused.ko
+cmdq-sec-drv.ko
+cmdq-test.ko
+connadp.ko
+connfem.ko
+conninfra.ko
+connscp.ko
+cpudvfs.ko
+cpufreq_sugov_ext.ko
+cpuqos_v3.ko
+dw9714.ko
+dw9800v.ko
+dw9800w.ko
+emi-mpu-hook-v1.ko
+fhctl.ko
+flashlight.ko
+fmradio_drv_connac2x.ko
+fpsgo.ko
+frs.ko
+ged.ko
+gps_drv_dl_v050.ko
+gps_pwr.ko
+gps_scp.ko
+gpueb.ko
+gt9764.ko
+gt9772a.ko
+gt9772b.ko
+gt9916r.ko
+gz_ipc_mod.ko
+gz_irq_mod.ko
+gz_log_mod.ko
+gz_main_mod.ko
+gz_trusty_mod.ko
+gz_tz_system.ko
+gz_virtio_mod.ko
+hall_sensor.ko
+hf_manager.ko
+hxy_finger.ko
+imgsensor-glue.ko
+imgsensor.ko
+iommu_gz.ko
+jpeg-driver.ko
+lc898229.ko
+lm3644.ko
+load_track.ko
+mali_kbase_mt6895.ko
+mali_mgm_mt6895.ko
+mali_prot_alloc_mt6895.ko
+mcupm.ko
+md_cooling_all.ko
+mddp.ko
+met.ko
+met_backlight_api.ko
+met_emi_api.ko
+met_gpu_adv_api.ko
+met_gpu_api.ko
+met_ipi_api.ko
+met_mcupm_api.ko
+met_scmi_api.ko
+met_sspm_api.ko
+met_vcore_api.ko
+modules.alias
+modules.dep
+modules.load
+modules.softdep
+msync2_frd.ko
+mt6895-mt6368.ko
+mtk-afe-external.ko
+mtk-btcvsd.ko
+mtk-cam-isp.ko
+mtk-cam-plat-mt6895.ko
+mtk-cam-plat-util.ko
+mtk-composite.ko
+mtk-cqdma.ko
+mtk-dvfsrc-start.ko
+mtk-ipesys-me.ko
+mtk-lpm-dbg-common-v1.ko
+mtk-lpm-dbg-mt6895.ko
+mtk-lpm-plat-v1.ko
+mtk-lpm.ko
+mtk-mbox.ko
+mtk-pm-domain-disable-unused.ko
+mtk-pmic-oc-debug.ko
+mtk-pwm.ko
+mtk-scp-ultra.ko
+mtk-scp-vow.ko
+mtk-sp-spk-amp.ko
+mtk-ssc-dbg-v2.ko
+mtk-ssc.ko
+mtk-swpm-dbg-common-v1.ko
+mtk-swpm-dbg-v6895.ko
+mtk-swpm.ko
+mtk-vcodec-common.ko
+mtk-vcodec-dec-v2.ko
+mtk-vcodec-enc-v2.ko
+mtk-vmm-dbg.ko
+mtk-vmm-regulator.ko
+mtk-vow.ko
+mtk_aie.ko
+mtk_battery_oc_throttling.ko
+mtk_bp_thl.ko
+mtk_ccd_remoteproc.ko
+mtk_ccu.ko
+mtk_cm_ipi.ko
+mtk_cm_mgr.ko
+mtk_cm_mgr_mt6895.ko
+mtk_core_ctl.ko
+mtk_cpu_power_throttling.ko
+mtk_disp_sec.ko
+mtk_dynamic_loading_throttling.ko
+mtk_fpsgo.ko
+mtk_gpu_hal.ko
+mtk_gpu_power_throttling.ko
+mtk_gpu_qos.ko
+mtk_gpufreq_mt6895.ko
+mtk_gpufreq_wrapper.ko
+mtk_hcp.ko
+mtk_heap_debug.ko
+mtk_imgsys_v4l2.ko
+mtk_irtx_pwm.ko
+mtk_jpeg.ko
+mtk_low_battery_throttling.ko
+mtk_md_power_throttling.ko
+mtk_mdpm.ko
+mtk_pbm.ko
+mtk_perf_common.ko
+mtk_perf_ioctl.ko
+mtk_perf_ioctl_magt.ko
+mtk_qos.ko
+mtk_rpmsg_mbox.ko
+mtk_sec_heap.ko
+mtk_tinysys_ipi.ko
+mtk_u_ether.ko
+mtk_usb_f_rndis.ko
+nvmem-mt635x-efuse.ko
+pda_drv_mt6895.ko
+pmic_temp.ko
+pmsr.ko
+reboot-mode.ko
+richtek_spm_cls.ko
+rpmb-mtk.ko
+rpmb.ko
+rps_perf.ko
+scheduler.ko
+scp.ko
+sec.ko
+sensorhub.ko
+sgm3140.ko
+silead_tee.ko
+snd-soc-mt6368.ko
+snd-soc-mt6895-afe.ko
+snd-soc-mtk-common.ko
+snd-soc-mtk-scp-ultra.ko
+snd-soc-rt5512.ko
+soc_temp_lvts.ko
+spmi-mtk-mpu.ko
+spmtwam.ko
+sspm_v3.ko
+syscon-reboot-mode.ko
+task_turbo.ko
+thermal-generic-adc.ko
+thermal_interface.ko
+thermal_trace.ko
+trace_mmstat.ko
+trusted_mem.ko
+uload_ind.ko
+v4l2-fwnode.ko
+vcp.ko
+vdec-fmt.ko
+widevine_driver.ko
+wlan_drv_gen4m_6895.ko
+wmt_chrdev_wifi_connac2.ko
+zram.ko
+zsmalloc.ko
+
+/vendor_dlkm/lib/modules:
+ak7375c.ko
+ak7377a.ko
+apu_top.ko
+apusys.ko
+arm_dsu_pmu.ko
+atf_logger.ko
+auxiliarycamera.ko
+aw883xx_driver.ko
+backlight_cooling.ko
+board_temp.ko
+bt_drv_6895.ko
+btif_drv.ko
+bu64253gwz.ko
+c2k_usb.ko
+c2k_usb_f_via_atc.ko
+c2k_usb_f_via_ets.ko
+c2k_usb_f_via_gps.ko
+c2k_usb_f_via_modem.ko
+c2k_usb_f_via_pcv.ko
+camera_af_media.ko
+camera_dpe_isp70.ko
+camera_eeprom.ko
+ccci_auxadc.ko
+ccci_ccif.ko
+ccci_dpmaif.ko
+ccci_fsm_scp.ko
+ccci_md_all.ko
+ccci_md_clk.ko
+ccci_rtc.ko
+ccci_util_lib.ko
+ccd_rpmsg.ko
+ccmni.ko
+charger_cooling.ko
+clk-dbg-mt6895.ko
+clk-disable-unused.ko
+cmdq-sec-drv.ko
+cmdq-test.ko
+connadp.ko
+connfem.ko
+conninfra.ko
+connscp.ko
+cpudvfs.ko
+cpufreq_sugov_ext.ko
+cpuqos_v3.ko
+dw9714.ko
+dw9800v.ko
+dw9800w.ko
+emi-mpu-hook-v1.ko
+fhctl.ko
+flashlight.ko
+fmradio_drv_connac2x.ko
+fpsgo.ko
+frs.ko
+ged.ko
+gps_drv_dl_v050.ko
+gps_pwr.ko
+gps_scp.ko
+gpueb.ko
+gt9764.ko
+gt9772a.ko
+gt9772b.ko
+gt9916r.ko
+gz_ipc_mod.ko
+gz_irq_mod.ko
+gz_log_mod.ko
+gz_main_mod.ko
+gz_trusty_mod.ko
+gz_tz_system.ko
+gz_virtio_mod.ko
+hall_sensor.ko
+hf_manager.ko
+hxy_finger.ko
+imgsensor-glue.ko
+imgsensor.ko
+iommu_gz.ko
+jpeg-driver.ko
+lc898229.ko
+lm3644.ko
+load_track.ko
+mali_kbase_mt6895.ko
+mali_mgm_mt6895.ko
+mali_prot_alloc_mt6895.ko
+mcupm.ko
+md_cooling_all.ko
+mddp.ko
+met.ko
+met_backlight_api.ko
+met_emi_api.ko
+met_gpu_adv_api.ko
+== syms
+0000000000000000 T __arm_smccc_smc
+0000000000000000 T __arm_smccc_hvc
+0000000000000000 T iounmap
+0000000000000000 T __ioremap
+0000000000000000 D memstart_addr
