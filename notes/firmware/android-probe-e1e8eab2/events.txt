@@ -1,0 +1,12 @@
+5.21 early start, 351 modules loaded, boot_completed=
+5.34 smc recording started (pid 920)
+5.36 dvfsrc helper present after 0 half-seconds; modules now 351
+5.48 pointers (dvfsrc spm): 32 40 from a0=0x65ac02ab a290=0x60400020 b0=0x1 b290=0x0 a194=0x0 b194=0x6b0
+6.64 full dump first -> full-5.57-first.txt
+19.13 boot completed (early script done)
+19.53 full dump booted -> full-18.60-booted.txt
+19.55 service running for 3600 s
+82.10 full dump t60 -> full-81.01-t60.txt
+201.48 full dump t180 -> full-200.40-t180.txt
+352.21 screen 1295 -> 0
+383.85 full dump idle -> full-382.65-idle.txt
