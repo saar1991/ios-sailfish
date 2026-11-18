@@ -1,0 +1,59 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index e2247da..6b7dd43 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1214,6 +1214,54 @@ wp210_dram(uint64_t up)
+ 		wp210_bw("after DVFSRC_INIT");
+ 		stage = 5;
+ 	}
++	/*
++	 * 0238: ask for the top DRAM level. 0237 measured 19 GB/s on one big
++	 * core and 23.6 on four, 96% of 3068 Mbps x 8 bytes: the DRAM really is
++	 * at the 3200 step. The vendor's mt6983_set_dram_level: SW_REQ (0x18)
++	 * bits 12-15 = the DRAM level, a floor; in dvfsrc_opp_mt6983 DRAM level
++	 * 8 is the top (with vcore 4), and the DVFSRC raises vcore itself.
++	 * wp210ddrlvl=N (0-8) picks the level, -1 skips.
++	 */
++	static int ddrlvl = -2;
++	if (ddrlvl == -2) {
++		ddrlvl = 8;
++		(void)PE_parse_boot_argn("wp210ddrlvl", &ddrlvl, sizeof(ddrlvl));
++	}
++	if (stage == 5 && up >= (uint64_t)at + 22) {
++		stage = 6;
++		if (ddrlvl < 0 || ddrlvl > 8 || wp210_dvfsrc == 0) {
++			printf("SWEET DRAM: no DRAM level request (wp210ddrlvl=%d)\n", ddrlvl);
++			return;
++		}
++		uint32_t req = *(volatile uint32_t *)(wp210_dvfsrc + 0x18);
++		uint32_t want = (req & ~(0xfu << 12)) | ((uint32_t)ddrlvl << 12);
++		printf("SWEET DRAM: %llu s about to write DVFSRC SW_REQ 0x18: %#x -> %#x (DRAM level %d)\n",
++		    (unsigned long long)up, req, want, ddrlvl);
++		wp210_dram_flush();
++		*(volatile uint32_t *)(wp210_dvfsrc + 0x18) = want;
++		__asm__ volatile ("dsb sy" ::: "memory");
++		uint32_t last904 = 0xffffffff, lastlv = 0xffffffff;
++		uint64_t t0 = mach_absolute_time();
++		for (int i = 0; i < 100; i++) {         /* 1 s, every 10 ms */
++			uint32_t p904 = *(volatile uint32_t *)(wp210_phy + 0x904);
++			uint32_t p1204 = *(volatile uint32_t *)(wp210_phy + 0x904 + 0x900);
++			uint32_t lv = *(volatile uint32_t *)(wp210_dvfsrc + 0x5f0);
++			if (p904 != last904 || lv != lastlv) {
++				printf("SWEET DRAM: +%llu us SW_REQ %#x LEVEL %#x 904 %#x 1204 %#x 908 %#x 1208 %#x\n",
++				    perf_ns(mach_absolute_time() - t0) / 1000,
++				    *(volatile uint32_t *)(wp210_dvfsrc + 0x18), lv, p904, p1204,
++				    *(volatile uint32_t *)(wp210_phy + 0x908), *(volatile uint32_t *)(wp210_phy + 0x908 + 0x900));
++				last904 = p904;
++				lastlv = lv;
++			}
++			delay(10000);
++		}
++		wp210_dram_flush();
++	}
++	if (stage == 6 && up >= (uint64_t)at + 26) {
++		stage = 7;
++		wp210_bw("after the DRAM level request");
++	}
+ 	if (stage == 30 && up >= (uint64_t)at + 5) {
+ 		stage = 4;
+ 		if (dvfsrc_init == 0) {
