@@ -1,0 +1,70 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 3ebfd37..d03f371 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1440,7 +1440,7 @@ wp210_dram(uint64_t up)
+ 		 * MD32PCM_SCU_CTRL1 0x104: ours 0x3ff920, Android 0xbff820 (bit 23 set, bit 8 clear).
+ 		 * wp210spmfix=0 skips; 1 = SPMI only; 2 = both (default).
+ 		 */
+-		int spmfix = 2;
++		int spmfix = 0;         /* 0246: off by default */
+ 		(void)PE_parse_boot_argn("wp210spmfix", &spmfix, sizeof(spmfix));
+ 		static const uint32_t fix_off[2] = {0x308, 0x104};
+ 		static const uint32_t fix_val[2] = {0x13, 0xbff820};
+@@ -1504,6 +1504,26 @@ wp210_dram(uint64_t up)
+ 			printf("SWEET DRAM: DVFSRC init skipped (wp210dvfsrc=0)\n");
+ 			return;
+ 		}
++		/*
++		 * 0246: stock Android at 19 s after boot (kp3.txt, before any suspend) already
++		 * has SPM_PMIC_SPMI_CON = 0x13 (PMIC slave 4) and DVFS working (DRAM 5500,
++		 * LEVEL 1, LAST 5), while SCU_CTRL1/SW_FLAG still equal ours. Ours is 0x83
++		 * (slave 0, from LK) when INIT runs: set it first, as Android has it.
++		 * wp210spmi=0 skips.
++		 */
++		int spmi = 1;
++		(void)PE_parse_boot_argn("wp210spmi", &spmi, sizeof(spmi));
++		if (spmi) {
++			if (wp210_spm == 0) {
++				wp210_spm = ml_io_map(0x1c001000, 0x1000);
++			}
++			printf("SWEET DRAM: about to write SPM_PMIC_SPMI_CON (+0x308) %#x -> 0x13 before INIT\n",
++			    wp210_rd(wp210_spm, 0x308, 0x1000));
++			wp210_dram_flush();
++			*(volatile uint32_t *)(wp210_spm + 0x308) = 0x13;
++			__asm__ volatile ("dsb sy" ::: "memory");
++			printf("SWEET DRAM: SPM_PMIC_SPMI_CON now %#x\n", wp210_rd(wp210_spm, 0x308, 0x1000));
++		}
+ 		printf("SWEET DRAM: %llu s about to call MTK_SIP_VCOREFS_CONTROL DVFSRC_INIT (smc 0xc2000506, 0, 0, 0)\n",
+ 		    (unsigned long long)up);
+ 		wp210_dram_flush();
+@@ -1518,6 +1538,29 @@ wp210_dram(uint64_t up)
+ 		uint64_t ns = perf_ns(mach_absolute_time() - t0);
+ 		printf("SWEET DRAM: DVFSRC_INIT returned a0 %#llx a1 %#llx a2 %#llx a3 %#llx in %llu us (%s)\n",
+ 		    x0, x1, x2, x3, ns / 1000, x0 == 0 ? "ok: high OPP held" : "refused");
++		/* 0246: watch the DVFSRC for 3 s after INIT */
++		{
++			uint32_t l904 = 0xffffffff, llv = 0xffffffff, llast = 0xffffffff, ldbg = 0xffffffff, l5c8 = 0xffffffff;
++			uint64_t w0 = mach_absolute_time();
++			int ch = 0;
++			for (int i = 0; i < 300; i++) {
++				uint32_t p904 = wp210_rd(wp210_phy, 0x904, 0x2000);
++				uint32_t lv = wp210_rd(wp210_dvfsrc, 0x5f0, 0x1000);
++				uint32_t last = wp210_rd(wp210_dvfsrc, 0x3ac, 0x1000);
++				uint32_t dbg = wp210_rd(wp210_dvfsrc, 0x29c, 0x1000);
++				uint32_t r5c8 = wp210_rd(wp210_dvfsrc, 0x5c8, 0x1000);
++				if ((p904 != l904 || lv != llv || last != llast || dbg != ldbg || r5c8 != l5c8) && ch < 60) {
++					ch++;
++					printf("SWEET DRAM: init +%llu us LEVEL %#x LAST %#x DEBUG0 %#x 5c8 %#x | SPM pc %#x event %#x lvl %#x/%#x | 904 %#x 1204 %#x\n",
++					    perf_ns(mach_absolute_time() - w0) / 1000, lv, last, dbg, r5c8,
++					    wp210_rd(wp210_spm, 0x194, 0x1000), wp210_rd(wp210_spm, 0x380, 0x1000),
++					    wp210_rd(wp210_spm, 0x38c, 0x1000), wp210_rd(wp210_spm, 0x390, 0x1000),
++					    p904, wp210_rd(wp210_phy, 0x904 + 0x900, 0x2000));
++					l904 = p904; llv = lv; llast = last; ldbg = dbg; l5c8 = r5c8;
++				}
++				delay(10000);
++			}
++		}
+ 		wp210_dram_flush();
+ 	}
+ }
