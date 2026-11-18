@@ -1,0 +1,64 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 6b7dd43..640329b 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1004,7 +1004,7 @@ wp210_pll_mhz(uint32_t con1)
+ #define WP210_DDRPHY_AO0_PA     0x10238000
+ #define WP210_DVFSRC_PA         0x1c00f000
+ #define WP210_DVFSRC_SPM_PA     0x1c001000
+-static vm_offset_t wp210_phy, wp210_dvfsrc;
++static vm_offset_t wp210_phy, wp210_dvfsrc, wp210_spm;
+ extern void sweet_log_kick(void);
+ /* before a risky read: flush the persistent log, give it 2 s, let the console show the line */
+ static void
+@@ -1024,6 +1024,24 @@ wp210_rd(vm_offset_t base, uint32_t off, uint32_t size)
+ 	return *(volatile uint32_t *)(base + off);
+ }
+ 
++/*
++ * 0239: the SPM (DVFSRC's "spm" range, 0x1c001000), registers from the
++ * vendor's lpm_legacy k6895_spm_reg.h. Is its firmware running (MD32PCM_PC
++ * moving), and does it see the DVFSRC's requests (0x380-0x39c)?
++ */
++static const uint32_t wp210_spm_offs[12] = {0x000, 0x018, 0x194, 0x380, 0x388, 0x38c, 0x390, 0x394, 0x39c, 0x600, 0x608, 0x610};
++static void
++wp210_spm_line(const char *tag)
++{
++	char line[400];
++	int m = snprintf(line, sizeof(line), "SWEET SPM: %s", tag);
++	for (int i = 0; i < 12; i++) {
++		m += snprintf(line + m, sizeof(line) - m, " %03x=%x", wp210_spm_offs[i],
++		    wp210_rd(wp210_spm, wp210_spm_offs[i], 0x1000));
++	}
++	printf("%s\n", line);
++}
++
+ /*
+  * 0237: DRAM read bandwidth, measured. The PLL decodes to 3068 Mbps by both
+  * MediaTek fmeter formulas (2021 v0, 2025 mt8196), but the DVFSRC level
+@@ -1233,6 +1251,15 @@ wp210_dram(uint64_t up)
+ 			printf("SWEET DRAM: no DRAM level request (wp210ddrlvl=%d)\n", ddrlvl);
+ 			return;
+ 		}
++		if (wp210_spm == 0) {
++			wp210_spm = ml_io_map(0x1c001000, 0x1000);
++		}
++		printf("SWEET DRAM: about to read SPM words (MD32PCM_PC 0x194, DVFS 0x380-0x39c, SW_FLAG 0x600)\n");
++		wp210_dram_flush();
++		for (int i = 0; i < 4; i++) {
++			wp210_spm_line(i == 0 ? "before request" : "  pc again");
++			delay(1000);
++		}
+ 		uint32_t req = *(volatile uint32_t *)(wp210_dvfsrc + 0x18);
+ 		uint32_t want = (req & ~(0xfu << 12)) | ((uint32_t)ddrlvl << 12);
+ 		printf("SWEET DRAM: %llu s about to write DVFSRC SW_REQ 0x18: %#x -> %#x (DRAM level %d)\n",
+@@ -1254,6 +1281,9 @@ wp210_dram(uint64_t up)
+ 				last904 = p904;
+ 				lastlv = lv;
+ 			}
++			if (i == 1 || i == 10 || i == 50 || i == 99) {
++				wp210_spm_line(i == 1 ? "after request +10 ms" : i == 10 ? "+100 ms" : i == 50 ? "+500 ms" : "+1 s");
++			}
+ 			delay(10000);
+ 		}
+ 		wp210_dram_flush();
