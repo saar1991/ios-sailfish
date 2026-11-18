@@ -9,14 +9,18 @@ O=$D/pmif-$(up).txt
 log() { echo "$*" >> $O; }
 log "uptime $(up) rate $(rate) suspends $(susp) screen $(screen)"
 log "== mappings (vmallocinfo) of 0x1c804000 PMIF, 0x1c801000 SPMI master, 0x1c805000, 0x1c00f000 DVFSRC, 0x1c001000 SPM, 0x10238000/0x10239000 DDRPHY_AO ch0, 0x10230000 DRAMC_AO ch0"
+KR=$(cat /proc/sys/kernel/kptr_restrict); echo 0 > /proc/sys/kernel/kptr_restrict
 grep -E 'phys=0x0*(1c804000|1c801000|1c805000|1c00f000|1c001000|10238000|10239000|10230000|10236000|10234000)' /proc/vmallocinfo >> $O
 # ADDR VA OFFSET: VA + OFFSET on the low 32 bits only (the shell's arithmetic is 32-bit)
 addr() { H=${1%????????}; L=${1#??????????}; S=00000000$(printf '%x' $((0x$L + $2))); echo "$H${S#"${S%????????}"}"; }
-va() { grep -E "phys=0x0*$1 " /proc/vmallocinfo | head -1 | cut -d- -f1; }
+VMI=$(grep ' ioremap' /proc/vmallocinfo)
+echo $KR > /proc/sys/kernel/kptr_restrict
+# first mapping of a physical block; nothing if the address is hidden (all zero)
+va() { V=$(echo "$VMI" | grep -E "phys=0x0*$1 " | head -1 | cut -d- -f1); case "$V" in 0x0000000000000000|"") ;; *) echo $V ;; esac; }
 # dump BASE_VA FIRST LAST TAG : words FIRST..LAST (byte offsets), 100 per probe
 dumpblk() {
   V=$1; A=$2; Z=$3; TAG=$4; i=0
-  [ -n "$V" ] || { log "== $TAG: not mapped by Android"; return; }
+  [ -n "$V" ] || { log "== $TAG: no usable address (not mapped, or hidden)"; return; }
   log "== $TAG at $V"
   while [ $A -le $Z ]; do
     ARGS=""; n=0
