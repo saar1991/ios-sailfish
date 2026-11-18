@@ -1,0 +1,60 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 05de86f..3ba0373 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1042,6 +1042,32 @@ wp210_spm_line(const char *tag)
+ 	printf("%s\n", line);
+ }
+ 
++/*
++ * 0242: the SPM's DVFS side with the offsets the vendor debug driver uses
++ * for mt6983/mt6895 (mt6877_spm_regs): command table SPM_DVFS_CMD0-23
++ * 0x310-0x36c, SPM_DVFS_STA 0x388, SPM_DVFS_LEVEL 0x38c, SPM_DVS_DFS_LEVEL
++ * 0x390, PC 0x194, SW_FLAG 0x600/0x608. Android idle (dvfsrc_dump): flag
++ * 0x02190067, level 2, dvs_dfs 0x10080, CMD0-4 0x024e0058 0x024e005c ...
++ */
++static void
++wp210_spm_cmds(const char *tag)
++{
++	char line[400];
++	if (wp210_spm == 0) {
++		wp210_spm = ml_io_map(0x1c001000, 0x1000);
++	}
++	printf("SWEET SPMCMD: %s pc %#x flag0 %#x flag1 %#x sta %#x level %#x dvs_dfs %#x\n", tag,
++	    wp210_rd(wp210_spm, 0x194, 0x1000), wp210_rd(wp210_spm, 0x600, 0x1000), wp210_rd(wp210_spm, 0x608, 0x1000),
++	    wp210_rd(wp210_spm, 0x388, 0x1000), wp210_rd(wp210_spm, 0x38c, 0x1000), wp210_rd(wp210_spm, 0x390, 0x1000));
++	for (int h = 0; h < 2; h++) {
++		int m = snprintf(line, sizeof(line), "SWEET SPMCMD: %s cmd%d-%d", tag, h * 12, h * 12 + 11);
++		for (int i = h * 12; i < h * 12 + 12; i++) {
++			m += snprintf(line + m, sizeof(line) - m, " %x", wp210_rd(wp210_spm, 0x310 + i * 4, 0x1000));
++		}
++		printf("%s\n", line);
++	}
++}
++
+ /*
+  * 0237: DRAM read bandwidth, measured. The PLL decodes to 3068 Mbps by both
+  * MediaTek fmeter formulas (2021 v0, 2025 mt8196), but the DVFSRC level
+@@ -1226,10 +1252,14 @@ wp210_dram(uint64_t up)
+ 		(void)PE_parse_boot_argn("wp210dvfsrc", &dvfsrc_init, sizeof(dvfsrc_init));
+ 	}
+ 	if (stage == 3 && up >= (uint64_t)at + 2) {
++		printf("SWEET DRAM: about to read the SPM DVFS command table (0x310-0x36c) and levels\n");
++		wp210_dram_flush();
++		wp210_spm_cmds("before INIT");
+ 		wp210_bw("before DVFSRC_INIT");
+ 		stage = 30;
+ 	}
+ 	if (stage == 4 && up >= (uint64_t)at + 10) {
++		wp210_spm_cmds("after INIT");
+ 		wp210_bw("after DVFSRC_INIT");
+ 		stage = 5;
+ 	}
+@@ -1340,6 +1370,7 @@ wp210_dram(uint64_t up)
+ 	}
+ 	if (stage == 60 && up >= (uint64_t)at + 30) {
+ 		stage = 7;
++		wp210_spm_cmds("after START");
+ 		wp210_bw("after the DRAM level request and DVFSRC_START");
+ 	}
+ 	if (stage == 30 && up >= (uint64_t)at + 5) {
