@@ -1,0 +1,246 @@
+== modules
+mtk_vmm_regulator 40960 4 - Live 0xffffffef50efb000
+mtk_ccu 53248 5 mtk_cam_isp,imgsensor,mtk_vmm_dbg,mtk_vmm_regulator, Live 0xffffffef50eed000
+mt6895_mt6368 57344 1 - Live 0xffffffef50bef000
+snd_soc_mt6368 176128 2 mt6895_mt6368, Live 0xffffffef50bc3000
+snd_soc_mt6895_afe 442368 2 mt6895_mt6368, Live 0xffffffef50b56000
+mtk_sp_spk_amp 20480 3 mt6895_mt6368,snd_soc_rt5512, Live 0xffffffef50b12000
+pmic_temp 24576 0 - Live 0xffffffef50a8f000
+mtk_pmic_oc_debug 20480 0 - Live 0xffffffef506a6000
+ccci_md_all 606208 45 wlan_drv_gen4m_6895,conninfra,mddp,snd_soc_mtk_common,md_cooling_all,mtk_md_power_throttling,c2k_usb,ccci_dpmaif,ccci_ccif,ccci_fsm_scp,mtk_pmic_oc_debug,[permanent], Live 0xffffffef50611000
+spmi_mtk_mpu 20480 0 - Live 0xffffffef505a5000
+wl2868c_regulator 16384 16 - Live 0xffffffef50507000
+pmic_lvsys_notify 16384 1 mtk_low_battery_throttling, Live 0xffffffef50203000
+mt6368_accdet 57344 3 mt6895_mt6368,snd_soc_mt6368,fsa4480_i2c, Live 0xffffffef501dc000
+pmic_lbat_service 32768 4 wlan_drv_gen4m_6895,mtk_md_power_throttling,mtk_low_battery_throttling,mt6375_battery, Live 0xffffffef5010a000
+clkbuf 122880 0 - Live 0xffffffef4ff12000
+mt6685_audclk 16384 1 snd_soc_mt6368, Live 0xffffffef4ff0d000
+rt6160_regulator 16384 0 - Live 0xffffffef4ff03000
+regulator_vibrator 16384 0 - Live 0xffffffef4fe8a000
+mtk_pmic_keys 16384 0 - Live 0xffffffef4fe7f000
+mtk_spmi_pmic_adc 20480 0 - Live 0xffffffef4fd4a000
+mt6368_regulator 32768 27 - Live 0xffffffef4fd41000
+mtk_dvfsrc_regulator 28672 18 - Live 0xffffffef4f51d000
+mtk_dvfsrc 77824 9 mtk_fpsgo,mtk_cm_mgr_mt6895,ccci_dpmaif,mtk_dvfsrc_devfreq,mtk_dvfsrc_helper,mtk_mmc,usb_boost,mtk_emi,mtk_dvfsrc_regulator, Live 0xffffffef4f509000
+mt6363_regulator 36864 35 - Live 0xffffffef4f491000
+mt6315_regulator 16384 4 - Live 0xffffffef4f48c000
+spmi_mtk_pmif 73728 0 - Live 0xffffffef4f479000
+mtk_spmi_pmic 32768 0 - Live 0xffffffef4f470000
+regmap_spmi 16384 2 mt6685_core,mtk_spmi_pmic, Live 0xffffffef4f46b000
+mtk_pmic_wrap 77824 0 - Live 0xffffffef4f457000
+aee_aed 86016 40 conninfra,mtk_cam_isp,fhctl,mtk_ccu,mtk_vcodec_common,vcp,apusys,apu_top,snd_soc_mt6895_afe,snd_soc_mtk_common,mtk_gpufreq_mt6895,mtk_ssc,ccci_dpmaif,scp,mtk_pmic_oc_debug,ccci_md_all,ccci_util_lib,cmdq_sec_drv,cache_parity,mtk_mminfra_debug,emi_slb,emi_mpu_v2,rtc_mt6685,mtk_dvfsrc_helper,ufs_mediatek_mod,aee_rs,mediatek_drm,mdp_drv_mt6895,mtk_cmdq_drv_ext,iommu_debug,mmprofile,emi_mpu,mtk_smi,device_apc_common,spmi_mtk_pmif,clk_common, Live 0xffffffef4f32d000
+== fetch check: linux_banner at 0xffffffef543309ac
+chk #1 SMP PREEMPT Mon Jul 7 16:32:37 UTC 2025
+== candidate globals (data/bss) in pmif/spmi/clkbuf modules
+252 symbols
+ffffffef5446f1b8 d spmi_ctrl_type
+ffffffef5446f1e8 d spmi_dev_type
+ffffffef546245a5 d __tpstrtab_spmi_write_end
+ffffffef546245b4 d __tpstrtab_spmi_write_begin
+ffffffef546245c5 d __tpstrtab_spmi_read_end
+ffffffef546245d3 d __tpstrtab_spmi_read_begin
+ffffffef546245e3 d __tpstrtab_spmi_cmd
+ffffffef5494e688 d __event_spmi_cmd
+ffffffef5494e690 d __event_spmi_read_begin
+ffffffef5494e698 d __event_spmi_read_end
+ffffffef5494e6a0 d __event_spmi_write_begin
+ffffffef5494e6a8 d __event_spmi_write_end
+ffffffef54955114 d __initcall__kmod_spmi__359_592_spmi_init2
+ffffffef54aba5f0 d event_spmi_cmd
+ffffffef54aba680 d event_spmi_read_begin
+ffffffef54aba710 d event_spmi_read_end
+ffffffef54aba7a0 d event_spmi_write_begin
+ffffffef54aba830 d event_spmi_write_end
+ffffffef54aba8c0 d spmi_bus_type
+ffffffef54aba990 d trace_event_type_funcs_spmi_write_end
+ffffffef54aba9b0 d print_fmt_spmi_write_end
+ffffffef54abaa10 d trace_event_type_funcs_spmi_write_begin
+ffffffef54abaa30 d print_fmt_spmi_write_begin
+ffffffef54abaad0 d trace_event_type_funcs_spmi_read_end
+ffffffef54abaaf0 d print_fmt_spmi_read_end
+ffffffef54ababa0 d trace_event_type_funcs_spmi_read_begin
+ffffffef54ababc0 d print_fmt_spmi_read_begin
+ffffffef54abac10 d trace_event_type_funcs_spmi_cmd
+ffffffef54abac30 d print_fmt_spmi_cmd
+ffffffef54abac70 d trace_event_fields_spmi_write_end
+ffffffef54abad10 d trace_event_fields_spmi_write_begin
+ffffffef54abadd0 d trace_event_fields_spmi_read_end
+ffffffef54abaeb0 d trace_event_fields_spmi_read_begin
+ffffffef54abaf30 d trace_event_fields_spmi_cmd
+ffffffef54abafb0 D __SCK__tp_func_spmi_write_end
+ffffffef54abafb8 D __SCK__tp_func_spmi_write_begin
+ffffffef54abafc0 D __SCK__tp_func_spmi_read_end
+ffffffef54abafc8 D __SCK__tp_func_spmi_read_begin
+ffffffef54abafd0 D __SCK__tp_func_spmi_cmd
+ffffffef54b1a5c8 d event_class_spmi_cmd
+ffffffef54b1a610 d event_class_spmi_read_begin
+ffffffef54b1a658 d event_class_spmi_read_end
+ffffffef54b1a6a0 d event_class_spmi_write_begin
+ffffffef54b1a6e8 d event_class_spmi_write_end
+ffffffef54b29de0 D __tracepoint_spmi_cmd
+ffffffef54b29e28 D __tracepoint_spmi_read_begin
+ffffffef54b29e70 D __tracepoint_spmi_read_end
+ffffffef54b29eb8 D __tracepoint_spmi_write_begin
+ffffffef54b29f00 D __tracepoint_spmi_write_end
+ffffffef54b3db00 d __bpf_trace_tp_map_spmi_cmd
+ffffffef54b3db20 d __bpf_trace_tp_map_spmi_read_begin
+ffffffef54b3db40 d __bpf_trace_tp_map_spmi_read_end
+ffffffef54b3db60 d __bpf_trace_tp_map_spmi_write_begin
+ffffffef54b3db80 d __bpf_trace_tp_map_spmi_write_end
+ffffffef50a93270 d mt6338_cali_data	[pmic_temp]
+ffffffef50a93240 d mt6338_pmic_tz_data	[pmic_temp]
+ffffffef50a93658 d mt6357_cali_data	[pmic_temp]
+ffffffef50a930f0 d mt6357_pmic_tz_data	[pmic_temp]
+ffffffef50a935b8 d mt6359_cali_data	[pmic_temp]
+ffffffef50a93120 d mt6359_pmic_tz_data	[pmic_temp]
+ffffffef50a93518 d mt6363_cali_data	[pmic_temp]
+ffffffef50a93150 d mt6363_pmic_tz_data	[pmic_temp]
+ffffffef50a93478 d mt6366_cali_data	[pmic_temp]
+ffffffef50a93180 d mt6366_pmic_tz_data	[pmic_temp]
+ffffffef50a933d8 d mt6368_cali_data	[pmic_temp]
+ffffffef50a931b0 d mt6368_pmic_tz_data	[pmic_temp]
+ffffffef50a93338 d mt6369_cali_data	[pmic_temp]
+ffffffef50a931e0 d mt6369_pmic_tz_data	[pmic_temp]
+ffffffef50a93298 d mt6373_cali_data	[pmic_temp]
+ffffffef50a93210 d mt6373_pmic_tz_data	[pmic_temp]
+ffffffef50a93000 d pmic_temp_driver	[pmic_temp]
+ffffffef50a936f8 d __cfi_jt_init_module	[pmic_temp]
+ffffffef50a93700 d __cfi_jt_cleanup_module	[pmic_temp]
+ffffffef50a93740 d __this_module	[pmic_temp]
+ffffffef506a80f0 d mt6855_debug_info	[mtk_pmic_oc_debug]
+ffffffef506a8c38 d mt6855_oc_debug	[mtk_pmic_oc_debug]
+ffffffef506a8100 d mt6879_debug_info	[mtk_pmic_oc_debug]
+ffffffef506a8710 d mt6879_oc_debug	[mtk_pmic_oc_debug]
+ffffffef506a8110 d mt6983_debug_info	[mtk_pmic_oc_debug]
+ffffffef506a8120 d mt6983_oc_debug	[mtk_pmic_oc_debug]
+ffffffef506a8000 d pmic_oc_debug_driver	[mtk_pmic_oc_debug]
+ffffffef506a9110 d regulator_oc_notify.__func___rs	[mtk_pmic_oc_debug]
+ffffffef506a9138 d regulator_oc_notify.__func___rs.81	[mtk_pmic_oc_debug]
+ffffffef506a9160 d __cfi_jt_init_module	[mtk_pmic_oc_debug]
+ffffffef506a9168 d __cfi_jt_cleanup_module	[mtk_pmic_oc_debug]
+ffffffef506a9180 d __this_module	[mtk_pmic_oc_debug]
+ffffffef505a8000 d mtk_spmi_pmif_mpu_driver	[spmi_mtk_mpu]
+ffffffef505a80f0 d __cfi_jt_init_module	[spmi_mtk_mpu]
+ffffffef505a80f8 d __cfi_jt_cleanup_module	[spmi_mtk_mpu]
+ffffffef505a8100 d __this_module	[spmi_mtk_mpu]
+ffffffef50205000 d lvsys_notifier_list	[pmic_lvsys_notify]
+ffffffef50205048 d pmic_lvsys_notify_driver	[pmic_lvsys_notify]
+ffffffef50205000 b pmic_lvsys_notify_probe.__key	[pmic_lvsys_notify]
+ffffffef50205138 d __cfi_jt_init_module	[pmic_lvsys_notify]
+ffffffef50205140 d __cfi_jt_cleanup_module	[pmic_lvsys_notify]
+ffffffef50205180 d __this_module	[pmic_lvsys_notify]
+ffffffef5010f090 b cur_hv_ptr	[pmic_lbat_service]
+ffffffef5010f0a0 b cur_lv_ptr	[pmic_lbat_service]
+ffffffef5010f518 d dev_attr_lbat_user_modify_thd_ext	[pmic_lbat_service]
+ffffffef5010f0f8 d lbat_hv_list	[pmic_lbat_service]
+ffffffef5010f0e8 d lbat_lv_list	[pmic_lbat_service]
+ffffffef5010f0b8 d lbat_mutex	[pmic_lbat_service]
+ffffffef5010f010 b lbat_user_table	[pmic_lbat_service]
+ffffffef5010f0b0 b lbat_wq	[pmic_lbat_service]
+ffffffef5010f450 d mt6375_lbat_regs	[pmic_lbat_service]
+ffffffef5010f108 d pmic_lbat_service_driver	[pmic_lbat_service]
+ffffffef5010f0a8 b r_ratio	[pmic_lbat_service]
+ffffffef5010f008 b user_count	[pmic_lbat_service]
+ffffffef5010f1f8 d mt6357_lbat_regs	[pmic_lbat_service]
+ffffffef5010f2c0 d mt6358_lbat_regs	[pmic_lbat_service]
+ffffffef5010f388 d mt6359p_lbat_regs	[pmic_lbat_service]
+ffffffef5010f000 b regmap	[pmic_lbat_service]
+ffffffef5010f098 b lbat_regs	[pmic_lbat_service]
+ffffffef5010f538 d __cfi_jt_init_module	[pmic_lbat_service]
+ffffffef5010f540 d __cfi_jt_cleanup_module	[pmic_lbat_service]
+ffffffef5010f580 d __this_module	[pmic_lbat_service]
+ffffffef4ff242c0 d clk_buf_all_ctrl_attr	[clkbuf]
+ffffffef4ff24228 d clk_buf_attr_group	[clkbuf]
+ffffffef4ff24250 d clk_buf_attrs	[clkbuf]
+ffffffef4ff24360 d clk_buf_bblpm_attr	[clkbuf]
+ffffffef4ff24380 d clk_buf_capid_attr	[clkbuf]
+ffffffef4ff242e0 d clk_buf_ctrl_attr	[clkbuf]
+ffffffef4ff24340 d clk_buf_debug_attr	[clkbuf]
+ffffffef4ff243a0 d clk_buf_heater_attr	[clkbuf]
+ffffffef4ff24300 d clk_buf_pmic_attr	[clkbuf]
+ffffffef4ff24320 d clk_buf_pmif_attr	[clkbuf]
+ffffffef4ff24000 b clkbuf_ctl.2	[clkbuf]
+ffffffef4ff24014 b clkbuf_ctl.3	[clkbuf]
+ffffffef4ff24004 b clkbuf_ctl.4	[clkbuf]
+ffffffef4ff24008 b clkbuf_ctl.5	[clkbuf]
+ffffffef4ff2400c b clkbuf_ctl.6	[clkbuf]
+ffffffef4ff24010 b clkbuf_ctl.7	[clkbuf]
+ffffffef4ff240f8 b clkbuf_dcxo_init.__key	[clkbuf]
+ffffffef4ff240f0 b clkbuf_pmif_hw_init.__key	[clkbuf]
+ffffffef4ff240f0 b dcxo	[clkbuf]
+ffffffef4ff25060 d debug_reg	[clkbuf]
+ffffffef4ff26160 d debug_reg.352	[clkbuf]
+ffffffef4ff26b10 d debug_reg.377	[clkbuf]
+ffffffef4ff274d0 d debug_reg.391	[clkbuf]
+ffffffef4ff27e90 d debug_reg.405	[clkbuf]
+ffffffef4ff25000 d ldo_reg	[clkbuf]
+ffffffef4ff26118 d ldo_reg.351	[clkbuf]
+ffffffef4ff24138 d mtk_clkbuf_driver	[clkbuf]
+ffffffef4ff27f00 d mtk_srclken_rc_driver	[clkbuf]
+ffffffef4ff244a0 d pmif_hws	[clkbuf]
+ffffffef4ff243c0 d rc_cfg_ctl_attr	[clkbuf]
+ffffffef4ff2411d b rc_dump_sta_reg_name	[clkbuf]
+ffffffef4ff24108 b rc_dump_subsys_sta_name	[clkbuf]
+ffffffef4ff243e0 d rc_sta_reg_attr	[clkbuf]
+ffffffef4ff24420 d rc_subsys_ctl_attr	[clkbuf]
+ffffffef4ff24440 d rc_subsys_sta_attr	[clkbuf]
+ffffffef4ff24400 d rc_trace_ctl_attr	[clkbuf]
+ffffffef4ff27efc d rc_trace_dump_num	[clkbuf]
+ffffffef4ff24134 b srclken_rc_bc_support	[clkbuf]
+ffffffef4ff247b0 d xo_bufs	[clkbuf]
+ffffffef4ff251a8 d xo_bufs.335	[clkbuf]
+ffffffef4ff262c0 d xo_bufs.369	[clkbuf]
+ffffffef4ff26c80 d xo_bufs.383	[clkbuf]
+ffffffef4ff27640 d xo_bufs.397	[clkbuf]
+ffffffef4ff24460 d clk_buf_lock	[clkbuf]
+ffffffef4ff24490 d __cfi_jt_init_module	[clkbuf]
+ffffffef4ff24498 d __cfi_jt_cleanup_module	[clkbuf]
+ffffffef4ff28180 d __this_module	[clkbuf]
+ffffffef4ff24018 b clkbuf_pmif	[clkbuf]
+ffffffef4ff27540 d mt6357_dcxo	[clkbuf]
+ffffffef4ff26b80 d mt6358_dcxo	[clkbuf]
+ffffffef4ff246b0 d mt6359p_dcxo	[clkbuf]
+ffffffef4ff261c0 d mt6366_dcxo	[clkbuf]
+ffffffef4ff250a8 d mt6685_dcxo	[clkbuf]
+ffffffef4ff240f8 b rc_hw	[clkbuf]
+ffffffef4ff27ff0 d rc_cfg	[clkbuf]
+ffffffef4ff280b8 d rc_sta	[clkbuf]
+ffffffef4ff0a000 d mt6685_spmi_driver	[mt6685_core]
+ffffffef4fe81000 d pmic_keys_pdrv	[mtk_pmic_keys]
+ffffffef4fe810f0 d __cfi_jt_init_module	[mtk_pmic_keys]
+ffffffef4fe810f8 d __cfi_jt_cleanup_module	[mtk_pmic_keys]
+ffffffef4fe81100 d __this_module	[mtk_pmic_keys]
+ffffffef4fd4d0f8 d auxadc_chans	[mtk_spmi_pmic_adc]
+ffffffef4fd4d508 d auxadc_syscore_ops	[mtk_spmi_pmic_adc]
+ffffffef4fd4d000 b imix_r_dev	[mtk_spmi_pmic_adc]
+ffffffef4fd4d008 d pmic_adc_driver	[mtk_spmi_pmic_adc]
+ffffffef4fd4d000 b pmic_adc_probe.__key	[mtk_spmi_pmic_adc]
+ffffffef4fd4d530 d __cfi_jt_init_module	[mtk_spmi_pmic_adc]
+ffffffef4fd4d538 d __cfi_jt_cleanup_module	[mtk_spmi_pmic_adc]
+ffffffef4fd4d540 d __this_module	[mtk_spmi_pmic_adc]
+ffffffef4f483008 b d_log_buf	[spmi_mtk_pmif]
+ffffffef4f483000 b dbg_ctrl	[spmi_mtk_pmif]
+ffffffef4f484340 d driver_attr_pmif_access	[spmi_mtk_pmif]
+ffffffef4f484360 d driver_attr_spmi_access	[spmi_mtk_pmif]
+ffffffef4f483518 b gpmif_of	[spmi_mtk_pmif]
+ffffffef4f48351c b gpmif_val	[spmi_mtk_pmif]
+ffffffef4f483510 b gspmi_of	[spmi_mtk_pmif]
+ffffffef4f483514 b gspmi_val	[spmi_mtk_pmif]
+ffffffef4f483610 d mt6833_pmif_arb	[spmi_mtk_pmif]
+ffffffef4f483890 d mt6853_pmif_arb	[spmi_mtk_pmif]
+ffffffef4f483d90 d mt6873_pmif_arb	[spmi_mtk_pmif]
+ffffffef4f484010 d mt6893_pmif_arb	[spmi_mtk_pmif]
+ffffffef4f483b10 d mt6xxx_pmif_arb	[spmi_mtk_pmif]
+ffffffef4f483520 d mtk_spmi_driver	[spmi_mtk_pmif]
+ffffffef4f483000 b mtk_spmi_probe.__key	[spmi_mtk_pmif]
+== 8-byte contents (x64), 60 per probe
+names0: v1=spmi_ctrl_type v2=spmi_dev_type v3=__tpstrtab_spmi_write_end v4=__tpstrtab_spmi_write_begin v5=__tpstrtab_spmi_read_end v6=__tpstrtab_spmi_read_begin v7=__tpstrtab_spmi_cmd v8=__event_spmi_cmd v9=__event_spmi_read_begin v10=__event_spmi_read_end v11=__event_spmi_write_begin v12=__event_spmi_write_end v13=__initcall__kmod_spmi__359_592_spmi_init2 v14=event_spmi_cmd v15=event_spmi_read_begin v16=event_spmi_read_end v17=event_spmi_write_begin v18=event_spmi_write_end v19=spmi_bus_type v20=trace_event_type_funcs_spmi_write_end v21=print_fmt_spmi_write_end v22=trace_event_type_funcs_spmi_write_begin v23=print_fmt_spmi_write_begin v24=trace_event_type_funcs_spmi_read_end v25=print_fmt_spmi_read_end v26=trace_event_type_funcs_spmi_read_begin v27=print_fmt_spmi_read_begin v28=trace_event_type_funcs_spmi_cmd v29=print_fmt_spmi_cmd v30=trace_event_fields_spmi_write_end v31=trace_event_fields_spmi_write_begin v32=trace_event_fields_spmi_read_end v33=trace_event_fields_spmi_read_begin v34=trace_event_fields_spmi_cmd v35=__SCK__tp_func_spmi_write_end v36=__SCK__tp_func_spmi_write_begin v37=__SCK__tp_func_spmi_read_end v38=__SCK__tp_func_spmi_read_begin v39=__SCK__tp_func_spmi_cmd v40=event_class_spmi_cmd v41=event_class_spmi_read_begin v42=event_class_spmi_read_end v43=event_class_spmi_write_begin v44=event_class_spmi_write_end v45=__tracepoint_spmi_cmd v46=__tracepoint_spmi_read_begin v47=__tracepoint_spmi_read_end v48=__tracepoint_spmi_write_begin v49=__tracepoint_spmi_write_end v50=__bpf_trace_tp_map_spmi_cmd v51=__bpf_trace_tp_map_spmi_read_begin v52=__bpf_trace_tp_map_spmi_read_end v53=__bpf_trace_tp_map_spmi_write_begin v54=__bpf_trace_tp_map_spmi_write_end v55=mt6338_cali_data[pmic_temp] v56=mt6338_pmic_tz_data[pmic_temp] v57=mt6357_cali_data[pmic_temp] v58=mt6357_pmic_tz_data[pmic_temp] v59=mt6359_cali_data[pmic_temp] v60=mt6359_pmic_tz_data[pmic_temp]
+vals0: 
+names1: v1=mt6363_cali_data[pmic_temp] v2=mt6363_pmic_tz_data[pmic_temp] v3=mt6366_cali_data[pmic_temp] v4=mt6366_pmic_tz_data[pmic_temp] v5=mt6368_cali_data[pmic_temp] v6=mt6368_pmic_tz_data[pmic_temp] v7=mt6369_cali_data[pmic_temp] v8=mt6369_pmic_tz_data[pmic_temp] v9=mt6373_cali_data[pmic_temp] v10=mt6373_pmic_tz_data[pmic_temp] v11=pmic_temp_driver[pmic_temp] v12=__cfi_jt_init_module[pmic_temp] v13=__cfi_jt_cleanup_module[pmic_temp] v14=__this_module[pmic_temp] v15=mt6855_debug_info[mtk_pmic_oc_debug] v16=mt6855_oc_debug[mtk_pmic_oc_debug] v17=mt6879_debug_info[mtk_pmic_oc_debug] v18=mt6879_oc_debug[mtk_pmic_oc_debug] v19=mt6983_debug_info[mtk_pmic_oc_debug] v20=mt6983_oc_debug[mtk_pmic_oc_debug] v21=pmic_oc_debug_driver[mtk_pmic_oc_debug] v22=regulator_oc_notify.__func___rs[mtk_pmic_oc_debug] v23=regulator_oc_notify.__func___rs.81[mtk_pmic_oc_debug] v24=__cfi_jt_init_module[mtk_pmic_oc_debug] v25=__cfi_jt_cleanup_module[mtk_pmic_oc_debug] v26=__this_module[mtk_pmic_oc_debug] v27=mtk_spmi_pmif_mpu_driver[spmi_mtk_mpu] v28=__cfi_jt_init_module[spmi_mtk_mpu] v29=__cfi_jt_cleanup_module[spmi_mtk_mpu] v30=__this_module[spmi_mtk_mpu] v31=lvsys_notifier_list[pmic_lvsys_notify] v32=pmic_lvsys_notify_driver[pmic_lvsys_notify] v33=pmic_lvsys_notify_probe.__key[pmic_lvsys_notify] v34=__cfi_jt_init_module[pmic_lvsys_notify] v35=__cfi_jt_cleanup_module[pmic_lvsys_notify] v36=__this_module[pmic_lvsys_notify] v37=cur_hv_ptr[pmic_lbat_service] v38=cur_lv_ptr[pmic_lbat_service] v39=dev_attr_lbat_user_modify_thd_ext[pmic_lbat_service] v40=lbat_hv_list[pmic_lbat_service] v41=lbat_lv_list[pmic_lbat_service] v42=lbat_mutex[pmic_lbat_service] v43=lbat_user_table[pmic_lbat_service] v44=lbat_wq[pmic_lbat_service] v45=mt6375_lbat_regs[pmic_lbat_service] v46=pmic_lbat_service_driver[pmic_lbat_service] v47=r_ratio[pmic_lbat_service] v48=user_count[pmic_lbat_service] v49=mt6357_lbat_regs[pmic_lbat_service] v50=mt6358_lbat_regs[pmic_lbat_service] v51=mt6359p_lbat_regs[pmic_lbat_service] v52=regmap[pmic_lbat_service] v53=lbat_regs[pmic_lbat_service] v54=__cfi_jt_init_module[pmic_lbat_service] v55=__cfi_jt_cleanup_module[pmic_lbat_service] v56=__this_module[pmic_lbat_service] v57=clk_buf_all_ctrl_attr[clkbuf] v58=clk_buf_attr_group[clkbuf] v59=clk_buf_attrs[clkbuf] v60=clk_buf_bblpm_attr[clkbuf]
+vals1: 
+names2: v1=clk_buf_capid_attr[clkbuf] v2=clk_buf_ctrl_attr[clkbuf] v3=clk_buf_debug_attr[clkbuf] v4=clk_buf_heater_attr[clkbuf] v5=clk_buf_pmic_attr[clkbuf] v6=clk_buf_pmif_attr[clkbuf] v7=clkbuf_ctl.2[clkbuf] v8=clkbuf_ctl.3[clkbuf] v9=clkbuf_ctl.4[clkbuf] v10=clkbuf_ctl.5[clkbuf] v11=clkbuf_ctl.6[clkbuf] v12=clkbuf_ctl.7[clkbuf] v13=clkbuf_dcxo_init.__key[clkbuf] v14=clkbuf_pmif_hw_init.__key[clkbuf] v15=dcxo[clkbuf] v16=debug_reg[clkbuf] v17=debug_reg.352[clkbuf] v18=debug_reg.377[clkbuf] v19=debug_reg.391[clkbuf] v20=debug_reg.405[clkbuf] v21=ldo_reg[clkbuf] v22=ldo_reg.351[clkbuf] v23=mtk_clkbuf_driver[clkbuf] v24=mtk_srclken_rc_driver[clkbuf] v25=pmif_hws[clkbuf] v26=rc_cfg_ctl_attr[clkbuf] v27=rc_dump_sta_reg_name[clkbuf] v28=rc_dump_subsys_sta_name[clkbuf] v29=rc_sta_reg_attr[clkbuf] v30=rc_subsys_ctl_attr[clkbuf] v31=rc_subsys_sta_attr[clkbuf] v32=rc_trace_ctl_attr[clkbuf] v33=rc_trace_dump_num[clkbuf] v34=srclken_rc_bc_support[clkbuf] v35=xo_bufs[clkbuf] v36=xo_bufs.335[clkbuf] v37=xo_bufs.369[clkbuf] v38=xo_bufs.383[clkbuf] v39=xo_bufs.397[clkbuf] v40=clk_buf_lock[clkbuf] v41=__cfi_jt_init_module[clkbuf] v42=__cfi_jt_cleanup_module[clkbuf] v43=__this_module[clkbuf] v44=clkbuf_pmif[clkbuf] v45=mt6357_dcxo[clkbuf] v46=mt6358_dcxo[clkbuf] v47=mt6359p_dcxo[clkbuf] v48=mt6366_dcxo[clkbuf] v49=mt6685_dcxo[clkbuf] v50=rc_hw[clkbuf] v51=rc_cfg[clkbuf] v52=rc_sta[clkbuf] v53=mt6685_spmi_driver[mt6685_core] v54=pmic_keys_pdrv[mtk_pmic_keys] v55=__cfi_jt_init_module[mtk_pmic_keys] v56=__cfi_jt_cleanup_module[mtk_pmic_keys] v57=__this_module[mtk_pmic_keys] v58=auxadc_chans[mtk_spmi_pmic_adc] v59=auxadc_syscore_ops[mtk_spmi_pmic_adc] v60=imix_r_dev[mtk_spmi_pmic_adc]
+vals2: 
+names3: v1=pmic_adc_driver[mtk_spmi_pmic_adc] v2=pmic_adc_probe.__key[mtk_spmi_pmic_adc] v3=__cfi_jt_init_module[mtk_spmi_pmic_adc] v4=__cfi_jt_cleanup_module[mtk_spmi_pmic_adc] v5=__this_module[mtk_spmi_pmic_adc] v6=d_log_buf[spmi_mtk_pmif] v7=dbg_ctrl[spmi_mtk_pmif] v8=driver_attr_pmif_access[spmi_mtk_pmif] v9=driver_attr_spmi_access[spmi_mtk_pmif] v10=gpmif_of[spmi_mtk_pmif] v11=gpmif_val[spmi_mtk_pmif] v12=gspmi_of[spmi_mtk_pmif] v13=gspmi_val[spmi_mtk_pmif] v14=mt6833_pmif_arb[spmi_mtk_pmif] v15=mt6853_pmif_arb[spmi_mtk_pmif] v16=mt6873_pmif_arb[spmi_mtk_pmif] v17=mt6893_pmif_arb[spmi_mtk_pmif] v18=mt6xxx_pmif_arb[spmi_mtk_pmif] v19=mtk_spmi_driver[spmi_mtk_pmif] v20=mtk_spmi_probe.__key[spmi_mtk_pmif] v21=pmif_cmd_err_parity_err_irq_handler.__func___rs[spmi_mtk_pmif] v22=pmif_hw_monitor_irq_handler.__func___rs[spmi_mtk_pmif] v23=pmif_pmic_acc_vio_irq_handler.__func___rs[spmi_mtk_pmif] v24=pmif_pmif_acc_vio_irq_handler.__func___rs[spmi_mtk_pmif] v25=rcs_irq_register.__key[spmi_mtk_pmif] v26=wp[spmi_mtk_pmif] v27=__cfi_jt_init_module[spmi_mtk_pmif] v28=__cfi_jt_cleanup_module[spmi_mtk_pmif] v29=__this_module[spmi_mtk_pmif] v30=mt6363_ints[mtk_spmi_pmic] v31=mt6368_ints[mtk_spmi_pmic] v32=mt6369_ints[mtk_spmi_pmic] v33=mt6373_ints[mtk_spmi_pmic] v34=mtk_spmi_pmic_driver[mtk_spmi_pmic] v35=mtk_spmi_pmic_irq_chip[mtk_spmi_pmic] v36=mtk_spmi_pmic_irq_init.__key[mtk_spmi_pmic] v37=__cfi_jt_init_module[mtk_spmi_pmic] v38=__cfi_jt_cleanup_module[mtk_spmi_pmic] v39=__this_module[mtk_spmi_pmic] v40=__this_module[regmap_spmi] v41=mt2701_regs[mtk_pmic_wrap] v42=mt6739_regs[mtk_pmic_wrap] v43=mt6761_regs[mtk_pmic_wrap] v44=mt6765_regs[mtk_pmic_wrap] v45=mt6768_regs[mtk_pmic_wrap] v46=mt6779_regs[mtk_pmic_wrap] v47=mt6789_regs[mtk_pmic_wrap] v48=mt6797_regs[mtk_pmic_wrap] v49=mt6833_regs[mtk_pmic_wrap] v50=mt6853_regs[mtk_pmic_wrap] v51=mt6873_regs[mtk_pmic_wrap] v52=mt6885_regs[mtk_pmic_wrap] v53=mt7622_regs[mtk_pmic_wrap] v54=mt8135_regs[mtk_pmic_wrap] v55=mt8173_regs[mtk_pmic_wrap] v56=mt8183_regs[mtk_pmic_wrap] v57=mt8516_regs[mtk_pmic_wrap] v58=pwrap_drv[mtk_pmic_wrap] v59=pwrap_mt6739[mtk_pmic_wrap] v60=pwrap_mt6761[mtk_pmic_wrap]
+vals3: 
+names4: v1=pwrap_mt6765[mtk_pmic_wrap] v2=pwrap_mt6768[mtk_pmic_wrap] v3=pwrap_mt6789[mtk_pmic_wrap] v4=pwrap_mt6833[mtk_pmic_wrap] v5=pwrap_mt6853[mtk_pmic_wrap] v6=pwrap_mt6873[mtk_pmic_wrap] v7=pwrap_mt6885[mtk_pmic_wrap] v8=pwrap_mt8516[mtk_pmic_wrap] v9=pwrap_swinf_info.ratelimit[mtk_pmic_wrap] v10=__cfi_jt_init_module[mtk_pmic_wrap] v11=__cfi_jt_cleanup_module[mtk_pmic_wrap] v12=__this_module[mtk_pmic_wrap]
+vals4: 
