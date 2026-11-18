@@ -1,0 +1,53 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 580ab3e..3ebfd37 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1432,6 +1432,48 @@ wp210_dram(uint64_t up)
+ 		stage = 7;
+ 		wp210_spm_cmds("after START");
+ 		wp210_spm_all_dump("after-START");
++		/*
++		 * 0245: copy two SPM registers to stock Android's values (kp2.txt vs 0244),
++		 * one at a time, watching the DVFSRC/SPM/PLL for 2 s after each:
++		 * SPM_PMIC_SPMI_CON 0x308: ours 0x83 (slave id 0, debounce), Android 0x13
++		 * (slave id 4: where the SPM sends its vcore commands);
++		 * MD32PCM_SCU_CTRL1 0x104: ours 0x3ff920, Android 0xbff820 (bit 23 set, bit 8 clear).
++		 * wp210spmfix=0 skips; 1 = SPMI only; 2 = both (default).
++		 */
++		int spmfix = 2;
++		(void)PE_parse_boot_argn("wp210spmfix", &spmfix, sizeof(spmfix));
++		static const uint32_t fix_off[2] = {0x308, 0x104};
++		static const uint32_t fix_val[2] = {0x13, 0xbff820};
++		for (int f = 0; f < spmfix && f < 2 && wp210_spm != 0; f++) {
++			uint32_t old = wp210_rd(wp210_spm, fix_off[f], 0x1000);
++			printf("SWEET SPMFIX: about to write SPM +%#x: %#x -> %#x\n", fix_off[f], old, fix_val[f]);
++			wp210_dram_flush();
++			*(volatile uint32_t *)(wp210_spm + fix_off[f]) = fix_val[f];
++			__asm__ volatile ("dsb sy" ::: "memory");
++			uint32_t l904 = 0xffffffff, llv = 0xffffffff, lpc = 0xffffffff, lev = 0xffffffff, l29c = 0xffffffff;
++			uint64_t t0 = mach_absolute_time();
++			int changes = 0;
++			for (int i = 0; i < 200; i++) {
++				uint32_t p904 = wp210_rd(wp210_phy, 0x904, 0x2000);
++				uint32_t lv = wp210_rd(wp210_dvfsrc, 0x5f0, 0x1000);
++				uint32_t d29c = wp210_rd(wp210_dvfsrc, 0x29c, 0x1000);
++				uint32_t pc = wp210_rd(wp210_spm, 0x194, 0x1000);
++				uint32_t ev = wp210_rd(wp210_spm, 0x380, 0x1000);
++				if ((p904 != l904 || lv != llv || pc != lpc || ev != lev || d29c != l29c) && changes < 40) {
++					changes++;
++					printf("SWEET SPMFIX: +%llu us reg %#x now %#x | LEVEL %#x DEBUG0 %#x | SPM pc %#x event %#x dvfs_sta %#x lvl %#x/%#x | 904 %#x\n",
++					    perf_ns(mach_absolute_time() - t0) / 1000, fix_off[f], wp210_rd(wp210_spm, fix_off[f], 0x1000),
++					    lv, d29c, pc, ev, wp210_rd(wp210_spm, 0x388, 0x1000), wp210_rd(wp210_spm, 0x38c, 0x1000),
++					    wp210_rd(wp210_spm, 0x390, 0x1000), p904);
++					l904 = p904; llv = lv; lpc = pc; lev = ev; l29c = d29c;
++				}
++				delay(10000);
++			}
++			wp210_dram_flush();
++		}
++		if (spmfix > 0) {
++			wp210_bw("after the SPM register copy");
++		}
+ 		/* 0243: the DVFSRC page after START (whole-page reads were safe in 0235), for DEBUG_STA 0x29c-0x2bc, LAST 0x3ac, RECORD 0x3b8- against Android's dvfsrc_dump */
+ 		char dl[300];
+ 		int m = 0, n = 0, total = 0;
