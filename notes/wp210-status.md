@@ -1099,3 +1099,12 @@ The changes come from the iOS boot in the trace image, not from our install.
   access date changed. sweetgl.dylib record unchanged (17208704 bytes, 122729397 x 4202).
 - Every iOS boot changes the catalog blocks, so the check needs refreshing each time. Idea: make the
   script verify the shim's catalog record directly instead of whole-block hashes.
+### PMIF on stock Android (kp6, 2026-11-18)
+- The `spmi_mtk_pmif` driver keeps its mapped bases in its static template `mt6xxx_pmif_arb`
+  (+0x00 PMIF, +0x10 SPMI master). Read through those pointers with kprobes:
+  `notes/firmware/android-kp6-pmif-spmimst.txt` (PMIF 0x000-0x8fc, SPMI master 0x00-0xfc, uptime 1015 s, DRAM 1866).
+- Key PMIF words (mt6xxx_regs): INIT_DONE 0x000=1, INF_EN 0x024=0x7effff, 0x028=1 (clkbuf CONN inf),
+  ARB_EN 0x150=0x7affff, CMDISSUE_EN 0x3b8=1, TIMER_CTRL 0x3e4=3, SPI_MODE_CTRL 0x408=0x225d,
+  IRQ_EVENT_EN_0 0x420=0x80000000.
+- Patch 0247 dumps the same blocks on our kernel before/after DVFSRC_INIT (`SWEET PMIF:` / `SWEET SPMIMST:`);
+  compare with `notes/tools/android/pmifcmp.py kp6.txt sweetlog.txt`.
