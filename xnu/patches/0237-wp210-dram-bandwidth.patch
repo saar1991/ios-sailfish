@@ -1,0 +1,125 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 9fb3c61..e2247da 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1024,6 +1024,103 @@ wp210_rd(vm_offset_t base, uint32_t off, uint32_t size)
+ 	return *(volatile uint32_t *)(base + off);
+ }
+ 
++/*
++ * 0237: DRAM read bandwidth, measured. The PLL decodes to 3068 Mbps by both
++ * MediaTek fmeter formulas (2021 v0, 2025 mt8196), but the DVFSRC level
++ * register reads 0 (= the top OPP in the vendor driver's inverted scale).
++ * LPDDR5 x64: 3200 Mbps = 25.6 GB/s peak, 6400 = 51.2 GB/s (the DT's top
++ * DVFSRC OPP is 40.9 GB/s). Workers bound to big cores 1-4 each stream a
++ * 32 MB buffer (one load per 64-byte line kept, so it is line fills that
++ * count) BW_PASSES times; best of three rounds, 1 core and 4 cores.
++ */
++#define BW_BUF          (32u << 20)
++#define BW_PASSES       6
++static uint64_t *bw_buf[4];
++static uint64_t bw_ns[4], bw_sink[4];
++static int bw_ready, bw_done, bw_go;
++
++static void
++bw_worker(void *arg, __unused wait_result_t wr)
++{
++	int k = (int)(uintptr_t)arg;
++	thread_bind(cpu_to_processor(1 + k));
++	thread_block(THREAD_CONTINUE_NULL);
++	os_atomic_inc(&bw_ready, release);
++	while (os_atomic_load(&bw_go, acquire) == 0) {
++		__asm__ volatile ("yield");
++	}
++	const volatile uint64_t *p = bw_buf[k];
++	uint64_t s0 = 0, s1 = 0, s2 = 0, s3 = 0;
++	uint64_t t0 = mach_absolute_time();
++	for (int pass = 0; pass < BW_PASSES; pass++) {
++		for (size_t i = 0; i < BW_BUF / 8; i += 32) {   /* 4 lines an iteration */
++			s0 += p[i];
++			s1 += p[i + 8];
++			s2 += p[i + 16];
++			s3 += p[i + 24];
++		}
++	}
++	bw_ns[k] = perf_ns(mach_absolute_time() - t0);
++	bw_sink[k] = s0 + s1 + s2 + s3;
++	thread_bind(NULL);
++	os_atomic_inc(&bw_done, release);
++}
++
++/* GB/s x 100 for n workers; 0 on failure */
++static uint64_t
++bw_round(int n)
++{
++	thread_t th;
++	bw_ready = bw_done = bw_go = 0;
++	for (int k = 0; k < n; k++) {
++		if (kernel_thread_start(bw_worker, (void *)(uintptr_t)k, &th) != KERN_SUCCESS) {
++			return 0;
++		}
++		thread_deallocate(th);
++	}
++	for (int w = 0; w < 500 && os_atomic_load(&bw_ready, acquire) < n; w++) {
++		delay(10000);
++	}
++	os_atomic_store(&bw_go, 1, release);
++	for (int w = 0; w < 1000 && os_atomic_load(&bw_done, acquire) < n; w++) {
++		delay(10000);
++	}
++	if (os_atomic_load(&bw_done, acquire) < n) {
++		return 0;
++	}
++	uint64_t bytes = (uint64_t)BW_BUF * BW_PASSES, total = 0;
++	for (int k = 0; k < n; k++) {
++		if (bw_ns[k] == 0) {
++			return 0;
++		}
++		total += bytes * 100 / bw_ns[k];        /* bytes/ns = GB/s */
++	}
++	return total;
++}
++
++static void
++wp210_bw(const char *label)
++{
++	for (int k = 0; k < 4; k++) {
++		if (bw_buf[k] == NULL) {
++			bw_buf[k] = kalloc_data(BW_BUF, Z_WAITOK | Z_ZERO);
++			if (bw_buf[k] == NULL) {
++				printf("SWEET BW: %s: no memory for buffer %d\n", label, k);
++				return;
++			}
++		}
++	}
++	uint64_t one = 0, four = 0;
++	for (int r = 0; r < 3; r++) {
++		uint64_t a = bw_round(1), b = bw_round(4);
++		one = a > one ? a : one;
++		four = b > four ? b : four;
++	}
++	printf("SWEET BW: %s: read 1 big core %llu.%02llu GB/s, 4 big cores %llu.%02llu GB/s "
++	    "(32 MB each, best of 3; LPDDR5 x64 peak 25.6 GB/s at 3200, 51.2 at 6400)\n", label,
++	    one / 100, one % 100, four / 100, four % 100);
++}
++
+ static void
+ wp210_dram(uint64_t up)
+ {
+@@ -1109,7 +1206,15 @@ wp210_dram(uint64_t up)
+ 		dvfsrc_init = 1;
+ 		(void)PE_parse_boot_argn("wp210dvfsrc", &dvfsrc_init, sizeof(dvfsrc_init));
+ 	}
+-	if (stage == 3 && up >= (uint64_t)at + 5) {
++	if (stage == 3 && up >= (uint64_t)at + 2) {
++		wp210_bw("before DVFSRC_INIT");
++		stage = 30;
++	}
++	if (stage == 4 && up >= (uint64_t)at + 10) {
++		wp210_bw("after DVFSRC_INIT");
++		stage = 5;
++	}
++	if (stage == 30 && up >= (uint64_t)at + 5) {
+ 		stage = 4;
+ 		if (dvfsrc_init == 0) {
+ 			printf("SWEET DRAM: DVFSRC init skipped (wp210dvfsrc=0)\n");
