@@ -1,0 +1,62 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index d03f371..9988486 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1107,6 +1107,40 @@ wp210_spm_all_dump(const char *tag)
+ 	}
+ }
+ 
++/*
++ * 0247: the PMIF (0x1c804000) and SPMI master (0x1c801000), whole, to compare
++ * with stock Android read through the spmi_mtk_pmif driver's own mapping
++ * (kp6.txt: INIT_DONE 1, INF_EN 0x7effff, ARB_EN 0x7affff, CMDISSUE_EN 1).
++ * The SPM reaches the PMIC through the PMIF, and our SPM never finishes the
++ * DVFS step it starts after DVFSRC_INIT. 16 words a line.
++ */
++static vm_offset_t wp210_pmif, wp210_spmimst;
++static void
++wp210_pmif_dump(const char *tag)
++{
++	char line[400];
++	if (wp210_pmif == 0) {
++		wp210_pmif = ml_io_map(0x1c804000, 0x1000);
++	}
++	if (wp210_spmimst == 0) {
++		wp210_spmimst = ml_io_map(0x1c801000, 0x1000);
++	}
++	for (uint32_t o = 0; o < 0x900; o += 0x40) {
++		int m = snprintf(line, sizeof(line), "SWEET PMIF: %s %03x", tag, o);
++		for (uint32_t j = o; j < o + 0x40; j += 4) {
++			m += snprintf(line + m, sizeof(line) - m, " %x", wp210_rd(wp210_pmif, j, 0x1000));
++		}
++		printf("%s\n", line);
++	}
++	for (uint32_t o = 0; o < 0x100; o += 0x40) {
++		int m = snprintf(line, sizeof(line), "SWEET SPMIMST: %s %03x", tag, o);
++		for (uint32_t j = o; j < o + 0x40; j += 4) {
++			m += snprintf(line + m, sizeof(line) - m, " %x", wp210_rd(wp210_spmimst, j, 0x1000));
++		}
++		printf("%s\n", line);
++	}
++}
++
+ static void
+ wp210_spm_cmds(const char *tag)
+ {
+@@ -1314,12 +1348,16 @@ wp210_dram(uint64_t up)
+ 		wp210_dram_flush();
+ 		wp210_spm_cmds("before INIT");
+ 		wp210_spm_all_dump("before-INIT");
++		printf("SWEET DRAM: about to read the PMIF and SPMI master\n");
++		wp210_dram_flush();
++		wp210_pmif_dump("before-INIT");
+ 		wp210_bw("before DVFSRC_INIT");
+ 		stage = 30;
+ 	}
+ 	if (stage == 4 && up >= (uint64_t)at + 10) {
+ 		wp210_spm_cmds("after INIT");
+ 		wp210_spm_all_dump("after-INIT");
++		wp210_pmif_dump("after-INIT");
+ 		wp210_bw("after DVFSRC_INIT");
+ 		stage = 5;
+ 	}
