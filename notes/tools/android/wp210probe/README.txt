@@ -19,3 +19,5 @@ Collect:
 Stop / remove:
   adb shell su -c "sh /data/adb/wp210/stop.sh"
   adb shell su -c "sh /data/adb/wp210/uninstall.sh"
+PMIF / SPMI master / DRAM PHY registers (reads Android's own mappings from /proc/vmallocinfo):
+  adb push wp210probe\pmif.sh /data/local/tmp/ && adb shell su -c "sh /data/local/tmp/pmif.sh"
