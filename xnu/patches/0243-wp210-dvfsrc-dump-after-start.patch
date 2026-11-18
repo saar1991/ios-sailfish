@@ -1,0 +1,33 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 3ba0373..fa17b96 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1371,6 +1371,28 @@ wp210_dram(uint64_t up)
+ 	if (stage == 60 && up >= (uint64_t)at + 30) {
+ 		stage = 7;
+ 		wp210_spm_cmds("after START");
++		/* 0243: the DVFSRC page after START (whole-page reads were safe in 0235), for DEBUG_STA 0x29c-0x2bc, LAST 0x3ac, RECORD 0x3b8- against Android's dvfsrc_dump */
++		char dl[300];
++		int m = 0, n = 0, total = 0;
++		for (uint32_t o = 0; o < 0x1000 && wp210_dvfsrc != 0; o += 4) {
++			uint32_t x = *(volatile uint32_t *)(wp210_dvfsrc + o);
++			if (x == 0) {
++				continue;
++			}
++			if (n == 0) {
++				m = snprintf(dl, sizeof(dl), "SWEET DRAMDUMP: dvfsrc after START");
++			}
++			m += snprintf(dl + m, sizeof(dl) - m, " %03x=%x", o, x);
++			total++;
++			if (++n == 8) {
++				printf("%s\n", dl);
++				n = 0;
++			}
++		}
++		if (n != 0) {
++			printf("%s\n", dl);
++		}
++		printf("SWEET DRAMDUMP: dvfsrc after START: %d non-zero words\n", total);
+ 		wp210_bw("after the DRAM level request and DVFSRC_START");
+ 	}
+ 	if (stage == 30 && up >= (uint64_t)at + 5) {
