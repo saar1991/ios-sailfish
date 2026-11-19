@@ -1,0 +1,106 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 9988486..216a436 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1234,6 +1234,72 @@ bw_round(int n)
+ 	return total;
+ }
+ 
++/*
++ * 0248: DVFSRC_INIT as early as Android makes it. Android's boot trace with
++ * cpuidle off (boot c504336a): the first VCOREFS call is DVFSRC_INIT (0, 0, 0)
++ * at 1.16 s of kernel time, the same arguments as ours; up to 3.69 s nothing
++ * else but the helper's queries (2, 3, 4, 5, 7). Ours runs at 65 s and the
++ * SPM never takes the first step. wp210dram=2: INIT from the platform
++ * expert's start (called from SweetPlatformExpert::start), a 2 s watch of the
++ * DVFSRC and SPM, and no INIT at 65 s (the rest of wp210dram=1 unchanged).
++ */
++void wp210_dvfsrc_early(void);
++void
++wp210_dvfsrc_early(void)
++{
++	int on = 0;
++	(void)PE_parse_boot_argn("wp210dram", &on, sizeof(on));
++	if (on != 2) {
++		return;
++	}
++	if (wp210_dvfsrc == 0) {
++		wp210_dvfsrc = ml_io_map(WP210_DVFSRC_PA, 0x1000);
++	}
++	if (wp210_spm == 0) {
++		wp210_spm = ml_io_map(WP210_DVFSRC_SPM_PA, 0x1000);
++	}
++	if (wp210_phy == 0) {
++		wp210_phy = ml_io_map(WP210_DDRPHY_AO0_PA, 0x2000);
++	}
++	uint64_t now = perf_ns(mach_absolute_time()) / 1000000;
++	printf("SWEET EARLY: %llu ms before INIT: DVFSRC LEVEL %#x LAST %#x DEBUG0 %#x 5c8 %#x SW_REQ %#x | SPM pc %#x spmi_con %#x lvl %#x/%#x flag0 %#x | 904 %#x\n",
++	    now, wp210_rd(wp210_dvfsrc, 0x5f0, 0x1000), wp210_rd(wp210_dvfsrc, 0x3ac, 0x1000),
++	    wp210_rd(wp210_dvfsrc, 0x29c, 0x1000), wp210_rd(wp210_dvfsrc, 0x5c8, 0x1000),
++	    wp210_rd(wp210_dvfsrc, 0x18, 0x1000), wp210_rd(wp210_spm, 0x194, 0x1000),
++	    wp210_rd(wp210_spm, 0x308, 0x1000), wp210_rd(wp210_spm, 0x38c, 0x1000),
++	    wp210_rd(wp210_spm, 0x390, 0x1000), wp210_rd(wp210_spm, 0x600, 0x1000),
++	    wp210_rd(wp210_phy, 0x904, 0x2000));
++	register uint64_t x0 __asm__("x0") = 0xc2000506ull;
++	register uint64_t x1 __asm__("x1") = 0;     /* MTK_SIP_DVFSRC_INIT */
++	register uint64_t x2 __asm__("x2") = 0;
++	register uint64_t x3 __asm__("x3") = 0;
++	__asm__ volatile ("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3) : :
++	    "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14",
++	    "x15", "x16", "x17", "memory");
++	printf("SWEET EARLY: DVFSRC_INIT returned a0 %#llx a1 %#llx\n", x0, x1);
++	uint32_t l[8];
++	memset(l, 0xff, sizeof(l));
++	uint64_t w0 = mach_absolute_time();
++	int ch = 0;
++	for (int i = 0; i < 200; i++) {
++		uint32_t c[8] = {
++			wp210_rd(wp210_dvfsrc, 0x5f0, 0x1000), wp210_rd(wp210_dvfsrc, 0x3ac, 0x1000),
++			wp210_rd(wp210_dvfsrc, 0x29c, 0x1000), wp210_rd(wp210_dvfsrc, 0x5c8, 0x1000),
++			wp210_rd(wp210_spm, 0x308, 0x1000), wp210_rd(wp210_spm, 0x38c, 0x1000),
++			wp210_rd(wp210_spm, 0x390, 0x1000), wp210_rd(wp210_phy, 0x904, 0x2000)
++		};
++		if (memcmp(c, l, sizeof(c)) != 0 && ch < 40) {
++			ch++;
++			printf("SWEET EARLY: +%llu us LEVEL %#x LAST %#x DEBUG0 %#x 5c8 %#x | SPM pc %#x spmi_con %#x lvl %#x/%#x | 904 %#x\n",
++			    perf_ns(mach_absolute_time() - w0) / 1000, c[0], c[1], c[2], c[3],
++			    wp210_rd(wp210_spm, 0x194, 0x1000), c[4], c[5], c[6], c[7]);
++			memcpy(l, c, sizeof(c));
++		}
++		delay(10000);
++	}
++	printf("SWEET EARLY: watch done (%d changes)\n", ch);
++}
++
+ static void
+ wp210_bw(const char *label)
+ {
+@@ -1538,8 +1604,8 @@ wp210_dram(uint64_t up)
+ 	}
+ 	if (stage == 30 && up >= (uint64_t)at + 5) {
+ 		stage = 4;
+-		if (dvfsrc_init == 0) {
+-			printf("SWEET DRAM: DVFSRC init skipped (wp210dvfsrc=0)\n");
++		if (dvfsrc_init == 0 || on == 2) {
++			printf("SWEET DRAM: DVFSRC init skipped (%s)\n", on == 2 ? "done early, wp210dram=2" : "wp210dvfsrc=0");
+ 			return;
+ 		}
+ 		/*
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 0631685..2538982 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -22,10 +22,13 @@ public:
+ 
+ OSDefineMetaClassAndStructors(SweetPlatformExpert, IODTPlatformExpert);
+ 
++extern "C" void wp210_dvfsrc_early(void);
++
+ bool
+ SweetPlatformExpert::start(IOService *provider)
+ {
+ 	IOLog("SWEET: starting device-tree platform expert\n");
++	wp210_dvfsrc_early();   /* 0248: wp210dram=2 */
+ 	if (!IODTPlatformExpert::start(provider)) {
+ 		return false;
+ 	}
