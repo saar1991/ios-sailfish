@@ -1211,3 +1211,13 @@ The changes come from the iOS boot in the trace image, not from our install.
 - **0250 (run 44487611532):** `wp210dram=4`: at 90 s, on the stuck DVFSRC, set SPM_SRC_REQ (0x818) software request bits
   8 SW_MAILBOX, 3 DVFS, 4 F26M, 5 INFRA, 1 APSRC, 10 VRF18 one at a time for 300 ms (requests only, register restored),
   stop at the first DVFSRC/SPM change; then START as before.
+- **0250 result (log 9dac1a47) — RAM SPEED FIXED IN PRINCIPLE:** SPM_SRC_REQ was 0x6360204, REQ_STA_0 0. Bit 8 (SW_MAILBOX):
+  nothing in 330 ms. **Bit 3 (REG_SPM_DVFS_REQ): within 11 ms the SPM firmware ran** (pc 0x6b0 → 0x2110, SPMI_CON 0x83 → 0x13,
+  DVS_DFS 0x10080, DVFSRC LEVEL 0x10000 / LAST 2 / 0x5c8 0) and **the DDR PLL changed: 904 0x76000002 → 0x8f000002 →
+  0x69800002 (shu0; fbksel 1) = 5486 Mbps** (shu1 0x52000002 = 2132). After clearing bit 3 the SPM parked again with the DRAM
+  at 5486; START then left the DVFSRC with a new pending request (LAST 7, DEBUG0 0x20000), DRAM unchanged.
+  **Read bandwidth: 1 big core 19.5 → 23.7 GB/s, 4 big cores 23.6 → 32.7 GB/s (+38%).** Stable to 150 s+.
+  So Android's DVFS starts when something raises an SPM resource request (on Android: the ISP power-up at ~4.6 s).
+- **0251 (run 44491297895):** the fix as a default (`wp210ddr=1`, runs only when wp210dram=0): at the platform expert's start
+  DVFSRC_INIT, DVFSRC SW_REQ DRAM floor (`wp210ddrlvl`, default 8), SPM_SRC_REQ bit 3 until the PLL changes (≤500 ms), bit 3
+  restored (`wp210ddrhold=1` keeps it), `SWEET DDR:` line with Mbps before/after; a bandwidth reading at 40 s.
