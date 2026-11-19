@@ -1202,3 +1202,12 @@ The changes come from the iOS boot in the trace image, not from our install.
   No clock enable or regulator enable in the 16 ms before the step: the trigger is something not traced (clock disable,
   runtime PM / power domain, or a co-processor). Delay request→step: 10-28 ms over three boots. Next: + rpm resume/suspend,
   clk disable/unprepare, regulator disable.
+- **Boot trace 9 (boot 10d9f05c, + rpm resume/suspend, clk disable/unprepare, regulator disable):** first step ≈4.6610 s
+  (map error ~1 ms: the request at 4.6623 still reads LAST 7), right as mtk_imgsys_v4l2 initialises: rpm_resume
+  **15000000.imgsys_fw** 4.6594, its BW requests 4.6623 (`android-boottrace9-window-4.55-4.75.txt`). No clock or regulator
+  change in between (mtk_ccu at 4.6355 powered CAM clocks on/off without effect). Delay after the imgsys requests over
+  four boots: -1, 10, 16, 27 ms. Working idea: the IMG power-up raises resource requests (REQ_STA) that wake the SPM,
+  which then serves the DVFSRC's pending request; our SPM never sees a resource change.
+- **0250 (run 44487611532):** `wp210dram=4`: at 90 s, on the stuck DVFSRC, set SPM_SRC_REQ (0x818) software request bits
+  8 SW_MAILBOX, 3 DVFS, 4 F26M, 5 INFRA, 1 APSRC, 10 VRF18 one at a time for 300 ms (requests only, register restored),
+  stop at the first DVFSRC/SPM change; then START as before.
