@@ -1166,3 +1166,10 @@ The changes come from the iOS boot in the trace image, not from our install.
   Remaining: direct register writes by Android drivers (modprobe 3.6-4.8 s loads vendor_dlkm modules; clk_disable_unused at 4.68 s),
   or the order of the first DVFSRC step relative to them. Next: pin Android's first DVFSRC step to kernel time in one traced
   boot (lib.sh probe() now keeps the trace timestamp: `ts=` + SPM SYS_TIMER 0x504 maps the DVFSRC record's 13 MHz stamps).
+- **Boot trace 4 (boot 3748cfe5, kit probe timestamps):** SPM SYS_TIMER (0x504) runs at 13.00 MHz; mapped to kernel time
+  with the sp0 probe's timestamps (6.38/20.43/84.01 s). Android's **first two DVFSRC steps: 4.4109 and 4.4112 s** (record
+  entries 0x11a7f0e4/0x11a800e3, the only two until 6.4 s) — **before** the LPM calls (4.503-4.510) and DVFSRC_START (4.517).
+  Secure calls just before: 0xc2000202 (4.301), 0xc200051e ×8 (4.313-4.336), trusted OS 0xbb00ffa4/0xbb000f0b/0x33000000
+  (4.328-4.373); nothing between 4.373 and 4.411. So DVFS starts on Android without any secure call: a driver's register write
+  (DVFSRC request, EMI bandwidth, …) from a module loaded ~4.3-4.41 s by the second-stage modprobe. Next: trace module loads
+  (`trace_event=module:module_load`) in the same boot.
