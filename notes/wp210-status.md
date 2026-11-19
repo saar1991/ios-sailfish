@@ -1150,3 +1150,13 @@ The changes come from the iOS boot in the trace image, not from our install.
   DVFSRC record (13 MHz SYS timer, 0x504): Android's first two transitions at ≈3.9 s kernel time, 2.7 s after INIT and
   just after trace 2 ended (3.69 s). Next: trace past 3.69 s (`androidboot.fastboot.boottrace=enabled` keeps atrace.rc
   from turning tracing off).
+- **Boot trace 3 (boot 6e2a1553, + `androidboot.fastboot.boottrace=enabled`):** complete to 19.1 s, no overrun
+  (`notes/firmware/android-boottrace3-sip.txt`). DVFSRC_INIT 1.105 s, helper queries, then from the second-stage modprobe:
+  0xc2000232 (3.69), 0xc2000528 a1 3 (3.695), audio 0xc2000517, 0xc2000202 (4.419), 0xc200051e ×8 (4.43-4.46),
+  **45 MTK_SIP_MTK_LPM_CONTROL (0xc2000507) calls at 4.638-4.646 s** (`android-lpm-calls-before-start.txt`; decoded with
+  lpm_legacy `lpm_module.h`: 0xDA000000 | user<<16 | uid; user 0 CPU_PM irq-remain list + VALIDATE_PWR_STATE_CTRL + CPC_COMMAND,
+  1 SPM_DBG RES_USER_NAME/DOE_RESOURCE_CTRL/COND_BLOCK/RC_BBLPM, 2 SPM SET_PENDING_IRQ_INIT 0x12e, 3 CPU_PM_LP irq-remain),
+  then **DVFSRC_START at 4.653 s**. Ours never sends any 0x507 call. Android's first DVFSRC record entry ≈ 3.8-4.2 s by the
+  13 MHz SYS timer (uncertain mapping; consistent with right after START).
+- **0249 (kwt, run 44475059088):** `wp210dram=3` = the wp210dram=1 sequence without the SPMI_CON write, plus the 45 LPM calls
+  replayed (Android's order and arguments) right before START at 90 s; START watch logs LEVEL/LAST/DEBUG0/SPM pc/SPMI_CON/PLL.
