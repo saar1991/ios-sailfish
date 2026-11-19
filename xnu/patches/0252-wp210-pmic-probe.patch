@@ -1,0 +1,98 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index b9a3d3b..ae23ebb 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1532,6 +1532,85 @@ wp210_spm_poke(void)
+ 	wp210_dram_flush();
+ }
+ 
++/*
++ * 0252: the MT6363 PMIC (SPMI slave 4), read through the PMIF's software channel 2 as
++ * Android's spmi-mtk-pmif does (mt6xxx_regs: SWINF_2 ACC 0x880, RDATA 0x894, VLD_CLR
++ * 0x8a4, STA 0x8a8; FSM = STA bits 1-3, 0 idle, 6 data valid). Command: ACC =
++ * (3 << 30: extended register read long) | sid << 24 | (bytes-1) << 16 | addr, the same
++ * word LK left there (0xc400001e). Read only. wp210pmic=1: identity (0x08/0x09) and
++ * TOPSTATUS (0x1e, mtk-pmic-keys: power key bit 0, active low) at 25 s, then TOPSTATUS
++ * every 50 ms for 60 s, logging each change: press the power key briefly a few times.
++ */
++static vm_offset_t wp210_pmif_sw;
++static int
++wp210_pmic_read(uint32_t sid, uint32_t addr, uint32_t *val)
++{
++	if (wp210_pmif_sw == 0) {
++		wp210_pmif_sw = ml_io_map(0x1c804000, 0x1000);
++	}
++	volatile uint32_t *r = (volatile uint32_t *)wp210_pmif_sw;
++	int i;
++	for (i = 0; i < 1000 && ((r[0x8a8 / 4] >> 1) & 7) != 0; i++) {
++		delay(10);
++	}
++	if (i == 1000) {
++		return -1;
++	}
++	r[0x880 / 4] = (3u << 30) | (sid << 24) | (0u << 16) | (addr & 0xffff);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	for (i = 0; i < 1000 && ((r[0x8a8 / 4] >> 1) & 7) != 6; i++) {
++		delay(10);
++	}
++	if (i == 1000) {
++		return -2;
++	}
++	*val = r[0x894 / 4] & 0xff;
++	r[0x8a4 / 4] = 1;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	return 0;
++}
++static void
++wp210_pmic_probe(uint64_t up)
++{
++	static int on = -1, stage;
++	static uint32_t last = 0xffff;
++	static uint64_t t_end;
++	if (on < 0) {
++		on = 0;
++		(void)PE_parse_boot_argn("wp210pmic", &on, sizeof(on));
++	}
++	if (!on || up < 25 || stage == 2) {
++		return;
++	}
++	if (stage == 0) {
++		stage = 1;
++		uint32_t a = 0, b = 0, c = 0;
++		int ra = wp210_pmic_read(4, 0x08, &a), rb = wp210_pmic_read(4, 0x09, &b), rc = wp210_pmic_read(4, 0x1e, &c);
++		printf("SWEET PMIC: MT6363 (sid 4) 0x08=%#x (%d) 0x09=%#x (%d) TOPSTATUS 0x1e=%#x (%d); PMIF STA %#x ACC %#x\n",
++		    a, ra, b, rb, c, rc, *(volatile uint32_t *)(wp210_pmif_sw + 0x8a8), *(volatile uint32_t *)(wp210_pmif_sw + 0x880));
++		printf("SWEET PMIC: watching TOPSTATUS for 60 s: press the power key briefly a few times\n");
++		t_end = mach_absolute_time();
++		last = c;
++		/* poll in this call's thread: 1200 x 50 ms */
++		for (int i = 0; i < 1200; i++) {
++			uint32_t v = 0;
++			int r = wp210_pmic_read(4, 0x1e, &v);
++			if (r != 0) {
++				printf("SWEET PMIC: read failed (%d) at %d\n", r, i);
++				break;
++			}
++			if (v != last) {
++				printf("SWEET PMIC: +%llu ms TOPSTATUS %#x -> %#x (power key %s)\n",
++				    perf_ns(mach_absolute_time() - t_end) / 1000000, last, v, (v & 1) ? "up" : "DOWN");
++				last = v;
++			}
++			delay(50000);
++		}
++		printf("SWEET PMIC: watch done\n");
++		stage = 2;
++	}
++}
++
+ static void
+ wp210_bw(const char *label)
+ {
+@@ -2091,6 +2170,7 @@ wp210_mhz_fast(void *arg, wait_result_t result)
+ 		}
+ 		wp210_clktree(up);
+ 		wp210_dram(up);
++		wp210_pmic_probe(up);
+ 		if (up <= 150) {
+ 			printf("SWEET MHZ: %llu s %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu state %u/%u/%u\n",
+ 			    (unsigned long long)up, (unsigned long long)mhz[0], (unsigned long long)mhz[1],
