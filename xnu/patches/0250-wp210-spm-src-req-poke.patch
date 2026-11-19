@@ -1,0 +1,94 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 160a222..d15fc2a 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1379,6 +1379,70 @@ wp210_lpm_replay(void)
+ 	printf("SWEET LPM: replayed 45 calls, %d returned non-zero\n", bad);
+ }
+ 
++/*
++ * 0250: Android's DVFSRC sits in exactly our stuck state (DEBUG0 0x20000, LAST 7,
++ * LEVEL 0) from INIT until the image-processing drivers load at ~4.6 s; then the
++ * SPM serves it. Those drivers power the ISP/IMG blocks, whose resource requests
++ * reach the SPM. Our SPM never sees a resource change (SPM_SRC_REQ keeps LK's
++ * DDREN; REQ_STA_0 0). Raise the SPM's own software requests (SPM_SRC_REQ 0x818,
++ * k6895_spm_reg.h: bit 8 SW_MAILBOX, 3 DVFS, 4 F26M, 5 INFRA, 1 APSRC, 10 VRF18),
++ * one at a time for 300 ms, then put the register back. Only requests are set
++ * (a request keeps a resource on); nothing is released. Stops at the first step.
++ */
++static int
++wp210_dvfsrc_moved(void)
++{
++	return wp210_rd(wp210_dvfsrc, 0x3ac, 0x1000) != 7 || wp210_rd(wp210_dvfsrc, 0x5f0, 0x1000) != 0 ||
++	       wp210_rd(wp210_dvfsrc, 0x29c, 0x1000) != 0x20000;
++}
++static void
++wp210_spm_poke(void)
++{
++	static const int bits[6] = {8, 3, 4, 5, 1, 10};
++	uint32_t orig = wp210_rd(wp210_spm, 0x818, 0x1000);
++	printf("SWEET POKE: SPM_SRC_REQ %#x, REQ_STA_0-5 %#x %#x %#x %#x %#x %#x\n", orig,
++	    wp210_rd(wp210_spm, 0x838, 0x1000), wp210_rd(wp210_spm, 0x83c, 0x1000), wp210_rd(wp210_spm, 0x840, 0x1000),
++	    wp210_rd(wp210_spm, 0x844, 0x1000), wp210_rd(wp210_spm, 0x848, 0x1000), wp210_rd(wp210_spm, 0x84c, 0x1000));
++	for (int b = 0; b < 6; b++) {
++		uint32_t bit = 1u << bits[b];
++		if (orig & bit) {
++			printf("SWEET POKE: bit %d already set, skipped\n", bits[b]);
++			continue;
++		}
++		printf("SWEET POKE: setting SPM_SRC_REQ bit %d\n", bits[b]);
++		wp210_dram_flush();
++		*(volatile uint32_t *)(wp210_spm + 0x818) = orig | bit;
++		__asm__ volatile ("dsb sy" ::: "memory");
++		int moved = 0;
++		uint64_t t0 = mach_absolute_time();
++		for (int i = 0; i < 30; i++) {
++			delay(10000);
++			if (wp210_dvfsrc_moved() || wp210_rd(wp210_spm, 0x194, 0x1000) != 0x6b0) {
++				moved = 1;
++				break;
++			}
++		}
++		printf("SWEET POKE: bit %d +%llu us: SRC_REQ %#x | DVFSRC LEVEL %#x LAST %#x DEBUG0 %#x 5c8 %#x | SPM pc %#x spmi_con %#x lvl %#x/%#x | 904 %#x%s\n",
++		    bits[b], perf_ns(mach_absolute_time() - t0) / 1000, wp210_rd(wp210_spm, 0x818, 0x1000),
++		    wp210_rd(wp210_dvfsrc, 0x5f0, 0x1000), wp210_rd(wp210_dvfsrc, 0x3ac, 0x1000),
++		    wp210_rd(wp210_dvfsrc, 0x29c, 0x1000), wp210_rd(wp210_dvfsrc, 0x5c8, 0x1000),
++		    wp210_rd(wp210_spm, 0x194, 0x1000), wp210_rd(wp210_spm, 0x308, 0x1000),
++		    wp210_rd(wp210_spm, 0x38c, 0x1000), wp210_rd(wp210_spm, 0x390, 0x1000),
++		    wp210_rd(wp210_phy, 0x904, 0x2000), moved ? "  <-- MOVED" : "");
++		*(volatile uint32_t *)(wp210_spm + 0x818) = orig;
++		__asm__ volatile ("dsb sy" ::: "memory");
++		delay(100000);
++		printf("SWEET POKE: bit %d cleared: SRC_REQ %#x LAST %#x DEBUG0 %#x LEVEL %#x pc %#x 904 %#x\n", bits[b],
++		    wp210_rd(wp210_spm, 0x818, 0x1000), wp210_rd(wp210_dvfsrc, 0x3ac, 0x1000),
++		    wp210_rd(wp210_dvfsrc, 0x29c, 0x1000), wp210_rd(wp210_dvfsrc, 0x5f0, 0x1000),
++		    wp210_rd(wp210_spm, 0x194, 0x1000), wp210_rd(wp210_phy, 0x904, 0x2000));
++		if (moved) {
++			break;
++		}
++	}
++	wp210_dram_flush();
++}
++
+ static void
+ wp210_bw(const char *label)
+ {
+@@ -1579,6 +1643,9 @@ wp210_dram(uint64_t up)
+ 		if (dvstart == 0 || dvfsrc_init == 0) {
+ 			printf("SWEET DRAM: DVFSRC_START skipped\n");
+ 		} else {
++			if (on == 4) {
++				wp210_spm_poke();
++			}
+ 			if (on == 3) {
+ 				printf("SWEET DRAM: about to replay Android's 45 LPM calls before START\n");
+ 				wp210_dram_flush();
+@@ -1708,7 +1775,7 @@ wp210_dram(uint64_t up)
+ 		 * (slave 0, from LK) when INIT runs: set it first, as Android has it.
+ 		 * wp210spmi=0 skips.
+ 		 */
+-		int spmi = on == 3 ? 0 : 1;      /* 0249: wp210dram=3 is Android's sequence, no SPMI_CON write */
++		int spmi = (on == 3 || on == 4) ? 0 : 1;      /* 0249: wp210dram=3 is Android's sequence, no SPMI_CON write */
+ 		(void)PE_parse_boot_argn("wp210spmi", &spmi, sizeof(spmi));
+ 		if (spmi) {
+ 			if (wp210_spm == 0) {
