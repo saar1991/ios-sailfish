@@ -962,7 +962,7 @@ Goal: compare softpipe + fast path (today) with llvmpipe (shaders compiled to AA
 5. **Control Center background:** log where CA asks for the missing texture function 0x3d, then symbolicate the caller with ipsw.
 6. **Lower priority:**
    - the 0x502 setup errors
-   - the launchd and mediaserverd spin (about 70% and 47% CPU all the time)
+   - ~~the launchd and mediaserverd spin~~ fixed by 0222 (`sweetdeny`); 0251 idle TOP 14-17% (kernel_task 7-9%, backboardd 5-6%)
    - the A55 MHz reading
    - llvmpipe or a multi-threaded rasterizer as the long-term renderer (the 17.2 MB installed size limit applies)
 
@@ -1233,3 +1233,6 @@ The changes come from the iOS boot in the trace image, not from our install.
   rounds 2-3 612/620 (643). Losses are on the big animations ("home" 27 vs 33, 54-57 vs 60, cc_up 10-13 vs 15); first-frame
   times equal. A55s at 1999 MHz. **Still ~3.5% behind 5 cores: stay on 5 cores.** Faster RAM didn't change the 5-core frame
   count either (0249 slow RAM 984, 0251 986): this test is bounded by the animations / llvmpipe work split, not by DRAM.
+- **Idle CPU check (0251 log, 2026-11-19):** the launchd/mediaserverd spin is gone since 0222 (`sweetdeny=BTAudioHALPlugin.driver`,
+  `SWEET DENY`); neither appears in any `SWEET TOP` line. Idle total 14-17% (kernel_task 7-9%: our own sampling and log
+  threads; backboardd 5-6%). Busy: backboardd 64-137% (the renderer), Spotlight up to 41%.
