@@ -1185,3 +1185,6 @@ The changes come from the iOS boot in the trace image, not from our install.
 - **Boot trace 6 (boot 7b4a776c):** the req probe's guessed offsets were wrong (driver_data +0x78 reads 0: GKI's struct
   device layout differs), and without trace_buf_size the default buffer overran (first-stage events lost). kp10.sh finds the
   real offsets on live Android (scan the device struct for a pointer whose struct holds the DVFSRC ioremap from the helper).
+- **kp10/kp11 (live Android):** GKI struct device: kobject 0x60 (4 KABI words), driver_data at **+0x98**; mtk_dvfsrc's struct
+  holds its own DVFSRC ioremap at **+0x40** (0x290 reads 0x60400020 through it; the helper maps the DVFSRC separately, at a
+  different address each boot). Boot probe chain: `+0xREG(+0x40(+0x98(%x0)))` on mtk_dvfsrc_send_request.
