@@ -14,7 +14,7 @@ notes are kept under "History" at the end.
 - **Work in progress:** CPU fast paths in the shim for CA's simple draws (`SGLFAST`).
   - The first version (bb529ae) matched softpipe exactly but did not raise the frame rate: it covered too little, and its loop was slow.
   - **eed85c5** widens it (half-float colours, straight-alpha blending) and makes the loop much faster. It is pushed and waits for the CI build.
-- **Also open:** Control Center draws without its background (lead: CA texture function 0x3d is missing).
+- ~~**Also open:** Control Center draws without its background~~ fixed in later runs (see wp210-a55-step run).
 
 ## Phone state now
 
@@ -959,9 +959,9 @@ Goal: compare softpipe + fast path (today) with llvmpipe (shaders compiled to AA
    - the noise-dither variants of copy and tint
    - draws of several rectangles at once
    - the ARGB-swizzled textures
-5. **Control Center background:** log where CA asks for the missing texture function 0x3d, then symbolicate the caller with ipsw.
+5. ~~Control Center background~~: drawn correctly since the wp210-a55-step run (blurred home screen) and in the llvmpipe runs; texture function 0x3d never needed supplying. Recheck on 0251.
 6. **Lower priority:**
-   - the 0x502 setup errors
+   - ~~the 0x502 setup errors~~ gone since shim 2e46631 (stale glGetError)
    - ~~the launchd and mediaserverd spin~~ fixed by 0222 (`sweetdeny`); 0251 idle TOP 14-17% (kernel_task 7-9%, backboardd 5-6%)
    - the A55 MHz reading
    - llvmpipe or a multi-threaded rasterizer as the long-term renderer (the 17.2 MB installed size limit applies)
@@ -1236,3 +1236,7 @@ The changes come from the iOS boot in the trace image, not from our install.
 - **Idle CPU check (0251 log, 2026-11-19):** the launchd/mediaserverd spin is gone since 0222 (`sweetdeny=BTAudioHALPlugin.driver`,
   `SWEET DENY`); neither appears in any `SWEET TOP` line. Idle total 14-17% (kernel_task 7-9%: our own sampling and log
   threads; backboardd 5-6%). Busy: backboardd 64-137% (the renderer), Spotlight up to 41%.
+- **Stale list cleaned (2026-11-19):** the 'Next steps' section predates many fixes: the launchd/mediaserverd spin (0222),
+  the 0x502 errors (2e46631), Control Centre's background (a55-step run) and compile stalls (llvmpipe disk shader cache) are done.
+  Really open: idle power/heat with DRAM held at 5500; Wi-Fi (`sailfishwlan=0`), USB (`sweetusb=0`), battery (`sweetbattery=0`),
+  buttons via the iOS key path (`sweetkeys=0`), audio, camera, cellular; 6400 Mbps.
