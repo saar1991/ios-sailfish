@@ -1108,3 +1108,18 @@ The changes come from the iOS boot in the trace image, not from our install.
   IRQ_EVENT_EN_0 0x420=0x80000000.
 - Patch 0247 dumps the same blocks on our kernel before/after DVFSRC_INIT (`SWEET PMIF:` / `SWEET SPMIMST:`);
   compare with `notes/tools/android/pmifcmp.py kp6.txt sweetlog.txt`.
+- **0247 result (log 6ab44313, kwt c9f6d7b, run 44394786623):** PMIF vs Android (`notes/firmware/pmif-diff-0247-vs-android.txt`):
+  every enable/config word matches (INIT_DONE, INF_EN 0x7effff, ARB_EN 0x7affff, CMDISSUE_EN, TIMER, SPI_MODE 0x225d,
+  slp-protect 0x3f0). The 84 differing words are history/status: the command record ring 0x4f8-0x768, last-command
+  words (0x054/0x13c/0x388/0x3c0/0x3d4), software channels 0x800-0x8d4 (LK's leftovers), IRQ enable 0x420 (Linux driver).
+  Android's record ring holds **writes to slave 4 register 0x24e (VCORE) from a hardware channel** (0x7e40024e / 0x6640024e,
+  the SPM command table's 0x024e00xx); ours holds only polling reads (0x1b45/0x1449/0x144d), the same ones Android has.
+  SPMI master: identical except SLV_7_4_EINT (0x024) = 4 (slave 4 interrupt pending; Android's driver clears it at probe).
+  **The PMIF is set up like Android's; our SPM simply never sends a VCORE command.** PMIF ruled out.
+- SPM vs Android **at 5.57 s** (`full-5.57-first.txt`, DVFS already running), timers skipped: 36 differ. Besides power
+  domains and CPU power: SPM_PWRAP_CON 0x300 = 3 on Android at 5.57 s (0 when idle: a PMIC transaction in progress),
+  DVS_DFS_LEVEL/DVFS_LEVEL/OPP moving on Android, SYS_TIMER_LATCH all zero on ours: **the SPM firmware has handled no event since boot.**
+- The kp3 SIP trace started after DVFS was already running (post-fs-data); the kernel's early calls (lpm/spm/dvfsrc module init,
+  first ~5 s) were never seen. **kp7:** trace them from the first instruction with a boot-time kprobe
+  (`kprobe_event=p:wp210b/smc,__arm_smccc_smc,...` on the command line of a copy of boot_b booted with `fastboot boot`,
+  nothing flashed); a Magisk post-fs-data hook saves the trace, dmesg and /proc/bootprof.
