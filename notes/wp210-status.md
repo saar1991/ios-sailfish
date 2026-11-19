@@ -1142,3 +1142,11 @@ The changes come from the iOS boot in the trace image, not from our install.
 - **0248 (kwt, run 44466407051):** `wp210dram=2` = INIT from SweetPlatformExpert::start (as early as our kernel can),
   2 s watch of DVFSRC/SPM/PLL (`SWEET EARLY:` lines), no INIT at 65 s; the rest of wp210dram=1 unchanged.
   Args: args-dram.txt with `wp210dram=2` (same length).
+- **0248 result (log 920c3063):** INIT from the platform expert at 18.7 s (counter time): flag0 0x80f00 before
+  (bits 8-11 = DVS/DFS disabled, LK's state) → 0x2080000 after (ATF's INIT enables them, as on Android); 3 us after INIT:
+  DEBUG0 0x20000, 0x5c8 1, LAST 7, and nothing else for 2 s or ever; SPMI_CON 0x83. **Timing of INIT ruled out.**
+- Android (boot c504336a): SPM_PMIC_SPMI_CON 0x17 (slave 5) at 5.6 s, 0x13 (slave 4) later: **the SPM firmware itself
+  rewrites SPMI_CON per PMIC** while it runs DVFS; ours stays at LK's 0x83 because our SPM never runs its DVFS code.
+  DVFSRC record (13 MHz SYS timer, 0x504): Android's first two transitions at ≈3.9 s kernel time, 2.7 s after INIT and
+  just after trace 2 ended (3.69 s). Next: trace past 3.69 s (`androidboot.fastboot.boottrace=enabled` keeps atrace.rc
+  from turning tracing off).
