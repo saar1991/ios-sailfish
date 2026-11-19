@@ -1133,3 +1133,12 @@ The changes come from the iOS boot in the trace image, not from our install.
   and modules start loading at 0.97 s (bootprof): something before 1.375 s is missing (buffer reset or overflow of the
   PSCI flood; CPUs 5/6 start at 1.61/1.52, overwritten). dmesg starts at 4.86 s (a warning flood filled it).
   Next: same with `cpuidle.off=1` (no PSCI flood) and the ring-buffer stats saved (kp9 hook).
+- **Boot trace 2 (boot c504336a, `cpuidle.off=1`):** complete (ring-buffer overrun 0 on every CPU, 1570 entries, first
+  event 0.807 s, tracing off at 3.69 s by atrace.rc): `notes/firmware/android-boottrace2-sip.txt`. Secure calls in order:
+  hwrng (0.81 s); **DVFSRC_INIT 0xc2000506 a1=0 a2=0 a3=0 at 1.165 s** (identical to ours); trusted OS 0xbb00ffa4/a5/a7
+  (memory sharing); display 0xc2000514/518; the dvfsrc helper's queries at 1.725 s (a1 2, 3, 4×32, 5×36, 7); UFS. Nothing
+  else, no DVFSRC_START before 3.69 s. **Android's kernel sends no extra secure call before or after INIT.** Remaining
+  differences: when INIT runs (Android 1.16 s of kernel time, ours 65 s) and direct register writes by kernel drivers.
+- **0248 (kwt, run 44466407051):** `wp210dram=2` = INIT from SweetPlatformExpert::start (as early as our kernel can),
+  2 s watch of DVFSRC/SPM/PLL (`SWEET EARLY:` lines), no INIT at 65 s; the rest of wp210dram=1 unchanged.
+  Args: args-dram.txt with `wp210dram=2` (same length).
