@@ -1196,3 +1196,9 @@ The changes come from the iOS boot in the trace image, not from our install.
   **before** the LPM calls (4.634) and START (4.646). By 7.47 s LAST 4-5, LEVEL 3, 0x5c8 8.
   So INIT leaves the same stuck request on both; on Android something in the camera/imgsys module loads releases it.
   Next: clk_prepare/clk_enable/regulator events + module loads in the same boot to see what those modules switch on.
+- **Boot trace 8 (boot ec7cc2df, + clk_prepare/enable, regulator, module_load):** first step **4.73723 s**; window
+  (`android-boottrace8-window-4.5-4.8.txt`): mtk_imgsys_v4l2 loads 4.7164 → its BW/peak/HRT requests 4.7212 (DVFSRC still
+  stuck) → **step 4.7372** → mtk_aie loaded 4.7370 then enables vbuck3, imgpll, img/ipe clocks from 4.7379 (after the step).
+  No clock enable or regulator enable in the 16 ms before the step: the trigger is something not traced (clock disable,
+  runtime PM / power domain, or a co-processor). Delay request→step: 10-28 ms over three boots. Next: + rpm resume/suspend,
+  clk disable/unprepare, regulator disable.
