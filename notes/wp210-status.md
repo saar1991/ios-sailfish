@@ -1160,3 +1160,9 @@ The changes come from the iOS boot in the trace image, not from our install.
   13 MHz SYS timer (uncertain mapping; consistent with right after START).
 - **0249 (kwt, run 44475059088):** `wp210dram=3` = the wp210dram=1 sequence without the SPMI_CON write, plus the 45 LPM calls
   replayed (Android's order and arguments) right before START at 90 s; START watch logs LEVEL/LAST/DEBUG0/SPM pc/SPMI_CON/PLL.
+- **0249 result (log e64e673e):** all 45 LPM calls returned a0 0; nothing moved: SPM pc 0x6b0, SPMI_CON 0x83, flag0 0x2080000,
+  DVFSRC LEVEL 0 / LAST 7 / DEBUG0 0x20000 before and after the replay and for 2 s after START; PLL 0x76000002; 23.4 GB/s.
+  **Every secure call Android makes up to START has now been replayed: the blocker is not a secure call.**
+  Remaining: direct register writes by Android drivers (modprobe 3.6-4.8 s loads vendor_dlkm modules; clk_disable_unused at 4.68 s),
+  or the order of the first DVFSRC step relative to them. Next: pin Android's first DVFSRC step to kernel time in one traced
+  boot (lib.sh probe() now keeps the trace timestamp: `ts=` + SPM SYS_TIMER 0x504 maps the DVFSRC record's 13 MHz stamps).

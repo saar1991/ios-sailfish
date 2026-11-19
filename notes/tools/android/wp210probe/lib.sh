@@ -27,7 +27,7 @@ probe() {
   echo 1 > $T/instances/wp210r/events/wp210/$1/enable
   cat "$H" > /dev/null
   echo 0 > $T/instances/wp210r/events/wp210/$1/enable
-  grep " $1: " $T/instances/wp210r/trace | head -1 | sed 's/.*) //'
+  grep " $1: " $T/instances/wp210r/trace | head -1 | sed -E 's/^.* ([0-9]+\.[0-9]+): [^ ]+ \([^)]*\) /ts=\1 /'
   echo "-:wp210/$1" >> $T/kprobe_events
 }
 # which struct word is the DVFSRC and which the SPM (static registers: DVFSRC 0x290, SPM 0x0)
