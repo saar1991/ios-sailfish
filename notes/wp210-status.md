@@ -1182,3 +1182,6 @@ The changes come from the iOS boot in the trace image, not from our install.
   and mtk_lpm (4.681) / mtk_dvfsrc_start (4.693). In boot 3748cfe5 it was 4.411 s; no fixed precursor yet.
   Next: sample DVFSRC registers at each request (struct offsets guessed: driver_data +0x78, regs +0x40/+0x48, checked by
   V_MODE 0x290 = 0x60400020) to see whether Android's DVFSRC also sits at DEBUG0 0x20000 from INIT until the first step.
+- **Boot trace 6 (boot 7b4a776c):** the req probe's guessed offsets were wrong (driver_data +0x78 reads 0: GKI's struct
+  device layout differs), and without trace_buf_size the default buffer overran (first-stage events lost). kp10.sh finds the
+  real offsets on live Android (scan the device struct for a pointer whose struct holds the DVFSRC ioremap from the helper).
