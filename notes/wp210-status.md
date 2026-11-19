@@ -1228,3 +1228,8 @@ The changes come from the iOS boot in the trace image, not from our install.
 - **Default now: kernel 0251 + `args-default.txt`** (`wp210-boot-0251.img`). `wp210ddr=0` turns the DRAM switch off.
 - Open: 6400 Mbps (level 8 gives the 5500 step; Android also tops out at 5500 under load); keeping DVFS dynamic (we hold
   5500 after one step, no scaling down at idle: costs some power); the 1-core figure moved little (19.7, latency-bound).
+- **8 cores again with the DRAM fix (kernel 0251 + `args-8core-slow.txt`, logs first/second, 2026-11-19):** DRAM switch ran
+  (5486 Mbps); bandwidth 1 big core 25.0/23.9 GB/s, 4 big 33.8/33.6. Frames, 30 steps: **944 and 952** (5-core 0251: **986**);
+  rounds 2-3 612/620 (643). Losses are on the big animations ("home" 27 vs 33, 54-57 vs 60, cc_up 10-13 vs 15); first-frame
+  times equal. A55s at 1999 MHz. **Still ~3.5% behind 5 cores: stay on 5 cores.** Faster RAM didn't change the 5-core frame
+  count either (0249 slow RAM 984, 0251 986): this test is bounded by the animations / llvmpipe work split, not by DRAM.
