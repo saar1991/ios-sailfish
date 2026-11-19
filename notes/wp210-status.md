@@ -1188,3 +1188,11 @@ The changes come from the iOS boot in the trace image, not from our install.
 - **kp10/kp11 (live Android):** GKI struct device: kobject 0x60 (4 KABI words), driver_data at **+0x98**; mtk_dvfsrc's struct
   holds its own DVFSRC ioremap at **+0x40** (0x290 reads 0x60400020 through it; the helper maps the DVFSRC separately, at a
   different address each boot). Boot probe chain: `+0xREG(+0x40(+0x98(%x0)))` on mtk_dvfsrc_send_request.
+- **Boot trace 7 (boot 0b43e338, DVFSRC read at every request; `android-boottrace7-dvfsrc-at-requests.txt`):**
+  **Android's DVFSRC is in exactly our state from INIT (1.199 s) to at least 4.585 s**: BASIC 0x65ac02ab, DEBUG0 0x20000,
+  LAST 7, 0x5c8 1, LEVEL 0 (SW_REQ 0x40/0x20/0 from VCORE requests, 0x6000 after init's DRAM request at 3.39 s).
+  First step at **4.5952 s** (record, 13.006 MHz map), 10 ms after modprobe's BW/peak/HRT requests (4.585, the camera
+  modules; in boot ebd99ec7: requests 4.631 → step 4.6586 after mtk_imgsys_v4l2/mtk_aie/camera_dpe_isp70 loaded),
+  **before** the LPM calls (4.634) and START (4.646). By 7.47 s LAST 4-5, LEVEL 3, 0x5c8 8.
+  So INIT leaves the same stuck request on both; on Android something in the camera/imgsys module loads releases it.
+  Next: clk_prepare/clk_enable/regulator events + module loads in the same boot to see what those modules switch on.
