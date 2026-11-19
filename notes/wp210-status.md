@@ -1221,3 +1221,10 @@ The changes come from the iOS boot in the trace image, not from our install.
 - **0251 (run 44491297895):** the fix as a default (`wp210ddr=1`, runs only when wp210dram=0): at the platform expert's start
   DVFSRC_INIT, DVFSRC SW_REQ DRAM floor (`wp210ddrlvl`, default 8), SPM_SRC_REQ bit 3 until the PLL changes (≤500 ms), bit 3
   restored (`wp210ddrhold=1` keeps it), `SWEET DDR:` line with Mbps before/after; a bandwidth reading at 40 s.
+- **0251 result (log 73ab5d3e, args-default.txt): works on a normal boot.** At the platform expert's start:
+  `INIT a0 0, floor level 8, SPM DVFS request pulsed: DRAM 3068 -> 5486 Mbps (904 0x76000002 -> 0x69800002) after 22 ms;
+  SPM pc 0x2118 then 0x6b0`. Bandwidth at 40 s: 1 big core 19.7, **4 big cores 32.9 GB/s** (was 23.6). Frame copy
+  0.36-0.39 ms staged. CPUs 1999/3003/3003/2999/3095 MHz. Stable to the end of the log.
+- **Default now: kernel 0251 + `args-default.txt`** (`wp210-boot-0251.img`). `wp210ddr=0` turns the DRAM switch off.
+- Open: 6400 Mbps (level 8 gives the 5500 step; Android also tops out at 5500 under load); keeping DVFS dynamic (we hold
+  5500 after one step, no scaling down at idle: costs some power); the 1-core figure moved little (19.7, latency-bound).
