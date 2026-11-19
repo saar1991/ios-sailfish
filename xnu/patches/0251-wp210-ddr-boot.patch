@@ -1,0 +1,124 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index d15fc2a..b9a3d3b 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1243,12 +1243,101 @@ bw_round(int n)
+  * expert's start (called from SweetPlatformExpert::start), a 2 s watch of the
+  * DVFSRC and SPM, and no INIT at 65 s (the rest of wp210dram=1 unchanged).
+  */
++/*
++ * 0251: the RAM speed fix, on every boot (wp210ddr=1, default). 0250 found it:
++ * after DVFSRC_INIT the DVFSRC holds a request the SPM never serves (Android
++ * sits in the same state until its image drivers power up, ~4.6 s). Raising the
++ * SPM's own DVFS request (SPM_SRC_REQ 0x818 bit 3, REG_SPM_DVFS_REQ) wakes the
++ * SPM firmware (pc 0x6b0 -> 0x2110): it serves the request within 11 ms and the
++ * DRAM went from 3068 to 5486 Mbps (sdmpcw 0x7600 -> 0x6980, fbksel 1), 4-core
++ * read bandwidth 23.6 -> 32.7 GB/s. Here: INIT, the DRAM floor (DVFSRC SW_REQ
++ * 0x18 bits 12-15 = wp210ddrlvl, default 8, as in 0250), then bit 3 until the
++ * PLL changes (at most 500 ms), then bit 3 back (wp210ddrhold=1 keeps it).
++ * No DVFSRC_START: after START the DVFSRC queues a new request the SPM again
++ * never serves (the DRAM stays where it is, so it gains nothing).
++ */
++static int wp210_ddr_result = -1;       /* -1 not run, 0 no change, 1 switched */
++static uint32_t
++wp210_ddr_mbps(uint32_t p904, uint32_t p908, uint32_t p90c)
++{
++	uint32_t prediv = (p908 >> 18) & 3, posdiv = p908 & 7, fbksel = (p90c >> 6) & 1;
++	uint64_t f = ((uint64_t)(52 >> prediv) * (p904 >> 16)) >> 8;   /* crystal 52, sdmpcw 8.8 */
++	return (uint32_t)(((f >> posdiv) << fbksel));
++}
++static void
++wp210_ddr_boot(void)
++{
++	int ddr = 1, lvl = 8, hold = 0;
++	(void)PE_parse_boot_argn("wp210ddr", &ddr, sizeof(ddr));
++	(void)PE_parse_boot_argn("wp210ddrlvl", &lvl, sizeof(lvl));
++	(void)PE_parse_boot_argn("wp210ddrhold", &hold, sizeof(hold));
++	if (!ddr) {
++		printf("SWEET DDR: off (wp210ddr=0)\n");
++		return;
++	}
++	if (wp210_dvfsrc == 0) {
++		wp210_dvfsrc = ml_io_map(WP210_DVFSRC_PA, 0x1000);
++	}
++	if (wp210_spm == 0) {
++		wp210_spm = ml_io_map(WP210_DVFSRC_SPM_PA, 0x1000);
++	}
++	if (wp210_phy == 0) {
++		wp210_phy = ml_io_map(WP210_DDRPHY_AO0_PA, 0x2000);
++	}
++	uint32_t p0 = wp210_rd(wp210_phy, 0x904, 0x2000);
++	uint32_t m0 = wp210_ddr_mbps(p0, wp210_rd(wp210_phy, 0x908, 0x2000), wp210_rd(wp210_phy, 0x90c, 0x2000));
++	register uint64_t x0 __asm__("x0") = 0xc2000506ull;
++	register uint64_t x1 __asm__("x1") = 0;     /* MTK_SIP_DVFSRC_INIT */
++	register uint64_t x2 __asm__("x2") = 0;
++	register uint64_t x3 __asm__("x3") = 0;
++	__asm__ volatile ("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3) : :
++	    "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14",
++	    "x15", "x16", "x17", "memory");
++	uint64_t init_a0 = x0;
++	if (lvl > 0 && lvl < 16) {
++		uint32_t sw = wp210_rd(wp210_dvfsrc, 0x18, 0x1000);
++		*(volatile uint32_t *)(wp210_dvfsrc + 0x18) = (sw & ~0xf000u) | ((uint32_t)lvl << 12);
++		__asm__ volatile ("dsb sy" ::: "memory");
++	}
++	delay(1000);
++	uint32_t req = wp210_rd(wp210_spm, 0x818, 0x1000);
++	*(volatile uint32_t *)(wp210_spm + 0x818) = req | (1u << 3);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	uint64_t t0 = mach_absolute_time();
++	uint32_t p = p0;
++	int i;
++	for (i = 0; i < 500 && p == p0; i++) {
++		delay(1000);
++		p = wp210_rd(wp210_phy, 0x904, 0x2000);
++	}
++	delay(20000);           /* let the SPM finish the step */
++	uint64_t us = perf_ns(mach_absolute_time() - t0) / 1000;
++	uint32_t pc = wp210_rd(wp210_spm, 0x194, 0x1000);
++	if (!hold) {
++		*(volatile uint32_t *)(wp210_spm + 0x818) = req;
++		__asm__ volatile ("dsb sy" ::: "memory");
++	}
++	delay(20000);
++	p = wp210_rd(wp210_phy, 0x904, 0x2000);
++	uint32_t m1 = wp210_ddr_mbps(p, wp210_rd(wp210_phy, 0x908, 0x2000), wp210_rd(wp210_phy, 0x90c, 0x2000));
++	wp210_ddr_result = p != p0;
++	printf("SWEET DDR: INIT a0 %#llx, floor level %d, SPM DVFS request %s: DRAM %u -> %u Mbps (904 %#x -> %#x) after %llu us; "
++	    "SPM pc %#x then %#x, DVFSRC LEVEL %#x LAST %#x DEBUG0 %#x%s\n",
++	    init_a0, lvl, hold ? "held" : "pulsed", m0, m1, p0, p, us, pc, wp210_rd(wp210_spm, 0x194, 0x1000),
++	    wp210_rd(wp210_dvfsrc, 0x5f0, 0x1000), wp210_rd(wp210_dvfsrc, 0x3ac, 0x1000), wp210_rd(wp210_dvfsrc, 0x29c, 0x1000),
++	    p != p0 ? "" : "  (no change)");
++}
++
+ void wp210_dvfsrc_early(void);
+ void
+ wp210_dvfsrc_early(void)
+ {
+ 	int on = 0;
+ 	(void)PE_parse_boot_argn("wp210dram", &on, sizeof(on));
++	if (on == 0) {
++		wp210_ddr_boot();
++		return;
++	}
+ 	if (on != 2) {
+ 		return;
+ 	}
+@@ -1489,7 +1578,16 @@ wp210_dram(uint64_t up)
+ 		(void)PE_parse_boot_argn("wp210dramat", &at, sizeof(at));
+ 		printf("SWEET DRAM: wp210dram=%d from %d s\n", on, at);
+ 	}
+-	if (!on || up < (uint64_t)at) {
++	if (!on) {
++		/* 0251: one bandwidth reading after the boot-time DRAM switch */
++		static int bw_done;
++		if (wp210_ddr_result >= 0 && !bw_done && up >= 40) {
++			bw_done = 1;
++			wp210_bw(wp210_ddr_result ? "after the boot DRAM switch" : "boot DRAM switch had no effect");
++		}
++		return;
++	}
++	if (up < (uint64_t)at) {
+ 		return;
+ 	}
+ 	if (stage == 0) {
