@@ -1247,3 +1247,11 @@ The changes come from the iOS boot in the trace image, not from our install.
   Hardware from ProjectConfig: Wi-Fi/BT CONSYS (MTK_WLAN_CHIP CONSYS_MT6893, BT MTK_CONSYS_MT6895), gauge version 30,
   smart PA Richtek RT5512, 2 mics / 1 speaker. Device tree: charger/gauge/TCPC **MT6375 at I2C 0x34** (mt6375-chg, -gauge,
   -tcpc, -adc, battery profiles t0-t4: OCV tables), power key on **mt6363-keys** (hw-pwrkey 8), USB `mt6895-ssusb`.
+- **All 9 firmware parts (2026-11-19):** total 3,679,564,704 bytes = the 7z's size. Decoded in the sandbox (/home/claude/fw):
+  super.img (Android sparse, 12 GB, LP metadata) → vendor_a (ext4, 1.86 GB), **vendor_dlkm_a** (ext4, 208 modules),
+  odm_dlkm_a; vendor_boot.img v4 → lz4-legacy ramdisk (pure-Python decoder fw/lz4leg.py) → **198 first-stage modules**
+  (mtk-pmic-keys, spmi-mtk-pmif, mt6375{,-battery,-charger,-adc,-auxadc}, tcpc_mt6375, mtu3, xhci-mtk-hcd, i2c-mt65xx, …)
+  and vendor_boot.dtb; also vbmeta*, tee, vcp, userdata.img. These are the exact 5.10 driver binaries of this phone.
+- **0252 (run 44501037198):** `wp210pmic=1`: MT6363 (SPMI sid 4) reads through PMIF SWINF channel 2 (ACC 0x880, RDATA 0x894,
+  VLD_CLR 0x8a4, STA 0x8a8; command (3<<30)|sid<<24|addr, as Android and as LK left it: 0xc400001e). At 25 s: 0x08/0x09
+  (identity) and TOPSTATUS 0x1e (mtk-pmic-keys: power key bit 0, active low), then TOPSTATUS every 50 ms for 60 s.
