@@ -1173,3 +1173,12 @@ The changes come from the iOS boot in the trace image, not from our install.
   (4.328-4.373); nothing between 4.373 and 4.411. So DVFS starts on Android without any secure call: a driver's register write
   (DVFSRC request, EMI bandwidth, …) from a module loaded ~4.3-4.41 s by the second-stage modprobe. Next: trace module loads
   (`trace_event=module:module_load`) in the same boot.
+- **Boot trace 5 (boot ebd99ec7, + module_load events + kprobe on mtk_dvfsrc_send_request):**
+  `notes/firmware/android-boottrace5-modules-dvfsrc-req.txt`. First-stage modules before mtk_dvfsrc (1.231 s): clk_mt6895*,
+  mtk_dcm/mt6895_dcm, pmic_wrap, spmi, regulators, mtk_vmm_spm, mtk_scpsys*, clk/pd checkers, **mtk_dramc (1.204)**.
+  INIT 1.2314; DVFSRC requests (cmd: 0 BW, 2 VCORE, 3 DRAM, 4 HRT BW, 6 PEAK BW): 1.2346 (6/0/4 = 0), 1.283 VCORE 4,
+  1.481-1.483 (VCORE 4/2/0, HRT 0xceafe), 3.465 DRAM 6 (init-381, second-stage init), 4.631 (6/0/4 0xceafe, modprobe), 7.65 …
+  **First DVFSRC step this boot: 4.6586 s** (13.009 MHz map), between camera modules (mtk_aie 4.647, camera_dpe_isp70 4.655)
+  and mtk_lpm (4.681) / mtk_dvfsrc_start (4.693). In boot 3748cfe5 it was 4.411 s; no fixed precursor yet.
+  Next: sample DVFSRC registers at each request (struct offsets guessed: driver_data +0x78, regs +0x40/+0x48, checked by
+  V_MODE 0x290 = 0x60400020) to see whether Android's DVFSRC also sits at DEBUG0 0x20000 from INIT until the first step.

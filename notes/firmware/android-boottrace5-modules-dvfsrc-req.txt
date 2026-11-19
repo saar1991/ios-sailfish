@@ -1,0 +1,758 @@
+cmdline stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=protected cgroup_disable=pressure cgroup.memory=nokmem  console=tty0 root=/dev/ram rcupdate.rcu_expedited=1 transparent_hugepage=never 8250.nr_uarts=2 vmalloc=400M swiotlb=noforce firmware_class.path=/vendor/firmware console=tty0 root=/dev/ram loop.max_part=7 mtk_printk_ctrl.disable_uart=1 ramoops.mem_address=0x48090000 ramoops.mem_size=0xe0000 ramoops.pmsg_size=0x10000 ramoops.console_size=0x40000 usb2jtag_mode=0 root=/dev/ram xxxxxxxxxxxxxxxxxxxxxxxxxxxx cpuidle.off=1 trace_event=module:module_load kprobe_event=p:wp210b/smc,__arm_smccc_smc,a0=%x0:x64,a1=%x1:x64,a2=%x2:x64,a3=%x3:x64,a4=%x4:x64,a5=%x5:x64;p:wp210b/req,mtk_dvfsrc:mtk_dvfsrc_send_request,cmd=%x1:u32,data=%x2:x64 trace_buf_size=8M bootopt=64S3,32N2,64N2 arm64.nomte bootconfig
+            init-1       [005] ....     0.975161: module_load: mkp 
+            init-1       [004] ....     1.026716: module_load: bootprof 
+            init-1       [004] ....     1.027337: module_load: dbgtop_drm 
+            init-1       [006] ....     1.028619: module_load: irq_dbg 
+            init-1       [004] ....     1.030153: module_load: mrdump 
+            init-1       [006] ....     1.030991: module_load: mtk_sync 
+            init-1       [004] ....     1.031358: module_load: mtk_disp_notify 
+            init-1       [006] ....     1.032447: module_load: aee_aed 
+            init-1       [004] ....     1.033354: module_load: monitor_hang 
+            init-1       [004] ....     1.034215: module_load: aee_hangdet 
+            init-1       [006] ....     1.035012: module_load: mtk_printk_ctrl 
+            init-1       [004] ....     1.035543: module_load: log_store 
+            init-1       [004] ....     1.036334: module_load: nvmem_mtk_devinfo 
+            init-1       [004] ....     1.037551: module_load: mtk_wdt 
+            init-1       [004] ....     1.038538: module_load: sec_rng 
+            init-1       [004] ....     1.040579: module_load: pinctrl_mtk_v2 
+            init-1       [004] ....     1.041462: module_load: pinctrl_mt6895 
+            init-1       [004] ....     1.044333: module_load: pinctrl_mtk_common_v2_debug 
+            init-1       [004] ....     1.045935: module_load: clk_common 
+            init-1       [004] ....     1.046615: module_load: clk_mt6895 
+            init-1       [004] ....     1.117131: module_load: clk_mt6895_adsp 
+            init-1       [004] ....     1.120035: module_load: clk_mt6895_cam 
+            init-1       [004] ....     1.125584: module_load: clk_mt6895_img 
+            init-1       [004] ....     1.129117: module_load: clk_mt6895_mmsys 
+            init-1       [005] ....     1.140590: module_load: clk_mt6895_peri 
+            init-1       [005] ....     1.146889: module_load: clk_mt6895_bus 
+            init-1       [005] ....     1.148908: module_load: clk_mt6895_mdpsys 
+            init-1       [005] ....     1.154483: module_load: clk_mt6895_vcodec 
+            init-1       [005] ....     1.158381: module_load: clk_mt6895_ccu 
+            init-1       [005] ....     1.159680: module_load: mtk_dcm 
+            init-1       [005] ....     1.160250: module_load: mt6895_dcm 
+            init-1       [005] ....     1.161232: module_load: mtk_pmic_wrap 
+            init-1       [005] ....     1.162916: module_load: regmap_spmi 
+            init-1       [005] ....     1.163281: module_load: mtk_spmi_pmic 
+            init-1       [005] ....     1.164088: module_load: spmi_mtk_pmif 
+            init-1       [005] ....     1.168281: module_load: mt6315_regulator 
+            init-1       [006] ....     1.170787: module_load: mt6363_regulator 
+            init-1       [006] ....     1.184172: module_load: mtk_vmm_spm 
+            init-1       [006] ....     1.185336: module_load: mtk_scpsys 
+            init-1       [006] ....     1.186541: module_load: mtk_scpsys_mt6895 
+            init-1       [004] ....     1.191106: module_load: mtk_scpsys_bringup 
+            init-1       [006] ....     1.192414: module_load: clk_bringup 
+            init-1       [004] ....     1.194094: module_load: device_apc_common 
+            init-1       [006] ....     1.194592: module_load: clk_chk_mt6895 
+            init-1       [004] ....     1.196096: module_load: pd_chk_mt6895 
+            init-1       [006] ....     1.203388: module_load: clk_fmeter_mt6895 
+            init-1       [004] ....     1.204469: module_load: mtk_dramc 
+            init-1       [004] ....     1.231184: module_load: mtk_dvfsrc 
+            init-1       [005] ....     1.233789: module_load: mtk_dvfsrc_regulator 
+            init-1       [005] ....     1.234502: module_load: mtk_emi 
+            init-1       [005] d..1     1.234610: req: cmd=6 data=0x0
+            init-1       [005] d..1     1.234613: req: cmd=0 data=0x0
+            init-1       [005] d..1     1.234629: req: cmd=4 data=0x0
+            init-1       [005] ....     1.235602: module_load: mtk_smi 
+            init-1       [006] ....     1.274990: module_load: emi_mpu 
+            init-1       [006] ....     1.275906: module_load: emi 
+            init-1       [006] ....     1.277219: module_load: mtk_smi_dbg 
+            init-1       [006] ....     1.280286: module_load: mtk_icc_core 
+            init-1       [006] ....     1.281267: module_load: mmprofile 
+            init-1       [006] ....     1.281822: module_load: mtk_mmdvfs 
+            init-1       [006] ....     1.282994: module_load: mtk_mmdvfs_debug 
+            init-1       [006] d..1     1.283239: req: cmd=2 data=0x4
+            init-1       [006] ....     1.284278: module_load: mmqos_common 
+            init-1       [006] ....     1.284646: module_load: mmqos_mt6895 
+            init-1       [006] ....     1.287838: module_load: iommu_secure 
+            init-1       [006] ....     1.337559: module_load: iommu_debug 
+            init-1       [006] ....     1.339949: module_load: mtk_iommu 
+            init-1       [004] ....     1.347624: module_load: iommu_test 
+            init-1       [005] ....     1.347980: module_load: mtk_mm_heap 
+            init-1       [004] ....     1.348625: module_load: system_heap 
+            init-1       [005] ....     1.349221: module_load: vcp_status 
+            init-1       [004] ....     1.352132: module_load: mtk_cmdq_drv_ext 
+            init-1       [005] ....     1.359250: module_load: cmdq_platform_mt6895 
+            init-1       [004] ....     1.359876: module_load: leds_mtk 
+            init-1       [005] ....     1.360352: module_load: rt4831a_drv 
+            init-1       [004] ....     1.360894: module_load: mtk_slbc 
+            init-1       [005] ....     1.364873: module_load: mtk_mml 
+            init-1       [004] ....     1.379656: module_load: mtk_mml_mt6895 
+            init-1       [004] ....     1.380227: module_load: cmdq_helper_inf 
+            init-1       [004] ....     1.384426: module_load: mdp_drv_mt6895 
+            init-1       [005] ....     1.390573: module_load: mtk_panel_ext 
+            init-1       [005] ....     1.391067: module_load: hxy_lcm 
+            init-1       [005] ....     1.392246: module_load: panel_nt37705_fhdp2412_dsi_cmd_oled_dphy 
+            init-1       [005] ....     1.416137: module_load: mediatek_drm 
+            init-1       [006] d..1     1.480912: req: cmd=2 data=0x4
+            init-1       [006] d..1     1.480939: req: cmd=6 data=0x0
+            init-1       [006] d..1     1.480940: req: cmd=0 data=0x0
+            init-1       [006] d..1     1.480943: req: cmd=4 data=0x0
+            init-1       [006] d..1     1.480950: req: cmd=2 data=0x4
+            init-1       [006] d..1     1.482162: req: cmd=2 data=0x2
+            init-1       [006] d..1     1.482177: req: cmd=6 data=0x0
+            init-1       [006] d..1     1.482178: req: cmd=0 data=0x0
+            init-1       [006] d..1     1.482180: req: cmd=4 data=0x0
+            init-1       [006] d..1     1.482189: req: cmd=6 data=0x0
+            init-1       [006] d..1     1.482190: req: cmd=0 data=0x0
+            init-1       [006] d..1     1.482191: req: cmd=4 data=0x0
+            init-1       [006] d..1     1.482201: req: cmd=6 data=0x0
+            init-1       [006] d..1     1.482202: req: cmd=0 data=0x0
+            init-1       [006] d..1     1.482204: req: cmd=4 data=0xceafe
+            init-1       [006] d..1     1.483099: req: cmd=2 data=0x0
+            init-1       [006] ....     1.495347: module_load: mediatek_drm_gateic 
+            init-1       [006] ....     1.498631: module_load: mediatek_drm_panel_drv 
+            init-1       [006] ....     1.499937: module_load: aee_rs 
+            init-1       [006] ....     1.500552: module_load: mtk_uart_apdma 
+            init-1       [006] ....     1.502578: module_load: 8250_mtk 
+            init-1       [006] ....     1.544448: module_load: phy_mtk_xsphy 
+            init-1       [007] ....     1.548727: module_load: mtu3 
+            init-1       [004] ....     1.551051: module_load: usb_boost 
+            init-1       [005] ....     1.552715: module_load: xhci_mtk_hcd 
+            init-1       [005] ....     1.554345: module_load: yft_customkey_f1 
+            init-1       [007] ....     1.555633: module_load: yft_customkey_f2 
+            init-1       [007] ....     1.559322: module_load: mux_switch 
+            init-1       [004] ....     1.561509: module_load: ps5170 
+            init-1       [005] ....     1.561989: module_load: usb_dp_selector 
+            init-1       [004] ....     1.562820: module_load: mt6368_regulator 
+            init-1       [005] ....     1.569724: module_load: mtk_spmi_pmic_adc 
+            init-1       [006] ....     1.572422: module_load: blocktag 
+            init-1       [006] ....     1.576431: module_load: cqhci 
+            init-1       [006] ....     1.577810: module_load: mtk_mmc_autok 
+            init-1       [007] ....     1.579165: module_load: mtk_mmc_dbg 
+            init-1       [007] ....     1.580764: module_load: ufs_mediatek_dbg 
+            init-1       [007] ....     1.581992: module_load: rpmb 
+            init-1       [007] ....     1.588520: module_load: ufs_mediatek_mod 
+            init-1       [007] ....     1.591643: module_load: rpmb_mtk 
+            init-1       [007] ....     1.594828: module_load: mtk_mmc 
+            init-1       [007] ....     1.635874: module_load: phy_mtk_ufs 
+            init-1       [007] ....     1.639838: module_load: mtk_dvfsrc_helper 
+            init-1       [007] ....     1.643351: module_load: mtk_dvfsrc_devfreq 
+            init-1       [007] ....     1.645299: module_load: pidmap 
+            init-1       [007] ....     1.646547: module_load: mtk_pmic_keys 
+            init-1       [007] ....     1.649790: module_load: mtk_kpd 
+            init-1       [007] ....     1.651575: module_load: regulator_vibrator 
+            init-1       [005] ....     1.653022: module_load: i2c_mt65xx 
+            init-1       [005] ....     1.658963: module_load: rtc_mt6685 
+            init-1       [005] ....     1.660619: module_load: charger_class 
+            init-1       [005] ....     1.661089: module_load: sc8541_charger 
+            init-1       [004] ....     1.736112: module_load: tkcore 
+            init-1       [004] ....     1.736849: module_load: spi_mt65xx 
+            init-1       [004] ....     1.740495: module_load: mt6375 
+            init-1       [004] ....     1.743980: module_load: extdev_io_class 
+            init-1       [004] ....     1.744392: module_load: rt6160_regulator 
+            init-1       [004] ....     1.745180: module_load: mt6685_core 
+            init-1       [004] ....     1.758140: module_load: mt6685_audclk 
+            init-1       [004] ....     1.759740: module_load: clkbuf 
+            init-1       [004] ....     1.762621: module_load: device_apc_mt6895 
+            init-1       [004] ....     1.764742: module_load: teeperf 
+            init-1       [004] ....     1.765607: module_load: kfifo_buf 
+            init-1       [004] ....     1.765942: module_load: industrialio_triggered_buffer 
+            init-1       [004] ....     1.766330: module_load: mt6375_adc 
+            init-1       [004] ....     1.767623: module_load: mt6375_auxadc 
+            init-1       [004] ....     1.770865: module_load: adapter_class 
+            init-1       [004] ....     1.771553: module_load: mtk_charger_algorithm_class 
+            init-1       [004] ....     1.772313: module_load: mt6375_charger 
+            init-1       [004] ....     1.778159: module_load: pd_dbg_info 
+            init-1       [004] ....     1.783199: module_load: tcpc_class 
+            init-1       [004] ....     1.784255: module_load: tcpc_mt6375 
+            init-1       [004] ....     1.789179: module_load: mtk_chg_type_det 
+            init-1       [004] ....     1.790750: module_load: mtk_pd_adapter 
+            init-1       [004] ....     1.791932: module_load: pmic_lbat_service 
+            init-1       [004] ....     1.796201: module_load: mt6375_battery 
+            init-1       [004] ....     1.807093: module_load: mtk_charger_framework 
+            init-1       [004] ....     1.809569: module_load: mtk_pep50 
+            init-1       [004] ....     1.810938: module_load: mtk_pd_charging 
+            init-1       [004] ....     1.811999: module_load: mtk_pep20 
+            init-1       [004] ....     1.812930: module_load: mtk_pep 
+            init-1       [004] ....     1.813791: module_load: rt_pd_manager 
+            init-1       [004] ....     1.815714: module_load: mt6368_accdet 
+            init-1       [004] ....     1.816768: module_load: fsa4480_i2c 
+            init-1       [005] ....     1.821247: module_load: pwm_mtk_disp 
+            init-1       [005] ....     1.824288: module_load: leds_mtk_disp 
+            init-1       [005] ....     1.826711: module_load: extcon_mtk_usb 
+            init-1       [005] ....     1.828413: module_load: tcpci_late_sync 
+            init-1       [006] ....     1.839815: module_load: pmic_lvsys_notify 
+            init-1       [006] ....     1.840560: module_load: reset_ti_syscon 
+            init-1       [006] ....     1.841703: module_load: tinysys_scmi 
+            init-1       [006] ....     1.843103: module_load: slbc_ipi 
+            init-1       [006] ....     1.943815: module_load: slbc_mt6895 
+            init-1       [006] ....     1.945506: module_load: tkcore_drv 
+            init-1       [007] ....     1.951660: module_load: emi_mpu_v2 
+            init-1       [007] ....     1.954119: module_load: emi_slb 
+            init-1       [007] ....     1.956250: module_load: mediatek_cpufreq_hw 
+            init-1       [007] ....     1.967727: module_load: cfg80211 
+            init-1       [007] ....     1.977832: module_load: mac80211 
+            init-1       [007] ....     1.978938: module_load: mtk_mminfra_debug 
+            init-1       [007] ....     1.980875: module_load: st21nfc 
+            init-1       [007] ....     2.095264: module_load: mtk_mbox_mailbox 
+            init-1       [007] ....     2.096654: module_load: mtk_swpm_perf_arm_pmu 
+            init-1       [007] ....     2.097978: module_load: cache_parity 
+            init-1       [007] ....     2.101260: module_load: wl2868c_regulator 
+            init-1       [001] ....     2.117096: module_load: mtk_socinfo 
+            init-381     [004] d..1     3.464714: req: cmd=3 data=0x6
+        modprobe-449     [000] ....     3.548679: module_load: gt9916r 
+        modprobe-449     [003] ....     3.686262: module_load: gz_trusty_mod 
+        modprobe-449     [004] ....     3.694990: module_load: gz_ipc_mod 
+        modprobe-449     [004] ....     3.696487: module_load: gz_tz_system 
+        modprobe-449     [004] ....     3.698376: module_load: cmdq_sec_drv 
+        modprobe-449     [006] ....     3.701814: module_load: iommu_gz 
+        modprobe-449     [006] ....     3.704335: module_load: trusted_mem 
+        modprobe-449     [006] ....     3.711796: module_load: mtk_sec_heap 
+        modprobe-449     [006] ....     3.714798: module_load: mtk_disp_sec 
+        modprobe-449     [006] ....     3.716958: module_load: spmi_mtk_mpu 
+        modprobe-449     [006] ....     3.719154: module_load: mtk_low_battery_throttling 
+        modprobe-449     [006] ....     3.721302: module_load: mtk_dynamic_loading_throttling 
+        modprobe-449     [005] ....     3.723958: module_load: mtk_mdpm 
+        modprobe-449     [005] ....     3.726077: module_load: mtk_pbm 
+        modprobe-449     [005] ....     3.729470: module_load: ccci_util_lib 
+        modprobe-449     [005] ....     3.739028: module_load: ccci_auxadc 
+        modprobe-449     [007] ....     3.745364: module_load: rps_perf 
+        modprobe-449     [007] ....     3.746248: module_load: ccmni 
+        modprobe-449     [007] ....     3.751742: module_load: ccci_md_all 
+        modprobe-449     [004] ....     3.764227: module_load: mtk_pmic_oc_debug 
+        modprobe-449     [004] ....     3.769338: module_load: clk_dbg_mt6895 
+        modprobe-449     [006] ....     3.770682: module_load: dw9714 
+        modprobe-449     [006] ....     3.771912: module_load: dw9800v 
+        modprobe-449     [006] ....     3.772993: module_load: ccci_md_clk 
+        modprobe-449     [006] ....     3.774498: module_load: ccci_rtc 
+        modprobe-449     [006] ....     3.776199: module_load: mtk_mbox 
+        modprobe-449     [006] ....     3.776843: module_load: mtk_rpmsg_mbox 
+        modprobe-449     [006] ....     3.777687: module_load: mtk_tinysys_ipi 
+        modprobe-449     [006] ....     3.778424: module_load: mtk_afe_external 
+        modprobe-449     [006] ....     3.781187: module_load: scp 
+        modprobe-449     [006] ....     3.788574: module_load: ccci_fsm_scp 
+        modprobe-449     [006] ....     3.791891: module_load: ccci_ccif 
+        modprobe-449     [006] ....     3.798775: module_load: ccci_dpmaif 
+        modprobe-449     [006] ....     3.801560: module_load: mtk_u_ether 
+        modprobe-449     [007] ....     3.803417: module_load: mtk_usb_f_rndis 
+        modprobe-449     [007] ....     3.804586: module_load: c2k_usb 
+        modprobe-449     [007] ....     3.805227: module_load: c2k_usb_f_via_atc 
+        modprobe-449     [007] ....     3.805678: module_load: c2k_usb_f_via_ets 
+        modprobe-449     [007] ....     3.806090: module_load: c2k_usb_f_via_gps 
+        modprobe-449     [007] ....     3.806486: module_load: c2k_usb_f_via_modem 
+        modprobe-449     [007] ....     3.806872: module_load: c2k_usb_f_via_pcv 
+        modprobe-449     [007] ....     3.807622: module_load: mtk_battery_oc_throttling 
+        modprobe-449     [007] ....     3.809832: module_load: mtk_bp_thl 
+        modprobe-449     [007] ....     3.811293: module_load: mtk_md_power_throttling 
+        modprobe-449     [007] ....     3.812394: module_load: mtk_cpu_power_throttling 
+        modprobe-449     [007] ....     3.814512: module_load: mtk_gpu_hal 
+        modprobe-449     [007] ....     3.815262: module_load: mtk_ssc 
+        modprobe-449     [007] ....     3.817393: module_load: gpueb 
+        modprobe-449     [007] ....     3.820098: module_load: mtk_gpufreq_wrapper 
+        modprobe-449     [007] ....     3.821725: module_load: mtk_gpu_power_throttling 
+        modprobe-449     [007] ....     3.823020: module_load: reboot_mode 
+        modprobe-449     [007] ....     3.823536: module_load: syscon_reboot_mode 
+        modprobe-449     [007] ....     3.825238: module_load: zsmalloc 
+        modprobe-449     [007] ....     3.826169: module_load: zram 
+        modprobe-449     [007] ....     3.828003: module_load: mtk_gpufreq_mt6895 
+        modprobe-449     [007] ....     3.830695: module_load: sspm_v3 
+        modprobe-449     [007] ....     3.833662: module_load: mtk_qos 
+        modprobe-449     [007] ....     3.835950: module_load: mtk_gpu_qos 
+        modprobe-449     [007] ....     3.839416: module_load: ged 
+        modprobe-449     [007] ....     3.843152: module_load: mali_prot_alloc_mt6895 O
+        modprobe-449     [007] ....     3.845154: module_load: mali_mgm_mt6895 O
+        modprobe-449     [007] ....     3.856430: module_load: mali_kbase_mt6895 O
+        modprobe-449     [007] ....     3.875529: module_load: soc_temp_lvts 
+        modprobe-449     [007] ....     3.879218: module_load: pmic_temp 
+        modprobe-449     [007] ....     3.880741: module_load: thermal_generic_adc 
+        modprobe-449     [007] ....     3.882745: module_load: thermal_interface 
+        modprobe-449     [007] ....     3.885666: module_load: thermal_trace 
+        modprobe-449     [007] ....     3.886404: module_load: board_temp 
+        modprobe-449     [007] ....     3.888705: module_load: md_cooling_all 
+        modprobe-449     [007] ....     3.890131: module_load: charger_cooling 
+        modprobe-449     [007] ....     3.891546: module_load: backlight_cooling 
+        modprobe-449     [007] ....     3.892631: module_load: nvmem_mt635x_efuse 
+        modprobe-449     [007] ....     3.895339: module_load: aw883xx_driver 
+        modprobe-449     [007] ....     3.896251: module_load: mtk_sp_spk_amp 
+        modprobe-449     [007] ....     3.900331: module_load: snd_soc_rt5512 
+        modprobe-449     [007] ....     3.901370: module_load: richtek_spm_cls 
+        modprobe-449     [007] ....     3.902299: module_load: mtk_btcvsd 
+        modprobe-449     [007] ....     3.904827: module_load: snd_soc_mtk_common 
+        modprobe-449     [007] ....     3.906210: module_load: mtk_scp_ultra 
+        modprobe-449     [007] ....     3.907015: module_load: snd_soc_mtk_scp_ultra 
+        modprobe-449     [007] ....     3.911147: module_load: snd_soc_mt6895_afe 
+        modprobe-449     [007] ....     3.916837: module_load: snd_soc_mt6368 
+        modprobe-449     [007] ....     3.918743: module_load: mt6895_mt6368 
+        modprobe-449     [004] ....     4.512573: module_load: mddp 
+        modprobe-449     [004] ....     4.513584: module_load: mtk_cm_ipi 
+        modprobe-449     [004] ....     4.514894: module_load: mtk_cm_mgr 
+        modprobe-449     [004] ....     4.515783: module_load: mtk_cm_mgr_mt6895 
+        modprobe-449     [004] ....     4.519262: module_load: atf_logger 
+        modprobe-449     [004] ....     4.521305: module_load: auxiliarycamera 
+        modprobe-449     [004] ....     4.526940: module_load: apu_top 
+        modprobe-449     [005] ....     4.542987: module_load: apusys 
+        modprobe-449     [004] ....     4.561981: module_load: vcp 
+        modprobe-449     [004] ....     4.568726: module_load: mtk_jpeg 
+        modprobe-449     [004] ....     4.573670: module_load: mtk_vcodec_common 
+        modprobe-449     [004] ....     4.576215: module_load: mtk_vcodec_dec_v2 
+        modprobe-449     [004] ....     4.581807: module_load: mtk_vcodec_enc_v2 
+        modprobe-449     [004] ....     4.586138: module_load: gz_log_mod 
+        modprobe-449     [004] ....     4.588571: module_load: gz_main_mod 
+        modprobe-449     [004] ....     4.589723: module_load: gz_irq_mod 
+        modprobe-449     [004] ....     4.592550: module_load: gz_virtio_mod 
+        modprobe-449     [005] ....     4.595091: module_load: hall_sensor 
+        modprobe-449     [005] ....     4.597202: module_load: mtk_heap_debug 
+        modprobe-449     [005] ....     4.598143: module_load: mtk_cqdma 
+        modprobe-449     [005] ....     4.599898: module_load: mcupm 
+        modprobe-449     [005] ....     4.602400: module_load: mtk_ccu 
+        modprobe-449     [005] ....     4.606905: module_load: mtk_vmm_regulator 
+        modprobe-449     [005] ....     4.609923: module_load: mtk_vow 
+        modprobe-449     [005] ....     4.611517: module_load: mtk_scp_vow 
+        modprobe-449     [005] ....     4.613658: module_load: btif_drv 
+        modprobe-449     [005] ....     4.615838: module_load: connadp 
+        modprobe-449     [005] ....     4.616744: module_load: connscp 
+        modprobe-449     [004] ....     4.618804: module_load: mtk_hcp 
+        modprobe-449     [004] ....     4.620806: module_load: mtk_ipesys_me 
+        modprobe-449     [004] ....     4.626086: module_load: mtk_imgsys_v4l2 
+        modprobe-449     [004] d..1     4.631060: req: cmd=6 data=0x0
+        modprobe-449     [004] d..1     4.631067: req: cmd=0 data=0x0
+        modprobe-449     [004] d..1     4.631070: req: cmd=4 data=0xceafe
+        modprobe-449     [004] d..1     4.631083: req: cmd=6 data=0x0
+        modprobe-449     [004] d..1     4.631084: req: cmd=0 data=0x0
+        modprobe-449     [004] d..1     4.631085: req: cmd=4 data=0xceafe
+        modprobe-449     [004] ....     4.647380: module_load: mtk_aie 
+        modprobe-449     [004] ....     4.655346: module_load: camera_dpe_isp70 
+        modprobe-449     [004] ....     4.660330: module_load: camera_af_media 
+        modprobe-449     [004] ....     4.661948: module_load: lc898229 
+        modprobe-449     [004] ....     4.662779: module_load: gt9764 
+        modprobe-449     [004] ....     4.663525: module_load: gt9772a 
+        modprobe-449     [004] ....     4.664064: module_load: gt9772b 
+        modprobe-449     [004] ....     4.664802: module_load: dw9800w 
+        modprobe-449     [004] ....     4.665350: module_load: ak7377a 
+        modprobe-449     [004] ....     4.665999: module_load: ak7375c 
+        modprobe-449     [004] ....     4.666673: module_load: bu64253gwz 
+        modprobe-449     [004] ....     4.668275: module_load: pda_drv_mt6895 
+        modprobe-449     [004] ....     4.673039: module_load: fhctl 
+        modprobe-449     [004] ....     4.675002: module_load: mtk_composite 
+        modprobe-449     [004] ....     4.677242: module_load: flashlight 
+        modprobe-449     [004] ....     4.678619: module_load: lm3644 
+        modprobe-449     [004] ....     4.680716: module_load: mtk_lpm 
+        modprobe-449     [004] ....     4.683815: module_load: mtk_lpm_dbg_common_v1 
+        modprobe-449     [004] ....     4.684623: module_load: mtk_lpm_plat_v1 
+        modprobe-449     [004] ....     4.686492: module_load: mtk_lpm_dbg_mt6895 
+        modprobe-449     [004] ....     4.690280: module_load: mtk_ssc_dbg_v2 
+        modprobe-449     [004] ....     4.690886: module_load: mtk_vmm_dbg 
+        modprobe-449     [004] ....     4.692357: module_load: cpudvfs 
+        modprobe-449     [004] ....     4.692944: module_load: mtk_dvfsrc_start 
+        modprobe-449     [004] ....     4.694517: module_load: hf_manager 
+        modprobe-449     [005] ....     4.695352: module_load: hxy_finger 
+        modprobe-449     [005] ....     4.696973: module_load: sensorhub 
+        modprobe-449     [006] ....     4.697888: module_load: sgm3140 
+        modprobe-449     [006] ....     4.698777: module_load: clk_disable_unused 
+        modprobe-449     [007] ....     4.724434: module_load: mtk_pm_domain_disable_unused 
+        modprobe-449     [007] ....     4.737479: module_load: arm_dsu_pmu 
+        modprobe-449     [007] ....     4.739807: module_load: mtk_swpm 
+        modprobe-449     [007] ....     4.740903: module_load: mtk_swpm_dbg_common_v1 
+        modprobe-449     [007] ....     4.741780: module_load: mtk_swpm_dbg_v6895 
+        modprobe-449     [007] ....     4.743125: module_load: pmsr 
+        modprobe-449     [007] ....     4.744326: module_load: jpeg_driver 
+        modprobe-449     [007] ....     4.747499: module_load: ccd_rpmsg 
+        modprobe-449     [007] ....     4.749770: module_load: mtk_ccd_remoteproc 
+        modprobe-449     [007] ....     4.751835: module_load: v4l2_fwnode 
+        modprobe-449     [007] ....     4.752520: module_load: imgsensor_glue 
+        modprobe-449     [007] ....     4.755215: module_load: imgsensor 
+        modprobe-449     [007] ....     4.818218: module_load: camera_eeprom 
+        modprobe-449     [007] ....     4.819358: module_load: mtk_cam_plat_util 
+        modprobe-449     [007] ....     4.819849: module_load: mtk_cam_plat_mt6895 
+        modprobe-449     [004] ....     4.831483: module_load: mtk_cam_isp 
+        modprobe-449     [007] ....     4.876462: module_load: cpufreq_sugov_ext 
+        modprobe-449     [007] ....     4.879142: module_load: scheduler 
+        modprobe-449     [007] ....     4.882310: module_load: mtk_core_ctl 
+        modprobe-449     [005] ....     4.884179: module_load: cpuqos_v3 
+        modprobe-449     [005] ....     4.885947: module_load: mtk_perf_ioctl 
+        modprobe-449     [005] ....     4.891482: module_load: mtk_fpsgo 
+        modprobe-449     [005] ....     4.896322: module_load: fpsgo PO
+        modprobe-449     [005] ....     4.897666: module_load: mtk_perf_ioctl_magt 
+        modprobe-449     [005] ....     4.898366: module_load: frs 
+        modprobe-449     [005] ....     4.899852: module_load: mtk_perf_common 
+        modprobe-449     [005] ....     4.901480: module_load: task_turbo 
+        modprobe-449     [005] ....     4.903818: module_load: vdec_fmt 
+        modprobe-449     [005] ....     4.907746: module_load: mtk_pwm 
+        modprobe-449     [004] ....     4.928094: module_load: mtk_irtx_pwm 
+        modprobe-449     [006] ....     4.931273: module_load: silead_tee 
+        modprobe-449     [006] ....     4.947203: module_load: widevine_driver 
+        modprobe-449     [006] ....     4.949752: module_load: load_track 
+        modprobe-449     [006] ....     4.950729: module_load: uload_ind 
+        modprobe-449     [006] ....     4.951752: module_load: trace_mmstat 
+        modprobe-449     [006] ....     4.953277: module_load: sec 
+        modprobe-449     [007] ....     4.955725: module_load: spmtwam 
+        modprobe-449     [007] ....     4.958854: module_load: emi_mpu_hook_v1 
+            init-381     [006] ....     6.261876: module_load: msync2_frd PO
+            init-381     [006] ....     6.294221: module_load: connfem O
+            init-381     [006] ....     6.309273: module_load: conninfra O
+            init-381     [006] ....     6.627610: module_load: bt_drv_6895 O
+            init-381     [002] ....     7.015639: module_load: fmradio_drv_connac2x O
+            init-381     [001] ....     7.061550: module_load: gps_drv_dl_v050 O
+            init-381     [004] ....     7.094849: module_load: gps_pwr O
+            init-381     [007] ....     7.162926: module_load: gps_scp O
+            init-381     [004] ....     7.171150: module_load: wmt_chrdev_wifi_connac2 O
+            init-381     [005] ....     7.200130: module_load: wlan_drv_gen4m_6895 O
+ HwBinder:1055_2-1296    [002] d..1     7.648647: req: cmd=6 data=0x0
+ HwBinder:1055_2-1296    [002] d..1     7.648654: req: cmd=0 data=0x0
+ HwBinder:1055_2-1296    [002] d..1     7.648660: req: cmd=4 data=0xceafe
+ HwBinder:1055_2-1296    [002] d..1     7.648684: req: cmd=6 data=0x0
+ HwBinder:1055_2-1296    [002] d..1     7.648687: req: cmd=0 data=0x0
+ HwBinder:1055_2-1296    [002] d..1     7.648692: req: cmd=4 data=0xceafe
+ HwBinder:1055_2-1296    [002] d..1     7.648712: req: cmd=6 data=0x0
+ HwBinder:1055_2-1296    [002] d..1     7.648715: req: cmd=0 data=0x0
+ HwBinder:1055_2-1296    [002] d..1     7.648720: req: cmd=4 data=0xceafe
+ HwBinder:1055_2-1296    [002] d..1     7.648755: req: cmd=6 data=0x0
+ HwBinder:1055_2-1296    [002] d..1     7.648759: req: cmd=0 data=0x0
+ HwBinder:1055_2-1296    [002] d..1     7.648763: req: cmd=4 data=0xceafe
+ HwBinder:1055_2-1296    [002] d..1     7.648805: req: cmd=2 data=0x0
+ HwBinder:1055_2-1296    [002] d..1     7.648839: req: cmd=6 data=0x0
+ HwBinder:1055_2-1296    [002] d..1     7.648842: req: cmd=0 data=0x0
+ HwBinder:1055_2-1296    [002] d..1     7.648847: req: cmd=4 data=0xceafe
+ HwBinder:1055_2-1296    [002] d..1     7.648870: req: cmd=6 data=0x0
+ HwBinder:1055_2-1296    [002] d..1     7.648873: req: cmd=0 data=0x0
+ HwBinder:1055_2-1296    [002] d..1     7.648878: req: cmd=4 data=0xceafe
+ HwBinder:1055_2-1296    [002] d..1     7.648901: req: cmd=6 data=0x0
+ HwBinder:1055_2-1296    [002] d..1     7.648904: req: cmd=0 data=0x0
+ HwBinder:1055_2-1296    [002] d..1     7.648909: req: cmd=4 data=0x3e25
+ OverlayEngine_0-1627    [000] d..1     7.675175: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1     7.675183: req: cmd=0 data=0x0
+ OverlayEngine_0-1627    [000] d..1     7.675189: req: cmd=4 data=0x3e25
+ OverlayEngine_0-1627    [000] d..1     7.675212: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1     7.675215: req: cmd=0 data=0x0
+ OverlayEngine_0-1627    [000] d..1     7.675220: req: cmd=4 data=0x3e25
+ OverlayEngine_0-1627    [000] d..1     7.675240: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1     7.675243: req: cmd=0 data=0x0
+ OverlayEngine_0-1627    [000] d..1     7.675248: req: cmd=4 data=0x3e25
+ OverlayEngine_0-1627    [000] d..1     7.675281: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1     7.675285: req: cmd=0 data=0x0
+ OverlayEngine_0-1627    [000] d..1     7.675289: req: cmd=4 data=0x3e25
+ OverlayEngine_0-1627    [000] d..1     7.675308: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1     7.675311: req: cmd=0 data=0x0
+ OverlayEngine_0-1627    [000] d..1     7.675315: req: cmd=4 data=0x3e25
+ OverlayEngine_0-1627    [000] d..1     7.675334: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1     7.675337: req: cmd=0 data=0x0
+ OverlayEngine_0-1627    [000] d..1     7.675342: req: cmd=4 data=0x3e25
+ OverlayEngine_0-1627    [000] d..1     7.675361: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1     7.675364: req: cmd=0 data=0x0
+ OverlayEngine_0-1627    [000] d..1     7.675369: req: cmd=4 data=0x193aa1
+ OverlayEngine_0-1627    [000] d..1     7.675528: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1     7.675533: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [000] d..1     7.675538: req: cmd=4 data=0x193aa1
+ OverlayEngine_0-1627    [000] d..1     7.675564: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1     7.675568: req: cmd=0 data=0x1627e0
+ OverlayEngine_0-1627    [000] d..1     7.675573: req: cmd=4 data=0x193aa1
+            kfps-869     [005] d..1     7.697914: req: cmd=6 data=0x0
+            kfps-869     [005] d..1     7.697918: req: cmd=0 data=0x1627e0
+            kfps-869     [000] d..1     7.741822: req: cmd=6 data=0x26e8f00
+            kfps-869     [000] d..1     7.741833: req: cmd=0 data=0x1627e0
+            kfps-869     [000] d..1     7.741881: req: cmd=6 data=0x26e8f00
+            kfps-869     [000] d..1     7.741885: req: cmd=0 data=0x1627e0
+            kfps-869     [004] d..1     7.781233: req: cmd=6 data=0x26e8f00
+            kfps-869     [004] d..1     7.781236: req: cmd=0 data=0x1627e0
+            kfps-869     [003] d..1     7.822749: req: cmd=6 data=0x26e8f00
+            kfps-869     [003] d..1     7.822759: req: cmd=0 data=0x1627e0
+            kfps-869     [001] d..1     7.865143: req: cmd=6 data=0x26e8f00
+            kfps-869     [001] d..1     7.865154: req: cmd=0 data=0x1627e0
+            kfps-869     [006] d..1     7.906445: req: cmd=6 data=0x26e8f00
+            kfps-869     [006] d..1     7.906449: req: cmd=0 data=0x1627e0
+            kfps-869     [003] d..1     7.947420: req: cmd=6 data=0x26e8f00
+            kfps-869     [003] d..1     7.947436: req: cmd=0 data=0x1627e0
+            kfps-869     [004] d..1     7.989189: req: cmd=6 data=0x26e8f00
+            kfps-869     [004] d..1     7.989194: req: cmd=0 data=0x1627e0
+            kfps-869     [004] d..1     8.032420: req: cmd=6 data=0x26e8f00
+            kfps-869     [004] d..1     8.032424: req: cmd=0 data=0x1627e0
+            kfps-869     [004] d..1     8.073118: req: cmd=6 data=0x26e8f00
+            kfps-869     [004] d..1     8.073122: req: cmd=0 data=0x1627e0
+            kfps-869     [004] d..1     8.116703: req: cmd=6 data=0x26e8f00
+            kfps-869     [004] d..1     8.116708: req: cmd=0 data=0x1627e0
+            kfps-869     [002] d..1     8.164336: req: cmd=6 data=0x26e8f00
+            kfps-869     [002] d..1     8.164418: req: cmd=0 data=0x1627e0
+            kfps-869     [000] d..1     8.199020: req: cmd=6 data=0x26e8f00
+            kfps-869     [000] d..1     8.199035: req: cmd=0 data=0x1627e0
+            kfps-869     [004] d..1     8.239040: req: cmd=6 data=0x26e8f00
+            kfps-869     [004] d..1     8.239051: req: cmd=0 data=0x1627e0
+            kfps-869     [004] d..1     8.280944: req: cmd=6 data=0x26e8f00
+            kfps-869     [004] d..1     8.280948: req: cmd=0 data=0x1627e0
+            kfps-869     [003] d..1     8.324026: req: cmd=6 data=0x26e8f00
+            kfps-869     [003] d..1     8.324037: req: cmd=0 data=0x1627e0
+            kfps-869     [006] d..1     8.364373: req: cmd=6 data=0x26e8f00
+            kfps-869     [006] d..1     8.364378: req: cmd=0 data=0x1627e0
+            kfps-869     [001] d..1     8.407381: req: cmd=6 data=0x26e8f00
+            kfps-869     [001] d..1     8.407393: req: cmd=0 data=0x1627e0
+            kfps-869     [006] d..1     8.449540: req: cmd=6 data=0x26e8f00
+            kfps-869     [006] d..1     8.449544: req: cmd=0 data=0x1627e0
+            kfps-869     [003] d..1     8.498039: req: cmd=6 data=0x26e8f00
+            kfps-869     [003] d..1     8.498051: req: cmd=0 data=0x1627e0
+            kfps-869     [005] d..1     8.535064: req: cmd=6 data=0x26e8f00
+            kfps-869     [005] d..1     8.535068: req: cmd=0 data=0x1627e0
+            kfps-869     [005] d..1     8.575467: req: cmd=6 data=0x26e8f00
+            kfps-869     [005] d..1     8.575475: req: cmd=0 data=0x1627e0
+            kfps-869     [006] d..1     8.699237: req: cmd=6 data=0x0
+            kfps-869     [006] d..1     8.699242: req: cmd=0 data=0x1627e0
+ OverlayEngine_0-1627    [002] d..1    10.660828: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    10.660835: req: cmd=0 data=0x109de8
+ OverlayEngine_0-1627    [002] d..1    10.660842: req: cmd=4 data=0x193aa1
+ OverlayEngine_0-1627    [002] d..1    10.660886: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    10.660890: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [002] d..1    10.660894: req: cmd=4 data=0x193aa1
+            kfps-869     [005] d..1    11.071622: req: cmd=6 data=0x0
+            kfps-869     [005] d..1    11.071627: req: cmd=0 data=0xb13f0
+            kfps-869     [000] d..1    11.202007: req: cmd=6 data=0x0
+            kfps-869     [000] d..1    11.202020: req: cmd=0 data=0xb13f0
+            kfps-869     [000] d..1    11.268484: req: cmd=6 data=0x26e8f00
+            kfps-869     [000] d..1    11.268496: req: cmd=0 data=0xb13f0
+            kfps-869     [000] d..1    11.268525: req: cmd=6 data=0x26e8f00
+            kfps-869     [000] d..1    11.268529: req: cmd=0 data=0xb13f0
+            kfps-869     [000] d..1    11.420472: req: cmd=6 data=0x0
+            kfps-869     [000] d..1    11.420482: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [002] d..1    11.940287: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    11.940297: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [002] d..1    11.940305: req: cmd=4 data=0x193aa1
+ OverlayEngine_0-1627    [002] d..1    11.940330: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    11.940333: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [002] d..1    11.940337: req: cmd=4 data=0x193aa1
+ OverlayEngine_0-1627    [002] d..1    11.940357: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    11.940360: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [002] d..1    11.940365: req: cmd=4 data=0x193aa1
+ OverlayEngine_0-1627    [002] d..1    11.940399: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    11.940403: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [002] d..1    11.940407: req: cmd=4 data=0x193aa1
+ OverlayEngine_0-1627    [002] d..1    11.940426: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    11.940429: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [002] d..1    11.940434: req: cmd=4 data=0x193aa1
+ OverlayEngine_0-1627    [002] d..1    11.940452: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    11.940455: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [002] d..1    11.940459: req: cmd=4 data=0x193aa1
+ OverlayEngine_0-1627    [002] d..1    11.940480: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    11.940483: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [002] d..1    11.940487: req: cmd=4 data=0x4bafe3
+ OverlayEngine_0-1627    [002] d..1    11.940820: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    11.940825: req: cmd=0 data=0x7faf8
+ OverlayEngine_0-1627    [002] d..1    11.940830: req: cmd=4 data=0x4bafe3
+ OverlayEngine_0-1627    [002] d..1    11.940851: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    11.940855: req: cmd=0 data=0x130ee8
+ OverlayEngine_0-1627    [002] d..1    11.940859: req: cmd=4 data=0x4bafe3
+ OverlayEngine_0-1627    [002] d..1    11.940888: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    11.940891: req: cmd=0 data=0xffdc0
+ OverlayEngine_0-1627    [002] d..1    11.940896: req: cmd=4 data=0x4bafe3
+ OverlayEngine_0-1627    [002] d..1    11.940922: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    11.940925: req: cmd=0 data=0x1b11b0
+ OverlayEngine_0-1627    [002] d..1    11.940930: req: cmd=4 data=0x4bafe3
+ OverlayEngine_0-1627    [002] d..1    12.022743: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    12.022750: req: cmd=0 data=0x1587b8
+ OverlayEngine_0-1627    [002] d..1    12.022757: req: cmd=4 data=0x4bafe3
+ OverlayEngine_0-1627    [002] d..1    12.022804: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    12.022807: req: cmd=0 data=0xffdc0
+ OverlayEngine_0-1627    [002] d..1    12.022813: req: cmd=4 data=0x4bafe3
+   kworker/u16:1-9       [006] d..1    12.022964: req: cmd=6 data=0x0
+   kworker/u16:1-9       [006] d..1    12.022966: req: cmd=0 data=0xffdc0
+   kworker/u16:1-9       [006] d..1    12.022968: req: cmd=4 data=0x4bafe3
+   kworker/u16:1-9       [006] d..1    12.022974: req: cmd=6 data=0x0
+   kworker/u16:1-9       [006] d..1    12.022975: req: cmd=0 data=0xffdc0
+   kworker/u16:1-9       [006] d..1    12.022976: req: cmd=4 data=0x4bafe3
+   kworker/u16:1-9       [006] d..1    12.022981: req: cmd=6 data=0x0
+   kworker/u16:1-9       [006] d..1    12.022982: req: cmd=0 data=0xffdc0
+   kworker/u16:1-9       [006] d..1    12.022983: req: cmd=4 data=0x4bafe3
+   kworker/u16:1-9       [006] d..1    12.022990: req: cmd=6 data=0x0
+   kworker/u16:1-9       [006] d..1    12.022990: req: cmd=0 data=0xffdc0
+   kworker/u16:1-9       [006] d..1    12.022991: req: cmd=4 data=0x4bafe3
+   kworker/u16:1-9       [006] d..1    12.022997: req: cmd=6 data=0x0
+   kworker/u16:1-9       [006] d..1    12.022998: req: cmd=0 data=0xffdc0
+   kworker/u16:1-9       [006] d..1    12.022999: req: cmd=4 data=0x4bafe3
+   kworker/u16:1-9       [006] d..1    12.023005: req: cmd=6 data=0x0
+   kworker/u16:1-9       [006] d..1    12.023006: req: cmd=0 data=0xffdc0
+   kworker/u16:1-9       [006] d..1    12.023007: req: cmd=4 data=0x4bafe3
+   kworker/u16:1-9       [006] d..1    12.023012: req: cmd=6 data=0x0
+   kworker/u16:1-9       [006] d..1    12.023013: req: cmd=0 data=0xffdc0
+   kworker/u16:1-9       [006] d..1    12.023014: req: cmd=4 data=0x327542
+ OverlayEngine_0-1627    [002] d..1    12.037803: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    12.037812: req: cmd=0 data=0x1316b8
+ OverlayEngine_0-1627    [002] d..1    12.037818: req: cmd=4 data=0x327542
+ OverlayEngine_0-1627    [002] d..1    12.037843: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    12.037847: req: cmd=0 data=0xd8cc0
+ OverlayEngine_0-1627    [002] d..1    12.037851: req: cmd=4 data=0x327542
+ OverlayEngine_0-1627    [002] d..1    12.037889: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    12.037893: req: cmd=0 data=0x109de8
+ OverlayEngine_0-1627    [002] d..1    12.037897: req: cmd=4 data=0x327542
+ OverlayEngine_0-1627    [002] d..1    12.037940: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [002] d..1    12.037943: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [002] d..1    12.037948: req: cmd=4 data=0x327542
+   kworker/u16:1-9       [002] d..1    12.038547: req: cmd=6 data=0x0
+   kworker/u16:1-9       [002] d..1    12.038560: req: cmd=0 data=0xb13f0
+   kworker/u16:1-9       [002] d..1    12.038566: req: cmd=4 data=0x327542
+   kworker/u16:1-9       [002] d..1    12.038588: req: cmd=6 data=0x0
+   kworker/u16:1-9       [002] d..1    12.038591: req: cmd=0 data=0xb13f0
+   kworker/u16:1-9       [002] d..1    12.038595: req: cmd=4 data=0x327542
+   kworker/u16:1-9       [002] d..1    12.038614: req: cmd=6 data=0x0
+   kworker/u16:1-9       [002] d..1    12.038617: req: cmd=0 data=0xb13f0
+   kworker/u16:1-9       [002] d..1    12.038621: req: cmd=4 data=0x327542
+   kworker/u16:1-9       [002] d..1    12.038645: req: cmd=6 data=0x0
+   kworker/u16:1-9       [002] d..1    12.038648: req: cmd=0 data=0xb13f0
+   kworker/u16:1-9       [002] d..1    12.038653: req: cmd=4 data=0x327542
+   kworker/u16:1-9       [002] d..1    12.038671: req: cmd=6 data=0x0
+   kworker/u16:1-9       [002] d..1    12.038674: req: cmd=0 data=0xb13f0
+   kworker/u16:1-9       [002] d..1    12.038678: req: cmd=4 data=0x327542
+   kworker/u16:1-9       [002] d..1    12.038697: req: cmd=6 data=0x0
+   kworker/u16:1-9       [002] d..1    12.038700: req: cmd=0 data=0xb13f0
+   kworker/u16:1-9       [002] d..1    12.038704: req: cmd=4 data=0x327542
+   kworker/u16:1-9       [002] d..1    12.038725: req: cmd=6 data=0x0
+   kworker/u16:1-9       [002] d..1    12.038727: req: cmd=0 data=0xb13f0
+   kworker/u16:1-9       [002] d..1    12.038732: req: cmd=4 data=0x193aa1
+ OverlayEngine_0-1627    [000] d..1    12.253421: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1    12.253427: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [000] d..1    12.253435: req: cmd=4 data=0x193aa1
+ OverlayEngine_0-1627    [000] d..1    12.253458: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1    12.253461: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [000] d..1    12.253466: req: cmd=4 data=0x193aa1
+ OverlayEngine_0-1627    [000] d..1    12.253486: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1    12.253489: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [000] d..1    12.253494: req: cmd=4 data=0x193aa1
+ OverlayEngine_0-1627    [000] d..1    12.253528: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1    12.253531: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [000] d..1    12.253535: req: cmd=4 data=0x193aa1
+ OverlayEngine_0-1627    [000] d..1    12.253554: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1    12.253557: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [000] d..1    12.253562: req: cmd=4 data=0x193aa1
+ OverlayEngine_0-1627    [000] d..1    12.253580: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1    12.253584: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [000] d..1    12.253588: req: cmd=4 data=0x193aa1
+ OverlayEngine_0-1627    [000] d..1    12.253612: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1    12.253618: req: cmd=0 data=0xb13f0
+ OverlayEngine_0-1627    [000] d..1    12.253625: req: cmd=4 data=0x327542
+ OverlayEngine_0-1627    [000] d..1    12.253829: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1    12.253833: req: cmd=0 data=0xb65f8
+ OverlayEngine_0-1627    [000] d..1    12.253838: req: cmd=4 data=0x327542
+ OverlayEngine_0-1627    [000] d..1    12.253871: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1    12.253875: req: cmd=0 data=0xbb800
+ OverlayEngine_0-1627    [000] d..1    12.253880: req: cmd=4 data=0x327542
+   kworker/u17:0-144     [001] d..1    13.339759: req: cmd=6 data=0x0
+   kworker/u17:0-144     [001] d..1    13.339770: req: cmd=0 data=0xbb800
+ mtk_drm_disp_id-244     [002] d..1    17.730612: req: cmd=6 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.730618: req: cmd=0 data=0x5dc00
+ mtk_drm_disp_id-244     [002] d..1    17.730625: req: cmd=4 data=0x327542
+ mtk_drm_disp_id-244     [002] d..1    17.730751: req: cmd=6 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.730755: req: cmd=0 data=0x5dc00
+ mtk_drm_disp_id-244     [002] d..1    17.730760: req: cmd=4 data=0x327542
+ mtk_drm_disp_id-244     [002] d..1    17.730799: req: cmd=6 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.730803: req: cmd=0 data=0x5dc00
+ mtk_drm_disp_id-244     [002] d..1    17.730807: req: cmd=4 data=0x327542
+ mtk_drm_disp_id-244     [002] d..1    17.730830: req: cmd=6 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.730833: req: cmd=0 data=0x5dc00
+ mtk_drm_disp_id-244     [002] d..1    17.730838: req: cmd=4 data=0x327542
+ mtk_drm_disp_id-244     [002] d..1    17.730869: req: cmd=6 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.730872: req: cmd=0 data=0x5dc00
+ mtk_drm_disp_id-244     [002] d..1    17.730876: req: cmd=4 data=0x327542
+ mtk_drm_disp_id-244     [002] d..1    17.730895: req: cmd=6 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.730898: req: cmd=0 data=0x5dc00
+ mtk_drm_disp_id-244     [002] d..1    17.730903: req: cmd=4 data=0x327542
+ mtk_drm_disp_id-244     [002] d..1    17.730921: req: cmd=6 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.730924: req: cmd=0 data=0x5dc00
+ mtk_drm_disp_id-244     [002] d..1    17.730928: req: cmd=4 data=0x327542
+ mtk_drm_disp_id-244     [002] d..1    17.730946: req: cmd=6 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.730949: req: cmd=0 data=0x5dc00
+ mtk_drm_disp_id-244     [002] d..1    17.730953: req: cmd=4 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.731165: req: cmd=6 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.731170: req: cmd=0 data=0x5dc00
+ mtk_drm_disp_id-244     [002] d..1    17.731177: req: cmd=4 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.731196: req: cmd=6 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.731199: req: cmd=0 data=0x5dc00
+ mtk_drm_disp_id-244     [002] d..1    17.731204: req: cmd=4 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.731222: req: cmd=6 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.731225: req: cmd=0 data=0x5dc00
+ mtk_drm_disp_id-244     [002] d..1    17.731229: req: cmd=4 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.731250: req: cmd=6 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.731253: req: cmd=0 data=0x5dc00
+ mtk_drm_disp_id-244     [002] d..1    17.731257: req: cmd=4 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.731274: req: cmd=6 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.731277: req: cmd=0 data=0x5dc00
+ mtk_drm_disp_id-244     [002] d..1    17.731282: req: cmd=4 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.731299: req: cmd=6 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.731302: req: cmd=0 data=0x5dc00
+ mtk_drm_disp_id-244     [002] d..1    17.731306: req: cmd=4 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.731321: req: cmd=6 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.731324: req: cmd=0 data=0x5dc00
+ mtk_drm_disp_id-244     [002] d..1    17.731329: req: cmd=4 data=0x0
+ mtk_drm_disp_id-244     [002] d..1    17.731369: req: cmd=2 data=0x0
+        dis_ki-0-245     [001] d..1    17.934810: req: cmd=6 data=0x0
+        dis_ki-0-245     [001] d..1    17.934817: req: cmd=0 data=0xbb800
+        dis_ki-0-245     [001] d..1    17.934823: req: cmd=4 data=0x0
+        dis_ki-0-245     [000] d..1    17.935018: req: cmd=6 data=0x0
+        dis_ki-0-245     [000] d..1    17.935025: req: cmd=0 data=0xbb800
+        dis_ki-0-245     [000] d..1    17.935030: req: cmd=4 data=0x0
+        dis_ki-0-245     [000] d..1    17.935051: req: cmd=6 data=0x0
+        dis_ki-0-245     [000] d..1    17.935054: req: cmd=0 data=0xbb800
+        dis_ki-0-245     [000] d..1    17.935059: req: cmd=4 data=0x0
+        dis_ki-0-245     [000] d..1    17.935078: req: cmd=6 data=0x0
+        dis_ki-0-245     [000] d..1    17.935081: req: cmd=0 data=0xbb800
+        dis_ki-0-245     [000] d..1    17.935085: req: cmd=4 data=0x0
+        dis_ki-0-245     [000] d..1    17.935113: req: cmd=6 data=0x0
+        dis_ki-0-245     [000] d..1    17.935116: req: cmd=0 data=0xbb800
+        dis_ki-0-245     [000] d..1    17.935120: req: cmd=4 data=0x0
+        dis_ki-0-245     [000] d..1    17.935139: req: cmd=6 data=0x0
+        dis_ki-0-245     [000] d..1    17.935142: req: cmd=0 data=0xbb800
+        dis_ki-0-245     [000] d..1    17.935147: req: cmd=4 data=0x0
+        dis_ki-0-245     [000] d..1    17.935166: req: cmd=6 data=0x0
+        dis_ki-0-245     [000] d..1    17.935168: req: cmd=0 data=0xbb800
+        dis_ki-0-245     [000] d..1    17.935173: req: cmd=4 data=0x0
+        dis_ki-0-245     [000] d..1    17.935190: req: cmd=6 data=0x0
+        dis_ki-0-245     [000] d..1    17.935193: req: cmd=0 data=0xbb800
+        dis_ki-0-245     [000] d..1    17.935198: req: cmd=4 data=0x327542
+        dis_ki-0-245     [000] d..1    17.935265: req: cmd=2 data=0x0
+ OverlayEngine_0-1627    [001] d..1    17.935542: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [001] d..1    17.935547: req: cmd=0 data=0xbb800
+ OverlayEngine_0-1627    [001] d..1    17.935552: req: cmd=4 data=0x327542
+ OverlayEngine_0-1627    [001] d..1    17.935571: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [001] d..1    17.935574: req: cmd=0 data=0xbb800
+ OverlayEngine_0-1627    [001] d..1    17.935579: req: cmd=4 data=0x327542
+ OverlayEngine_0-1627    [001] d..1    17.935596: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [001] d..1    17.935599: req: cmd=0 data=0xbb800
+ OverlayEngine_0-1627    [001] d..1    17.935604: req: cmd=4 data=0x327542
+ OverlayEngine_0-1627    [001] d..1    17.935625: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [001] d..1    17.935629: req: cmd=0 data=0xbb800
+ OverlayEngine_0-1627    [001] d..1    17.935633: req: cmd=4 data=0x327542
+ OverlayEngine_0-1627    [001] d..1    17.935650: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [001] d..1    17.935653: req: cmd=0 data=0xbb800
+ OverlayEngine_0-1627    [001] d..1    17.935658: req: cmd=4 data=0x327542
+ OverlayEngine_0-1627    [001] d..1    17.935675: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [001] d..1    17.935678: req: cmd=0 data=0xbb800
+ OverlayEngine_0-1627    [001] d..1    17.935683: req: cmd=4 data=0x327542
+ OverlayEngine_0-1627    [001] d..1    17.935698: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [001] d..1    17.935701: req: cmd=0 data=0xbb800
+ OverlayEngine_0-1627    [001] d..1    17.935706: req: cmd=4 data=0x64ea84
+ OverlayEngine_0-1627    [001] d..1    17.935729: req: cmd=2 data=0x1
+ OverlayEngine_0-1627    [001] d..1    17.936592: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [001] d..1    17.936597: req: cmd=0 data=0x84d00
+ OverlayEngine_0-1627    [001] d..1    17.936602: req: cmd=4 data=0x64ea84
+ OverlayEngine_0-1627    [001] d..1    17.936622: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [001] d..1    17.936626: req: cmd=0 data=0x13f560
+ OverlayEngine_0-1627    [001] d..1    17.936630: req: cmd=4 data=0x64ea84
+ OverlayEngine_0-1627    [001] d..1    17.936655: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [001] d..1    17.936658: req: cmd=0 data=0x109230
+ OverlayEngine_0-1627    [001] d..1    17.936662: req: cmd=4 data=0x64ea84
+ OverlayEngine_0-1627    [001] d..1    17.936687: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [001] d..1    17.936690: req: cmd=0 data=0x1c3a90
+ OverlayEngine_0-1627    [001] d..1    17.936695: req: cmd=4 data=0x64ea84
+ OverlayEngine_0-1627    [000] d..1    18.439224: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1    18.439231: req: cmd=0 data=0x16b098
+ OverlayEngine_0-1627    [000] d..1    18.439237: req: cmd=4 data=0x64ea84
+ OverlayEngine_0-1627    [000] d..1    18.439280: req: cmd=6 data=0x0
+ OverlayEngine_0-1627    [000] d..1    18.439283: req: cmd=0 data=0x1126a0
+ OverlayEngine_0-1627    [000] d..1    18.439288: req: cmd=4 data=0x64ea84
+   kworker/u16:2-174     [006] d..1    18.439432: req: cmd=6 data=0x0
+   kworker/u16:2-174     [006] d..1    18.439434: req: cmd=0 data=0x1126a0
+   kworker/u16:2-174     [006] d..1    18.439436: req: cmd=4 data=0x64ea84
+   kworker/u16:2-174     [006] d..1    18.439443: req: cmd=6 data=0x0
+   kworker/u16:2-174     [006] d..1    18.439444: req: cmd=0 data=0x1126a0
+   kworker/u16:2-174     [006] d..1    18.439445: req: cmd=4 data=0x64ea84
+   kworker/u16:2-174     [006] d..1    18.439451: req: cmd=6 data=0x0
+   kworker/u16:2-174     [006] d..1    18.439452: req: cmd=0 data=0x1126a0
+   kworker/u16:2-174     [006] d..1    18.439453: req: cmd=4 data=0x64ea84
+   kworker/u16:2-174     [006] d..1    18.439460: req: cmd=6 data=0x0
+   kworker/u16:2-174     [006] d..1    18.439461: req: cmd=0 data=0x1126a0
+   kworker/u16:2-174     [006] d..1    18.439462: req: cmd=4 data=0x64ea84
+   kworker/u16:2-174     [006] d..1    18.439467: req: cmd=6 data=0x0
+   kworker/u16:2-174     [006] d..1    18.439468: req: cmd=0 data=0x1126a0
+   kworker/u16:2-174     [006] d..1    18.439469: req: cmd=4 data=0x64ea84
+   kworker/u16:2-174     [006] d..1    18.439475: req: cmd=6 data=0x0
+   kworker/u16:2-174     [006] d..1    18.439475: req: cmd=0 data=0x1126a0
+   kworker/u16:2-174     [006] d..1    18.439476: req: cmd=4 data=0x64ea84
+   kworker/u16:2-174     [006] d..1    18.439482: req: cmd=6 data=0x0
+   kworker/u16:2-174     [006] d..1    18.439483: req: cmd=0 data=0x1126a0
+   kworker/u16:2-174     [006] d..1    18.439484: req: cmd=4 data=0x4bafe3
+   kworker/u16:2-174     [006] d..1    18.439885: req: cmd=2 data=0x0
+            init-381     [002] d..1    18.851514: req: cmd=3 data=0x0
