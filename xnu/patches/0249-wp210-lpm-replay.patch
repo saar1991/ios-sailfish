@@ -1,0 +1,143 @@
+diff --git a/bsd/dev/sweet_perf.c b/bsd/dev/sweet_perf.c
+index 216a436..160a222 100644
+--- a/bsd/dev/sweet_perf.c
++++ b/bsd/dev/sweet_perf.c
+@@ -1300,6 +1300,85 @@ wp210_dvfsrc_early(void)
+ 	printf("SWEET EARLY: watch done (%d changes)\n", ch);
+ }
+ 
++/*
++ * 0249: Android's boot trace past 3.69 s (boot 6e2a1553, androidboot.fastboot.boottrace):
++ * between DVFSRC_INIT (1.11 s) and DVFSRC_START (4.653 s) the kernel's lpm modules
++ * (mtk_lpm_plat_v1, mtk_lpm_dbg) send 45 MTK_SIP_MTK_LPM_CONTROL (0xc2000507) calls
++ * at 4.638-4.646 s: CPU_PM irq-remain list (0xda0000xx/0xda0300xx), SPM_DBG resource
++ * users / DOE resource control / condition block / RC BBLPM (0xda0100xx), SPM
++ * SET_PENDING_IRQ_INIT (0xda020005), VALIDATE_PWR_STATE_CTRL, CPC_COMMAND. The SPM
++ * firmware may not serve the DVFSRC until its resource controller is set up.
++ * wp210dram=3: replay them, in order and with Android's arguments, right before START.
++ */
++static const uint32_t wp210_lpm_calls[45][3] = {
++	{0xda000002, 0x5, 0x0},
++	{0xda030001, 0x1, 0x5},
++	{0xda000003, 0x270, 0x0},
++	{0xda030003, 0x1, 0x270},
++	{0xda030004, 0x1, 0x0},
++	{0xda030005, 0x1, 0x0},
++	{0xda030002, 0x8, 0x0},
++	{0xda000003, 0xa1, 0x0},
++	{0xda030003, 0x1, 0xa1},
++	{0xda030004, 0x1, 0x0},
++	{0xda030005, 0x1, 0x0},
++	{0xda030002, 0x8, 0x0},
++	{0xda000003, 0x22b, 0x0},
++	{0xda030003, 0x1, 0x22b},
++	{0xda030004, 0x1, 0x0},
++	{0xda030005, 0x1, 0x0},
++	{0xda030002, 0x8, 0x0},
++	{0xda000003, 0xd4, 0x0},
++	{0xda030003, 0x1, 0xd4},
++	{0xda030004, 0x1, 0x0},
++	{0xda030002, 0x8, 0x0},
++	{0xda030005, 0x1, 0x0},
++	{0xda000003, 0xd3, 0x0},
++	{0xda030003, 0x1, 0xd3},
++	{0xda030004, 0x1, 0x0},
++	{0xda030002, 0x8, 0x0},
++	{0xda030005, 0x1, 0x0},
++	{0xda000004, 0x0, 0x0},
++	{0xda030002, 0x20, 0x0},
++	{0xda010011, 0x1, 0x0},
++	{0xda010011, 0x1, 0x1},
++	{0xda010011, 0x1, 0x2},
++	{0xda010011, 0x1, 0x3},
++	{0xda010011, 0x1, 0x4},
++	{0xda010012, 0x1, 0x0},
++	{0xda010012, 0x1, 0x1},
++	{0xda010012, 0x1, 0x2},
++	{0xda010012, 0x1, 0x3},
++	{0xda020005, 0x1, 0x12e},
++	{0xda000005, 0x1, 0x0},
++	{0xda010009, 0x1, 0x0},
++	{0xda010017, 0x1, 0x0},
++	{0xda010017, 0x1, 0x1},
++	{0xda010017, 0x1, 0x2},
++	{0xda000001, 0x2, 0x4},
++};
++static void
++wp210_lpm_replay(void)
++{
++	int bad = 0;
++	for (int i = 0; i < 45; i++) {
++		register uint64_t x0 __asm__("x0") = 0xc2000507ull;
++		register uint64_t x1 __asm__("x1") = wp210_lpm_calls[i][0];
++		register uint64_t x2 __asm__("x2") = wp210_lpm_calls[i][1];
++		register uint64_t x3 __asm__("x3") = wp210_lpm_calls[i][2];
++		register uint64_t x4 __asm__("x4") = 0;
++		__asm__ volatile ("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4) : :
++		    "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14",
++		    "x15", "x16", "x17", "memory");
++		if (x0 != 0) {
++			bad++;
++		}
++		printf("SWEET LPM: %2d %#x %#x %#x -> a0 %#llx a1 %#llx\n", i, wp210_lpm_calls[i][0],
++		    wp210_lpm_calls[i][1], wp210_lpm_calls[i][2], x0, x1);
++	}
++	printf("SWEET LPM: replayed 45 calls, %d returned non-zero\n", bad);
++}
++
+ static void
+ wp210_bw(const char *label)
+ {
+@@ -1500,6 +1579,16 @@ wp210_dram(uint64_t up)
+ 		if (dvstart == 0 || dvfsrc_init == 0) {
+ 			printf("SWEET DRAM: DVFSRC_START skipped\n");
+ 		} else {
++			if (on == 3) {
++				printf("SWEET DRAM: about to replay Android's 45 LPM calls before START\n");
++				wp210_dram_flush();
++				wp210_lpm_replay();
++				wp210_spm_line("after LPM replay");
++				printf("SWEET DRAM: after LPM replay LEVEL %#x LAST %#x DEBUG0 %#x 5c8 %#x 904 %#x\n",
++				    wp210_rd(wp210_dvfsrc, 0x5f0, 0x1000), wp210_rd(wp210_dvfsrc, 0x3ac, 0x1000),
++				    wp210_rd(wp210_dvfsrc, 0x29c, 0x1000), wp210_rd(wp210_dvfsrc, 0x5c8, 0x1000),
++				    wp210_rd(wp210_phy, 0x904, 0x2000));
++			}
+ 			printf("SWEET DRAM: %llu s about to call MTK_SIP_VCOREFS_CONTROL DVFSRC_START (smc 0xc2000506, 1)\n",
+ 			    (unsigned long long)up);
+ 			wp210_dram_flush();
+@@ -1511,18 +1600,22 @@ wp210_dram(uint64_t up)
+ 			    "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14",
+ 			    "x15", "x16", "x17", "memory");
+ 			printf("SWEET DRAM: DVFSRC_START returned a0 %#llx a1 %#llx\n", x0, x1);
+-			uint32_t last904 = 0xffffffff, lastlv = 0xffffffff;
++			uint32_t last904 = 0xffffffff, lastlv = 0xffffffff, lastdbg = 0xffffffff, lastlst = 0xffffffff;
+ 			uint64_t t0 = mach_absolute_time();
+ 			for (int i = 0; i < 200; i++) {         /* 2 s, every 10 ms */
+ 				uint32_t p904 = *(volatile uint32_t *)(wp210_phy + 0x904);
+ 				uint32_t lv = *(volatile uint32_t *)(wp210_dvfsrc + 0x5f0);
+-				if (p904 != last904 || lv != lastlv) {
+-					printf("SWEET DRAM: start +%llu us BASIC %#x SW_REQ %#x LEVEL %#x 904 %#x 1204 %#x\n",
++				uint32_t dbg = wp210_rd(wp210_dvfsrc, 0x29c, 0x1000), lst = wp210_rd(wp210_dvfsrc, 0x3ac, 0x1000);
++				if (p904 != last904 || lv != lastlv || dbg != lastdbg || lst != lastlst) {
++					printf("SWEET DRAM: start +%llu us BASIC %#x SW_REQ %#x LEVEL %#x LAST %#x DEBUG0 %#x | SPM pc %#x spmi_con %#x | 904 %#x 1204 %#x\n",
+ 					    perf_ns(mach_absolute_time() - t0) / 1000,
+ 					    *(volatile uint32_t *)(wp210_dvfsrc + 0x0), *(volatile uint32_t *)(wp210_dvfsrc + 0x18),
+-					    lv, p904, *(volatile uint32_t *)(wp210_phy + 0x904 + 0x900));
++					    lv, lst, dbg, wp210_rd(wp210_spm, 0x194, 0x1000), wp210_rd(wp210_spm, 0x308, 0x1000),
++					    p904, *(volatile uint32_t *)(wp210_phy + 0x904 + 0x900));
+ 					last904 = p904;
+ 					lastlv = lv;
++					lastdbg = dbg;
++					lastlst = lst;
+ 				}
+ 				if (i == 1 || i == 10 || i == 50 || i == 199) {
+ 					wp210_spm_line(i == 1 ? "after START +10 ms" : i == 10 ? "+100 ms" : i == 50 ? "+500 ms" : "+2 s");
+@@ -1615,7 +1708,7 @@ wp210_dram(uint64_t up)
+ 		 * (slave 0, from LK) when INIT runs: set it first, as Android has it.
+ 		 * wp210spmi=0 skips.
+ 		 */
+-		int spmi = 1;
++		int spmi = on == 3 ? 0 : 1;      /* 0249: wp210dram=3 is Android's sequence, no SPMI_CON write */
+ 		(void)PE_parse_boot_argn("wp210spmi", &spmi, sizeof(spmi));
+ 		if (spmi) {
+ 			if (wp210_spm == 0) {
