@@ -1240,3 +1240,10 @@ The changes come from the iOS boot in the trace image, not from our install.
   the 0x502 errors (2e46631), Control Centre's background (a55-step run) and compile stalls (llvmpipe disk shader cache) are done.
   Really open: idle power/heat with DRAM held at 5500; Wi-Fi (`sailfishwlan=0`), USB (`sweetusb=0`), battery (`sweetbattery=0`),
   buttons via the iOS key path (`sweetkeys=0`), audio, camera, cellular; 6400 Mbps.
+- **Stock firmware V11 (20251201), part 1 of the split 7z uploaded (400 MB of ~3.68 GB):** the 7z stores a .tar.gz uncompressed,
+  so part 1 alone extracts up to the start of super.img (7.47 GB, the rest of the parts). Extracted in the sandbox
+  (/home/claude/fw): boot.img, dtbo.img, lk.img, preloader*, **spmfw.img** (18 KB, the SPM firmware), scp/sspm/mcupm/gpueb/
+  dpm/ccu/apusys/gz images, scatter, ProjectConfig.mk/HardwareConfig.txt (copied to `notes/firmware/stock-v11/`).
+  Hardware from ProjectConfig: Wi-Fi/BT CONSYS (MTK_WLAN_CHIP CONSYS_MT6893, BT MTK_CONSYS_MT6895), gauge version 30,
+  smart PA Richtek RT5512, 2 mics / 1 speaker. Device tree: charger/gauge/TCPC **MT6375 at I2C 0x34** (mt6375-chg, -gauge,
+  -tcpc, -adc, battery profiles t0-t4: OCV tables), power key on **mt6363-keys** (hw-pwrkey 8), USB `mt6895-ssusb`.
