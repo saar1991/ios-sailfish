@@ -1123,3 +1123,13 @@ The changes come from the iOS boot in the trace image, not from our install.
   first ~5 s) were never seen. **kp7:** trace them from the first instruction with a boot-time kprobe
   (`kprobe_event=p:wp210b/smc,__arm_smccc_smc,...` on the command line of a copy of boot_b booted with `fastboot boot`,
   nothing flashed); a Magisk post-fs-data hook saves the trace, dmesg and /proc/bootprof.
+- **Boot trace 1 (2026-11-19, boot 7cf56765):** `fastboot boot` is refused ("unknown command"), so the traced copy was
+  flashed to boot_b (backup `boot_b.img`, sha256 a9dd144f…, restored after). LK drops the first 20 characters of the
+  boot-image command line: pad with a 40-character dummy word first. The kprobe ran; Android's init turns tracing off
+  at 3.62 s. Window 1.375-3.616 s (`notes/firmware/android-boottrace1-sip.txt`, PSCI CPU_SUSPEND removed: 655k of them).
+  VCOREFS_CONTROL calls at 1.621 s (init, the dvfsrc helper's probe): a1 2 GET_OPP_TYPE, 3 GET_FW_TYPE, 4/5 GET_VCORE_UV /
+  GET_DRAM_FREQ per OPP, 7; **no DVFSRC_INIT (0) in the window**. Other SIP: 0xc2000518 (display), 0xc2000276 (UFS),
+  0xb2000001/0xb2005704/5 and 0xbb00ffa7 (trusted OS), 0x8200026a (rng). Every CPU's first event is at 1.375-1.376 s
+  and modules start loading at 0.97 s (bootprof): something before 1.375 s is missing (buffer reset or overflow of the
+  PSCI flood; CPUs 5/6 start at 1.61/1.52, overwritten). dmesg starts at 4.86 s (a warning flood filled it).
+  Next: same with `cpuidle.off=1` (no PSCI flood) and the ring-buffer stats saved (kp9 hook).

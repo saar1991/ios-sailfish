@@ -30,7 +30,7 @@ D=/data/local/tmp/wp210-probe/$BID; mkdir -p $D
 save() {
   echo "uptime $(cut -d' ' -f1 /proc/uptime) tracing_on $(cat $T/tracing_on) buffer_kb $(cat $T/buffer_size_kb)" > $D/boottrace-$1.txt
   grep -v '^#' $T/trace >> $D/boottrace-$1.txt
-  dmesg > $D/dmesg-$1.txt 2>&1
+  dmesg > $D/dmesg-$1.txt 2>&1 || logcat -b kernel -d > $D/dmesg-$1.txt 2>&1
   cat /proc/bootprof > $D/bootprof-$1.txt 2>/dev/null
   cat /proc/modules > $D/modules-$1.txt
   chmod 644 $D/*-$1.txt
