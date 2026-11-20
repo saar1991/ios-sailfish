@@ -1269,3 +1269,13 @@ The changes come from the iOS boot in the trace image, not from our install.
   Qualcomm one (sweet_fbcon_dcs: fbcon_dsi NULL on the WP210 → "FAILED (no DSI command done)", nothing written).
 - **0254 (run 44814073202):** volume up mapped (bit 3 → KEY_VOLUP); one read-only dump of the MediaTek DSI registers +0x000-0x2fc at 30 s
   (`SWEET DSI:`), to see LK's command queue before sending DCS 0x51 (brightness) to the NT37705 from the DSI CMDQ.
+- **0254 result (log 990f0c8f):** volume up/down reach iOS (HID 0xe9/0xea; SpringBoard builds the volume HUD layers).
+  DSI dump (MediaTek, base from mtk,dsi-start): START 1, INTSTA 0x16, MODE_CTRL 0 (command mode), TXRX 0x1023c,
+  PSCTRL 0x2c050438, CMDQ_CON (0x60) 0x8001; 0x200-0x2fc all 0 (on the MT6895 the command queue is at **0xd00**,
+  mtk_dsi.c mt6895_dsi_driver_data reg_cmdq0_ofs; 0x200 is the video-mode VM_CMD block).
+- **Backlight command from the stock panel driver** (vendor_boot panel-nt37705-fhdp2412-dsi-cmd-oled-dphy.ko,
+  lcm_setbacklight_cmdq, disassembled): DCS **0x51 + 2 bytes big-endian, clamped to 0xdee** (0xfff = HBM path), 3-byte write.
+  Frame entry in the queue: 0x002c3909 (mtk_dsi.c), size 1.
+- **0255 (run 44817714554):** AppleARMBacklight → sweet_fbcon_mtk_bl(level·0xdee/255): under the kick lock with the DSI idle,
+  CMDQ0 = 0x00033 90a (len 3, DCS long write, LONG|HSTX), CMDQ1 = 0x51 hi lo, CMDQ_CON size 2, START 0→1, wait INTSTA bit 1,
+  then CMDQ0/1 and CMDQ_CON restored as found.
