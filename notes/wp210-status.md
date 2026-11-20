@@ -1283,3 +1283,9 @@ The changes come from the iOS boot in the trace image, not from our install.
   Control Centre slider sends 244 → 70 in steps; power key → fade to **panel level 0: the screen goes black** (video), wake by
   power or Home → level 23 then the fade back up; lock screen shows. No FAILED, no display glitch.
   **Default now: kernel 0255 + args-default.txt** (`wp210-boot-0255.img`): RAM fix, 4 keys, brightness, screen off on lock.
+
+## Panel copy: which LK buffer the panel scans (0256, 2026-11-21)
+
+- **0256 (log 9edec87a):** `SWEET SCAN:` lines at 30 s and 100 s. LK buffers at 0xfe1af000, stride 0xa18000, 3 buffers. OVL0 layer 1 = 0xfebc7000 and OVL1 layer 1 = 0xfebc7870 (right half), both **buffer 1**, the same at both times; RDMA0/1 address 0. Panel copy (writing all 3 buffers) 3.9–5.0 ms, 4.7 ms at 150 s.
+- **0256 + `wp210fbbuf=1` (args-fbbuf1.txt = default minus ` sweetgpu=0`, 599 chars; log 86ca0bde):** picture normal. Panel copy **3.8–3.9 ms** (was 4.7). Frames, 30 steps: **985** (default 986): no change. AppleCLCD still writes buffer 0 (its own `fPanel`) and the mirror writes buffer 1, so this is 2 writes instead of 3; writing buffer 1 only would be 1.
+- **Conclusion:** the panel copy runs beside the frame work, not in its path (5 cores). Cutting it saves CPU time and memory traffic, but it does not change frame counts.
