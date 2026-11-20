@@ -15,6 +15,9 @@ on:
       llvm_version:
         description: LLVM release (llvm-project-VERSION.src.tar.xz)
         default: 19.1.7
+      hash_from_run:
+        description: if set, build nothing; print sizes, SHA-256s (dylib and the 27649-block payload) and symbols of that run's artifact
+        default: ""
       runner:
         description: runner label; macos-15-intel when no arm64 Mac is free (GitHub capacity), LLVM is then built again for that host
         default: macos-15
@@ -24,7 +27,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  hash:
+    if: ${{ inputs.hash_from_run != '' }}
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sweetgl-llvmpipe
+          run-id: ${{ inputs.hash_from_run }}
+          github-token: ${{ github.token }}
+          path: a
+      - name: hashes
+        run: |
+          find a -type f -exec ls -l {} +
+          D=$(find a -name sweetgl.dylib | head -1); U=$(find a -name sweetgl.unstripped.dylib | head -1)
+          echo "DYLIB_BYTES $(wc -c < "$D")"
+          echo "DYLIB_SHA $(shasum -a 256 "$D" | cut -d' ' -f1)"
+          echo "PAYLOAD_SHA $({ cat "$D"; head -c $((113250304 - $(wc -c < "$D"))) /dev/zero; } | shasum -a 256 | cut -d' ' -f1)"
+          strings "$D" | grep -E '^sweetgl-run|sampler_view \(no wait\)|sweetgl: lp ' | sort -u | head -20
+          codesign -dv "$D" 2>&1 | head -5 || true
+          xcrun nm -n "$U" | awk '$2 ~ /^[tT]$/ {print "SYM", $1, $3}'
   build:
+    if: ${{ !inputs.hash_from_run }}
     runs-on: ${{ inputs.runner || 'macos-15' }}
     timeout-minutes: 340
     env:
