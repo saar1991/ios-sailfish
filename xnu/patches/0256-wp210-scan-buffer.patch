@@ -27,18 +27,19 @@ index 58b3d40..07e517b 100644
  			static uint32_t r[192];
  			dsi_dumped = 1;
 diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
-index 9d846ad..94c3066 100644
+index 9d846ad..1dbf843 100644
 --- a/pexpert/arm/pe_serial.c
 +++ b/pexpert/arm/pe_serial.c
-@@ -29,6 +29,7 @@
+@@ -29,6 +29,8 @@
  #include <arm64/sweet_early.h>
  #include <pexpert/arm/protos.h>
  #include <kern/sched_prim.h>
-+#include <kern/misc_protos.h>
++extern int printf(const char *, ...) __printflike(1, 2);
++extern int snprintf(char *, size_t, const char *, ...) __printflike(3, 4);
  #if HIBERNATION
  #include <machine/pal_hibernate.h>
  #endif /* HIBERNATION */
-@@ -736,6 +737,14 @@ static uint64_t fbcon_buf_stride;
+@@ -736,6 +738,14 @@ static uint64_t fbcon_buf_stride;
   * only buffer N: the bring-up shim showed the panel scanning buffer 1.
   */
  static int fbcon_only_buf = -1;
@@ -53,7 +54,7 @@ index 9d846ad..94c3066 100644
  
  static inline void
  fbcon_px(uint32_t x, uint32_t y, uint32_t c)
-@@ -1134,6 +1143,46 @@ sweet_fbcon_mtk_bl(uint32_t level)
+@@ -1134,6 +1144,46 @@ sweet_fbcon_mtk_bl(uint32_t level)
  	return done;
  }
  
@@ -100,7 +101,7 @@ index 9d846ad..94c3066 100644
  bool sweet_fbcon_te_probe(uint32_t out[11]);
  bool
  sweet_fbcon_te_probe(uint32_t out[11])
-@@ -1419,7 +1468,14 @@ fbcon_probe(void)
+@@ -1419,7 +1469,14 @@ fbcon_probe(void)
  		if (SecureDTGetProperty(entry, "mtk,buffer-stride", (void const **)&val, &size) == kSuccess &&
  		    *val != 0 && fbcon_bypp == 4) {
  			fbcon_buf_stride = *val;
