@@ -93,6 +93,10 @@ if 'sweetgl_lp_cache_id_fallback' not in s:
     print('patched', p)
 PY
 
+# llvmpipe: no CPU wait on sampling an earlier scene's output, and the
+# rasterizer profile printed by eagl.c (see lp-sweet.py)
+python3 -I "$H/lp-sweet.py" "$M"
+
 if [ ! -f "$B/build.ninja" ]; then
 	(cd "$M" && meson setup "$B" --cross-file "$O/ios-cross.txt" \
 		--buildtype=release -Db_ndebug=true -Ddefault_library=static \

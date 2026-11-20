@@ -2680,6 +2680,11 @@ flush_stats(uint64_t t0, uint64_t t1)
 		    n * 1e9 / span, wait * tb.numer / tb.denom / 1000 / n, wait_max * tb.numer / tb.denom / 1000,
 		    cpu * tb.numer / tb.denom / 1000 / n);
 		fast_log();
+#ifdef SWEETGL_LLVMPIPE
+		/* llvmpipe's rasterizer profile and GL-thread waits (lp-sweet.py) */
+		extern void sweet_lp_report(void (*lg)(const char *, ...));
+		sweet_lp_report(sweet_drm_log);
+#endif
 		window = t1;
 		n = wait = wait_max = cpu = 0;
 	}
