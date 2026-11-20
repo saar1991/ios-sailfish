@@ -15,6 +15,9 @@ on:
       keep_going:
         description: make -k (collect all compile errors in one run)
         default: "true"
+      symbols_from_run:
+        description: if set, build nothing; print the text symbols of that run's xnu-kernel artifact ("SYM addr name")
+        default: ""
   push:
     branches: [main]
     paths:
@@ -33,7 +36,27 @@ env:
   MACHINE_CONFIG: ${{ inputs.machine_config || 'SWEET' }}
 
 jobs:
+  symbols:
+    if: ${{ inputs.symbols_from_run != '' }}
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: xnu-kernel
+          run-id: ${{ inputs.symbols_from_run }}
+          github-token: ${{ github.token }}
+          path: k
+      - name: symbols
+        run: |
+          find k -type f | head -20
+          K=$(find k -name 'kernel.development*' -type f ! -path '*dSYM*' | head -1)
+          echo "kernel $K"; shasum -a 256 "$K"
+          xcrun nm -n "$K" | awk '$2 ~ /^[tTsS]$/ {print "SYM", $1, $2, $3}'
   build:
+    if: ${{ !inputs.symbols_from_run }}
     # macos-14 still ships Xcode 15.x: its iig matches the xnu-8796 IORPC ABI
     # (Xcode 16's iig emits IORPC.kernelContent, which this xnu lacks)
     runs-on: macos-15-intel
