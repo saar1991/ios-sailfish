@@ -1,0 +1,120 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+index ca7b633..b21f0ef 100644
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -293,14 +293,69 @@ wp210_lat_us(void)
+ 	return (uint64_t)s * 1000000u + us;
+ }
+ 
++/*
++ * 0253: the real power key, from the MT6363 PMIC (SPMI slave 4), read through the
++ * PMIF software channel 2 like Android's spmi-mtk-pmif (0252 proved it: identity
++ * 0x09/0x08 = 0x63/0x40, TOPSTATUS 0x1e idles at 0x1e and bit 1 drops to 0 while
++ * the power key is down). Device tree mt6363-keys: power (KEY_POWER) and "home"
++ * (keycode 115, volume up), both in TOPSTATUS. Read only.
++ * wp210keymap=1 (default): power key = Power, red side key = Home, volume down =
++ * volume down; every other TOPSTATUS change is logged (to find volume up).
++ * wp210keymap=0: the old layout (volume down = Home, red side key = Power, no PMIC).
++ */
++#define WP210_PMIF_PA 0x1c804000u
++static vm_offset_t wp210_pmif;
++static int wp210_keymap = 1;
++static int
++wp210_pmic_rd(uint32_t sid, uint32_t addr, uint32_t *val)
++{
++	volatile uint32_t *r = (volatile uint32_t *)wp210_pmif;
++	int i, ret = 0;
++	lck_mtx_lock(&sweet_pmic_lock);
++	for (i = 0; i < 1000 && ((r[0x8a8 / 4] >> 1) & 7) != 0; i++) {
++		delay(10);
++	}
++	if (i == 1000) {
++		ret = -1;
++		goto out;
++	}
++	r[0x880 / 4] = (3u << 30) | (sid << 24) | (addr & 0xffffu);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	for (i = 0; i < 1000 && ((r[0x8a8 / 4] >> 1) & 7) != 6; i++) {
++		delay(10);
++	}
++	if (i == 1000) {
++		ret = -2;
++		goto out;
++	}
++	*val = r[0x894 / 4] & 0xffu;
++	r[0x8a4 / 4] = 1;
++	__asm__ volatile ("dsb sy" ::: "memory");
++out:
++	lck_mtx_unlock(&sweet_pmic_lock);
++	return ret;
++}
++
+ static void
+ wp210_keys_thread(void *arg, wait_result_t result)
+ {
+ 	static const uint32_t pin[2] = {WP210_GPIO_HOME, WP210_GPIO_SIDE};
+-	static const int code[2] = {KEY_HOME, KEY_POWER};
++	int code[2] = {KEY_HOME, KEY_POWER};
+ 	int state[2] = {0, 0};
++	uint32_t top = 0x1e, v;
++	int pmic_ok = 0, pmic_fail = 0, pwr = 0;
+ 	(void)arg;
+ 	(void)result;
++	if (wp210_keymap) {
++		code[0] = 2;            /* volume down */
++		code[1] = KEY_HOME;     /* red side key */
++		if (wp210_pmif != 0 && wp210_pmic_rd(4, 0x1e, &top) == 0) {
++			pmic_ok = 1;
++			printf("SWEET KEYS: wp210 PMIC TOPSTATUS %#x: power key on the MT6363\n", top);
++		} else {
++			printf("SWEET KEYS: wp210 PMIC read failed: no power key\n");
++		}
++	}
+ 	for (;;) {
+ 		for (int k = 0; k < 2; ++k) {
+ 			int now = !wp210_pin(pin[k]);
+@@ -315,6 +370,23 @@ wp210_keys_thread(void *arg, wait_result_t result)
+ 				}
+ 			}
+ 		}
++		if (pmic_ok) {
++			if (wp210_pmic_rd(4, 0x1e, &v) != 0) {
++				if (++pmic_fail == 10) {
++					printf("SWEET KEYS: wp210 PMIC reads failing, power key stopped\n");
++					pmic_ok = 0;
++				}
++			} else if (v != top) {
++				int now = !(v & 0x2);
++				printf("SWEET KEYS: wp210 PMIC TOPSTATUS %#x -> %#x (changed bits %#x)\n", top, v, top ^ v);
++				top = v;
++				if (now != pwr) {
++					pwr = now;
++					printf("SWEET KEYS: wp210 key=%d down=%d (power key)\n", KEY_POWER, now);
++					sweet_hid_key(KEY_POWER, now);
++				}
++			}
++		}
+ 		keys_wait();
+ 	}
+ }
+@@ -329,6 +401,10 @@ wp210_keys_init(void)
+ 		printf("SWEET KEYS: wp210 GPIO mapping failed\n");
+ 		return;
+ 	}
++	(void)PE_parse_boot_argn("wp210keymap", &wp210_keymap, sizeof(wp210_keymap));
++	if (wp210_keymap) {
++		wp210_pmif = ml_io_map(WP210_PMIF_PA, 0x1000);
++	}
+ 	for (int k = 0; k < 2; ++k) {
+ 		uint32_t p = pin[k];
+ 		uint32_t dir = (keys_rd(wp210_gpio, 0x10u * (p / 32u)) >> (p % 32u)) & 1u;
+@@ -342,7 +418,8 @@ wp210_keys_init(void)
+ 	kern_return_t kr = kernel_thread_start(wp210_keys_thread, NULL, &thread);
+ 	if (kr == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+-		printf("SWEET KEYS: wp210 keys polling (Home = volume down, Power = side key)\n");
++		printf("SWEET KEYS: wp210 keys polling (%s)\n", wp210_keymap ?
++		    "Power = power key, Home = side key, volume down" : "Home = volume down, Power = side key");
+ 	} else {
+ 		printf("SWEET KEYS: kernel_thread_start failed %d\n", kr);
+ 	}
