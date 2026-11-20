@@ -1262,3 +1262,10 @@ The changes come from the iOS boot in the trace image, not from our install.
 - **0253 (run 44810001089):** keys thread reads TOPSTATUS every 20 ms (PMIF channel 2, under sweet_pmic_lock): **power key → Power**;
   new default layout `wp210keymap=1`: red side key (GPIO 108) → Home, volume down (GPIO 107) → volume down; every other
   TOPSTATUS change logged to find volume up. `wp210keymap=0` = old layout (volume down = Home, side key = Power).
+- **0253 result (log 876fb952, video 22:42):** power key works: press → iOS locks (lock screen "Press home to open"),
+  red side key = Home works, volume down sends key 2. TOPSTATUS bits (active low unless noted): **bit 1 power, bit 3
+  volume up** (0x1a ↔ 0x12, logged only in 0253), **bit 2 charger present (1 = USB power in)**; boot value 0x1a (no cable).
+  **The screen does not go dark on lock:** CoreBrightness fades the backlight, but AppleARMBacklight's DCS 0x51 path is the
+  Qualcomm one (sweet_fbcon_dcs: fbcon_dsi NULL on the WP210 → "FAILED (no DSI command done)", nothing written).
+- **0254 (run 44814073202):** volume up mapped (bit 3 → KEY_VOLUP); one read-only dump of the MediaTek DSI registers +0x000-0x2fc at 30 s
+  (`SWEET DSI:`), to see LK's command queue before sending DCS 0x51 (brightness) to the NT37705 from the DSI CMDQ.
