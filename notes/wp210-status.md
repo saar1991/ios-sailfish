@@ -1255,3 +1255,10 @@ The changes come from the iOS boot in the trace image, not from our install.
 - **0252 (run 44501037198):** `wp210pmic=1`: MT6363 (SPMI sid 4) reads through PMIF SWINF channel 2 (ACC 0x880, RDATA 0x894,
   VLD_CLR 0x8a4, STA 0x8a8; command (3<<30)|sid<<24|addr, as Android and as LK left it: 0xc400001e). At 25 s: 0x08/0x09
   (identity) and TOPSTATUS 0x1e (mtk-pmic-keys: power key bit 0, active low), then TOPSTATUS every 50 ms for 60 s.
+- **0252 result (log 84fe81f3): PMIC link works.** MT6363 identity 0x09/0x08 = **0x63/0x40**, TOPSTATUS 0x1e idles at
+  **0x1e**; five power-key presses seen: **bit 1 drops to 0 while pressed** (0x1e → 0x1c, ~200 ms each). (The probe's
+  "bit 0" label was wrong; mtk-pmic-keys' deb_mask 0x1 is a bit number.) Device tree mt6363-keys: power (116) and home
+  (115 = volume up) in TOPSTATUS.
+- **0253 (run 44810001089):** keys thread reads TOPSTATUS every 20 ms (PMIF channel 2, under sweet_pmic_lock): **power key → Power**;
+  new default layout `wp210keymap=1`: red side key (GPIO 108) → Home, volume down (GPIO 107) → volume down; every other
+  TOPSTATUS change logged to find volume up. `wp210keymap=0` = old layout (volume down = Home, side key = Power).
