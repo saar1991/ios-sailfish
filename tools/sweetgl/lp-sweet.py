@@ -116,6 +116,9 @@ RAST_EDITS = [
 ''', '''   STATIC_ASSERT(ARRAY_SIZE(dispatch_tri) == LP_RAST_OP_MAX);
 
    struct swp_thr *swt = task->thread_index < SWP_T ? &swp_thr[task->thread_index] : NULL;
+   /* task->state is only valid after this bin's own SET_STATE: before it, it
+    * still points into an earlier (possibly freed) scene */
+   const struct lp_rast_state *swst = NULL;
    uint64_t swt0 = swp_now();
    for (const struct cmd_block *block = bin->head; block; block = block->next) {
       for (unsigned k = 0; k < block->count; k++) {
@@ -126,8 +129,10 @@ RAST_EDITS = [
             swt0 = swt1;
             swt->op_ticks[op] += d;
             swt->op_n[op]++;
-            if (op != LP_RAST_OP_SET_STATE)
-               swp_var_add(swt, task->state, d);
+            if (op == LP_RAST_OP_SET_STATE)
+               swst = task->state;
+            else
+               swp_var_add(swt, swst, d);
          }
       }
    }
