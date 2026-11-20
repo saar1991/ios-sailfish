@@ -1,0 +1,96 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index da2be0c..5c8fa2c 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -108,6 +108,7 @@ extern "C" void sweet_fbcon_flip(uint64_t pa, uint32_t stride);
+ extern "C" void sweet_fbcon_mirror_row(uint32_t x, uint32_t y, const void *src, size_t len);  /* wp210 */
+ extern "C" void sweet_fbcon_blank(bool blank);
+ extern "C" bool sweet_fbcon_dcs(uint8_t cmd, uint8_t param);
++extern "C" int sweet_fbcon_mtk_bl(uint32_t level);
+ #include "../../../bsd/dev/sweet_gpu.h"
+ extern "C" vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
+ /* Read by bsd/dev/sweet_perf.c. */
+@@ -319,9 +320,12 @@ AppleARMBacklight::apply(uint32_t level)
+ 	if (fKnown && level == fLevel) {
+ 		return;
+ 	}
+-	bool ok = sweet_fbcon_dcs(0x51, (uint8_t)level);
+-	if (!ok || !fKnown) {
+-		IOLog("SWEET BL: panel level %u %s\n", level, ok ? "set" : "FAILED (no DSI command done)");
++	/* 0255: the WP210's NT37705 takes 0..0xdee (MediaTek DSI); the Redmi's ea8064tg 0..255 */
++	int mtk = sweet_fbcon_mtk_bl(level * 0xdeeu / SWEET_BL_MAX);
++	bool ok = mtk >= 0 ? mtk == 1 : sweet_fbcon_dcs(0x51, (uint8_t)level);
++	if (!ok || !fKnown || ((level == 0) != (fLevel == 0))) {
++		IOLog("SWEET BL: panel level %u (%s) %s\n", level, mtk >= 0 ? "nt37705" : "ea8064tg",
++		    ok ? "set" : "FAILED (no DSI command done)");
+ 	}
+ 	fKnown = true;
+ 	fLevel = level;
+diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
+index 0ba7755..9d846ad 100644
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -1077,6 +1077,63 @@ sweet_fbcon_mtk_dsi_regs(uint32_t out[192])
+ 	return true;
+ }
+ 
++/*
++ * 0255: panel brightness on the WP210. Android's panel driver (vendor_boot module
++ * panel-nt37705-fhdp2412-dsi-cmd-oled-dphy.ko, lcm_setbacklight_cmdq) sends DCS 0x51
++ * with two bytes, big-endian, 0..0xdee (0xfff only for HBM) as a long write. The
++ * MT6895 DSI command queue is at +0xd00 (mtk_dsi.c mt6895_dsi_driver_data
++ * reg_cmdq0_ofs), its size in CMDQ_CON +0x60 (bits 0-9, bit 15 SIZE_SEL); LK left
++ * one entry there, the frame write 0x002c3909 (0254 dump: CMDQ_CON 0x8001).
++ * Between frames (kick lock, DSI not busy): queue {(3 << 16) | 0x39 << 8 | LONG 2 |
++ * HSTX 8, 0x51 hi lo}, size 2, START 0 -> 1, wait for INTSTA bit 1 CMD_DONE (20 ms),
++ * then put back the frame entry and size exactly as found. -1 without a MediaTek
++ * DSI, 0 if the command did not finish, 1 sent.
++ */
++int sweet_fbcon_mtk_bl(uint32_t level);
++int
++sweet_fbcon_mtk_bl(uint32_t level)
++{
++	volatile uint32_t *d = fbcon_mtk_dsi;
++	if (d == NULL) {
++		return -1;
++	}
++	if (level > 0xdee) {
++		level = 0xdee;
++	}
++	sweet_fbcon_wait_idle();
++	while (!os_atomic_cmpxchg(&fbcon_kick_lock, 0u, 1u, acquire)) {
++		delay(200);
++	}
++	sweet_fbcon_wait_idle();
++	uint32_t q0 = d[0xd00 / 4], q1 = d[0xd04 / 4], con = d[0x60 / 4];
++	d[FBCON_MTK_INTSTA] = d[FBCON_MTK_INTSTA] & ~2u;
++	d[0xd00 / 4] = (3u << 16) | (0x39u << 8) | 0x0au;
++	d[0xd04 / 4] = 0x51u | ((level >> 8) & 0xffu) << 8 | (level & 0xffu) << 16;
++	d[0x60 / 4] = (con & ~0x3ffu) | 2u | (1u << 15);
++	__builtin_arm_dsb(DSB_SY);
++	d[0] = 0;
++	d[0] = 1;
++	__builtin_arm_dsb(DSB_SY);
++	int done = 0;
++	for (int i = 0; i < 400 && !done; i++) {
++		done = (d[FBCON_MTK_INTSTA] & 2u) != 0;
++		if (!done) {
++			delay(50);
++		}
++	}
++	d[0] = 0;
++	for (int i = 0; i < 400 && fbcon_mtk_busy(); i++) {
++		delay(50);
++	}
++	d[0xd00 / 4] = q0;
++	d[0xd04 / 4] = q1;
++	d[0x60 / 4] = con;
++	d[FBCON_MTK_INTSTA] = d[FBCON_MTK_INTSTA] & ~2u;
++	__builtin_arm_dsb(DSB_SY);
++	os_atomic_store(&fbcon_kick_lock, 0u, release);
++	return done;
++}
++
+ bool sweet_fbcon_te_probe(uint32_t out[11]);
+ bool
+ sweet_fbcon_te_probe(uint32_t out[11])
