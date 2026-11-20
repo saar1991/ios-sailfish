@@ -52,7 +52,7 @@ jobs:
       - name: symbols
         run: |
           find k -type f | head -20
-          K=$(find k -name 'kernel.development*' -type f ! -path '*dSYM*' | head -1)
+          K=$(find k -name 'kernel.development.sweet' -type f | head -1)
           echo "kernel $K"; shasum -a 256 "$K"
           xcrun nm -n "$K" | awk '$2 ~ /^[tTsS]$/ {print "SYM", $1, $2, $3}'
   build:
