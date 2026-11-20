@@ -1279,3 +1279,7 @@ The changes come from the iOS boot in the trace image, not from our install.
 - **0255 (run 44817714554):** AppleARMBacklight → sweet_fbcon_mtk_bl(level·0xdee/255): under the kick lock with the DSI idle,
   CMDQ0 = 0x00033 90a (len 3, DCS long write, LONG|HSTX), CMDQ1 = 0x51 hi lo, CMDQ_CON size 2, START 0→1, wait INTSTA bit 1,
   then CMDQ0/1 and CMDQ_CON restored as found.
+- **0255 result (log 81c5ff18, video 23:29): brightness works.** Every DCS 0x51 completes ("panel level … (nt37705) set");
+  Control Centre slider sends 244 → 70 in steps; power key → fade to **panel level 0: the screen goes black** (video), wake by
+  power or Home → level 23 then the fade back up; lock screen shows. No FAILED, no display glitch.
+  **Default now: kernel 0255 + args-default.txt** (`wp210-boot-0255.img`): RAM fix, 4 keys, brightness, screen off on lock.
