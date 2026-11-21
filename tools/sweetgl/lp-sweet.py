@@ -12,6 +12,11 @@
 #    built if it writes the texture, never wait. Another context's unflushed
 #    scene, or a vertex-shader sampler (run on the CPU by draw), keeps the
 #    stock finish. Environment SGLLPWAIT=1 restores the stock behaviour.
+#    The same for glTextureBarrierNV (llvmpipe_texture_barrier): eagl.c calls
+#    it before every draw that reads the framebuffer it renders to (CA's
+#    framebuffer fetch, emulated by sampling): flush, no wait. 8d9994d's
+#    profile showed ~1100 of these per 10 s during animations, ~3 s of
+#    GL-thread waiting.
 # 2. A profile of the rasterizer threads, printed by eagl.c every 10 s
 #    (sweet_lp_report): scenes and their sizes, busy and barrier time, why
 #    scenes were flushed, where the GL thread waited, time by command and by
@@ -512,7 +517,9 @@ llvmpipe_finish(struct pipe_context *pipe,
 /* sweetgl: lp-sweet.py part 1 (see there) */
 static uint64_t swp_nw_skip, swp_nw_flush, swp_nw_other, swp_nw_stock;
 
-static bool
+bool sweet_lp_nowait(void);
+uint64_t sweet_lp_barriers_nowait;
+bool
 sweet_lp_nowait(void)
 {
    static int on = -1;
@@ -574,6 +581,10 @@ sweet_lp_waits_report(void (*lg)(const char *, ...), double ms)
       if (d && o < (int)sizeof(l) - 48)
          o += snprintf(l + o, sizeof(l) - o, " %s %llu/%.0f", sweet_lp_waits[i].r, (unsigned long long)d, dt * ms);
    }
+   static uint64_t pb;
+   o += snprintf(l + o, sizeof(l) - o, "; texture barriers without wait %llu",
+                 (unsigned long long)(sweet_lp_barriers_nowait - pb));
+   pb = sweet_lp_barriers_nowait;
    o += snprintf(l + o, sizeof(l) - o, "; sampler binds without wait: skipped %llu, flushed %llu, other ctx %llu, stock %llu",
                  (unsigned long long)(swp_nw_skip - ps[0]), (unsigned long long)(swp_nw_flush - ps[1]),
                  (unsigned long long)(swp_nw_other - ps[2]), (unsigned long long)(swp_nw_stock - ps[3]));
@@ -586,6 +597,31 @@ sweet_lp_waits_report(void (*lg)(const char *, ...), double ms)
 '''),
 ]
 patch('lp_flush.c', FLUSH_EDITS)
+
+# ---------------------------------------------------------------- lp_context.c
+patch('lp_context.c', [
+    ('''static void
+llvmpipe_texture_barrier(struct pipe_context *pipe, unsigned flags)
+{
+   llvmpipe_finish(pipe, "barrier");
+}
+''', '''bool sweet_lp_nowait(void);   /* sweetgl: lp_flush.c */
+extern uint64_t sweet_lp_barriers_nowait;
+
+static void
+llvmpipe_texture_barrier(struct pipe_context *pipe, unsigned flags)
+{
+   /* sweetgl: scenes rasterize in order, so a later draw reading this
+    * context's earlier output only needs the current scene sent (lp-sweet.py) */
+   if (sweet_lp_nowait()) {
+      llvmpipe_flush(pipe, NULL, "barrier (no wait)");
+      sweet_lp_barriers_nowait++;
+      return;
+   }
+   llvmpipe_finish(pipe, "barrier");
+}
+'''),
+])
 
 # ---------------------------------------------------------------- lp_state_sampler.c
 patch('lp_state_sampler.c', [
