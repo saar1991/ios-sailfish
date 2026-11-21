@@ -1,8 +1,8 @@
 #!/system/bin/sh
 # WP210 only. llvmpipe shim 8b4cdd0: d90336c plus all blend modes, A8 sources, colour adjustments, darken and blur on the fast path
-# tinted copies (tint, atint, tint + dither): workflow sweetgl-llvmpipe run
+# (all blends, A8, lumc, cm4, cm3, atintdk, copydkn, blur): workflow sweetgl-llvmpipe run
 # 44916079709 (macos-15), branch llvmpipe-test commit 8b4cdd0.
-# Replaces the 3c8136f shim in the same space.
+# Replaces the d90336c shim in the same space.
 # Goes into the space of /usr/standalone/update/ramdisk/arm64SURamDisk.dmg
 # (the software-update ramdisk, unused by this port): file 315534,
 # 113246235 bytes, one extent at device block 121877958 x 27649.
