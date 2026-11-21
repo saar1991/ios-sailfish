@@ -703,6 +703,7 @@ fbfetch_link(GLuint program)
  */
 #ifdef SWEETGL_LLVMPIPE
 extern int sweet_lp_fbfetch_draw;
+extern unsigned sweet_lp_draw_kind;   /* lp-sweet.py: FPK_* | 0x100 if the fast path qualifies */
 #endif
 static int fbfetch_now;   /* the next draw reads the framebuffer in the same scene */
 
@@ -2519,6 +2520,7 @@ sgl_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 	if (fp != 1) {
 #ifdef SWEETGL_LLVMPIPE
 		sweet_lp_fbfetch_draw = fbfetch_now;
+		sweet_lp_draw_kind = (prog > 0 && prog < PROG_MAX ? prog_kind[prog] : 0) | (fp != 0 ? 0x100u : 0);
 #endif
 		glDrawArrays(mode, first, count);
 #ifdef SWEETGL_LLVMPIPE
@@ -2547,6 +2549,7 @@ sgl_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void
 	if (fp != 1) {
 #ifdef SWEETGL_LLVMPIPE
 		sweet_lp_fbfetch_draw = fbfetch_now;
+		sweet_lp_draw_kind = (prog > 0 && prog < PROG_MAX ? prog_kind[prog] : 0) | (fp != 0 ? 0x100u : 0);
 #endif
 		glDrawElements(mode, count, type, indices);
 #ifdef SWEETGL_LLVMPIPE

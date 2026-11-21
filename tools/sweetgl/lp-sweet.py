@@ -57,7 +57,8 @@ PROF = r'''
 struct swp_var {
    const void *key;
    uint64_t ticks, cmds;
-   unsigned sh, no, instrs, samplers, blend, src, dst, fmt, flags;
+   unsigned sh, no, instrs, samplers, blend, src, dst, fmt, flags, skind;
+   uint64_t sdraws, squal;   /* copied from the shader while the variant is in use */
 };
 struct swp_thr {
    uint64_t busy, wait, scenes, bins, tile, blit, vdrop, scene_busy;
@@ -83,6 +84,11 @@ swp_var_add(struct swp_thr *t, const struct lp_rast_state *st, uint64_t d)
       if (e->key == v && (v != NULL || e->cmds != 0 || e->ticks != 0)) {
          e->ticks += d;
          e->cmds++;
+         if (v && v->shader && (e->cmds & 63) == 1) {
+            e->skind = v->shader->sweet_kind;
+            e->sdraws = v->shader->sweet_draws;
+            e->squal = v->shader->sweet_qual;
+         }
          return;
       }
       if (e->key == NULL && e->cmds == 0) {
@@ -97,6 +103,7 @@ swp_var_add(struct swp_thr *t, const struct lp_rast_state *st, uint64_t d)
             e->fmt = v->key.cbuf_format[0];
             e->flags = v->opaque | v->potentially_opaque << 1 | v->blit << 2 |
                        (v->shader ? (unsigned)v->shader->kind << 4 : 0);
+            e->skind = v->shader ? v->shader->sweet_kind : 0;
          }
          e->key = v;
          e->ticks += d;
@@ -379,16 +386,23 @@ sweet_lp_report(void (*lg)(const char *, ...))
    }
    /* shader variants */
    qsort(all, nall, sizeof(all[0]), swp_cmp_var);
-   for (unsigned j = 0; j < nall && j < 10; j++) {
+   static const char *const fpk[] = {
+      "?", "fill", "copy", "tint", "atint", "opaque", "alpha", "copyn", "tintn", "atintdk", "copydkn",
+      "mask", "lumc", "cm4", "cm3", "super", "circle", "masksup", "mixbd", "blur",
+   };
+   for (unsigned j = 0; j < nall && j < 14; j++) {
       struct swp_var *e = &all[j];
       if (e->key == NULL) {
          lg("sweetgl: lp var (no state): %.0f ms, %llu cmds", e->ticks * ms, (unsigned long long)e->cmds);
          continue;
       }
-      lg("sweetgl: lp var fs %u.%u: %.0f ms, %llu cmds; %u instrs, %u samplers, blend %u (%u,%u), fmt %u, "
-          "opaque %u/%u blit %u kind %u",
-          e->sh, e->no, e->ticks * ms, (unsigned long long)e->cmds, e->instrs, e->samplers, e->blend, e->src,
-          e->dst, e->fmt, e->flags & 1, (e->flags >> 1) & 1, (e->flags >> 2) & 1, e->flags >> 4);
+      unsigned sk = e->skind;
+      unsigned long long sd = e->sdraws, sq = e->squal;
+      lg("sweetgl: lp var fs %u.%u %s: %.0f ms, %llu cmds; %u samplers, blend %u (%u,%u), fmt %u, "
+          "opaque %u/%u kind %u; draws %llu, fast-path %llu",
+          e->sh, e->no, sk < sizeof(fpk) / sizeof(fpk[0]) ? fpk[sk] : "?", e->ticks * ms,
+          (unsigned long long)e->cmds, e->samplers, e->blend, e->src,
+          e->dst, e->fmt, e->flags & 1, (e->flags >> 1) & 1, e->flags >> 4, sd, sq);
    }
    if (vdrop)
       lg("sweetgl: lp var table full: %llu commands not counted", (unsigned long long)vdrop);
@@ -665,6 +679,40 @@ llvmpipe_texture_barrier(struct pipe_context *pipe, unsigned flags)
    }
    llvmpipe_finish(pipe, "barrier");
 }
+'''),
+])
+
+# ---------------------------------------------------------------- lp_state_fs.h / lp_draw_arrays.c
+# Which of eagl.c's fast-path kinds (fastpath.h FPK_*) a fragment shader
+# draws, and how many of its draws the fast path would take: set from
+# sweet_lp_draw_kind at each draw, printed with the profile's variants.
+patch('lp_state_fs.h', [
+    ('''   /* For debugging/profiling purposes */
+   unsigned variant_key_size;
+   unsigned no;
+''', '''   /* For debugging/profiling purposes */
+   unsigned variant_key_size;
+   unsigned no;
+   unsigned sweet_kind;              /* sweetgl: eagl.c FPK_* of the last draw */
+   uint64_t sweet_draws, sweet_qual; /* sweetgl: draws, and those the fast path takes */
+'''),
+])
+patch('lp_draw_arrays.c', [
+    ('''#include "lp_query.h"''', '''#include "lp_query.h"
+#include "lp_state_fs.h"
+/* sweetgl: set by eagl.c before each draw: FPK_* kind | 0x100 if the fast path qualifies */
+extern unsigned sweet_lp_draw_kind;
+unsigned sweet_lp_draw_kind;'''),
+    ('''   if (lp->dirty)
+      llvmpipe_update_derived(lp);
+''', '''   if (lp->dirty)
+      llvmpipe_update_derived(lp);
+
+   if (lp->fs) {
+      lp->fs->sweet_kind = sweet_lp_draw_kind & 0xff;
+      lp->fs->sweet_draws++;
+      lp->fs->sweet_qual += (sweet_lp_draw_kind >> 8) & 1;
+   }
 '''),
 ])
 
