@@ -59,6 +59,11 @@ struct sweet_fast_rect {
    ptrdiff_t nstride;
    uint8_t nperm[16];         /* noise bytes into destination order */
    float nk;                  /* nscale / 255 */
+   /* half-float RGBA sources (8 bytes a texel): filtered and dithered in float, then
+    * quantized to RGBA8 and drawn by the 8-bit row (perm from RGBA order) */
+   int f16;
+   uint8_t npos[4];           /* noise byte of R, G, B, A */
+   uint8_t opaque;            /* alpha 1 (OPAQUE kind, RGBX source) */
 };'''),
     ])
 
@@ -66,6 +71,7 @@ struct sweet_fast_rect {
     RAST_CMD = r'''
 
 /* sweetgl (lp-fast.py): LP_RAST_OP_SWEET_FAST */
+#include "util/half_float.h"
 #if defined(__aarch64__)
 #include <arm_neon.h>
 #endif
@@ -103,7 +109,7 @@ sweet_fast_row(const struct sweet_fast_rect *r, uint8_t *d, const uint8_t *s, in
    const float32x4_t half = vdupq_n_f32(127.5f), zero = vdupq_n_f32(0.0f);
    for (; i + 4 <= n; i += 4) {
       uint8x16_t sv = s ? vorrq_u8(vqtbl1q_u8(vld1q_u8(s + 4 * i), perm), orm) : fill;
-      if (r->noise) {
+      if (nrow) {
          uint32_t nb[4];
          for (int q = 0; q < 4; q++)
             memcpy(&nb[q], nrow + 4 * ncx[i + q], 4);
@@ -142,7 +148,7 @@ sweet_fast_row(const struct sweet_fast_rect *r, uint8_t *d, const uint8_t *s, in
          px[c] = s ? (uint8_t)((r->perm[c] < 4 ? s[4 * i + r->perm[c]] : 0) | r->orm[c])
                    : (uint8_t)(r->color >> (8 * c));
       }
-      if (r->noise) {
+      if (nrow) {
          uint8_t nz[4];
          for (int c = 0; c < 4; c++)
             nz[c] = nrow[4 * ncx[i] + (r->nperm[c] & 3)];
@@ -189,6 +195,71 @@ sweet_resample_row(const struct sweet_fast_rect *r, int k0, int n, int ky, uint8
    }
 }
 
+/* one destination row from a half-float RGBA source into out (RGBA8): filter, dither, quantize */
+static void
+sweet_f16_row(const struct sweet_fast_rect *r, const uint8_t *s1, int k0, int n, int ky, const uint8_t *nrow,
+              const int32_t *ncx, uint8_t *out)
+{
+   const uint8_t *row0 = NULL, *row1 = NULL;
+   float v = 0.0f;
+   if (r->scaled) {
+      row0 = r->sbase + (ptrdiff_t)r->ry[ky] * r->sstride;
+      row1 = row0 + r->sstride;
+      v = r->wy[ky] * (1.0f / 128);
+   }
+   for (int i = 0; i < n; i++) {
+      float t[4];
+#if defined(__aarch64__)
+      float32x4_t tv;
+      if (r->scaled) {
+         const int c = r->cx[k0 + i];
+         const float w = r->wx[k0 + i] * (1.0f / 128);
+         uint16x8_t a = vld1q_u16((const uint16_t *)(const void *)(row0 + 8 * c));
+         uint16x8_t b = vld1q_u16((const uint16_t *)(const void *)(row1 + 8 * c));
+         float32x4_t a0 = vcvt_f32_f16(vreinterpret_f16_u16(vget_low_u16(a)));
+         float32x4_t a1 = vcvt_f32_f16(vreinterpret_f16_u16(vget_high_u16(a)));
+         float32x4_t b0 = vcvt_f32_f16(vreinterpret_f16_u16(vget_low_u16(b)));
+         float32x4_t b1 = vcvt_f32_f16(vreinterpret_f16_u16(vget_high_u16(b)));
+         float32x4_t h0 = vmlaq_n_f32(a0, vsubq_f32(a1, a0), w), h1 = vmlaq_n_f32(b0, vsubq_f32(b1, b0), w);
+         tv = vmlaq_n_f32(h0, vsubq_f32(h1, h0), v);
+      } else {
+         tv = vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16((const uint16_t *)(const void *)(s1 + 8 * i))));
+      }
+      vst1q_f32(t, tv);
+#else
+      if (r->scaled) {
+         const int c = r->cx[k0 + i];
+         const float w = r->wx[k0 + i] * (1.0f / 128);
+         const uint16_t *a = (const uint16_t *)(const void *)(row0 + 8 * c);
+         const uint16_t *b = (const uint16_t *)(const void *)(row1 + 8 * c);
+         for (int ch = 0; ch < 4; ch++) {
+            float h0 = _mesa_half_to_float(a[ch]) * (1 - w) + _mesa_half_to_float(a[4 + ch]) * w;
+            float h1 = _mesa_half_to_float(b[ch]) * (1 - w) + _mesa_half_to_float(b[4 + ch]) * w;
+            t[ch] = h0 * (1 - v) + h1 * v;
+         }
+      } else {
+         const uint16_t *a = (const uint16_t *)(const void *)(s1 + 8 * i);
+         for (int ch = 0; ch < 4; ch++)
+            t[ch] = _mesa_half_to_float(a[ch]);
+      }
+#endif
+      for (int ch = 0; ch < 4; ch++)
+         t[ch] = t[ch] > 0.0f ? (t[ch] < 1.0f ? t[ch] : 1.0f) : 0.0f;   /* also NaN -> 0 */
+      if (r->opaque)
+         t[3] = 1.0f;
+      if (r->noise) {
+         /* CA's dither in float, like the shader */
+         const uint8_t *nz = nrow + 4 * ncx[i];
+         for (int ch = 0; ch < 3; ch++) {
+            float c = t[ch] + ((float)nz[r->npos[ch]] / 255.0f - 0.5f) * r->nk * 255.0f * t[3];
+            t[ch] = c < 0.0f ? 0.0f : c > t[3] ? t[3] : c;
+         }
+      }
+      for (int ch = 0; ch < 4; ch++)
+         out[4 * i + ch] = (uint8_t)(t[ch] * 255.0f + 0.5f);
+   }
+}
+
 static void
 lp_rast_sweet_fast(struct lp_rasterizer_task *task,
                    const union lp_rast_cmd_arg arg)
@@ -205,6 +276,19 @@ lp_rast_sweet_fast(struct lp_rasterizer_task *task,
    uint8_t *d = scene->cbufs[0].map + (size_t)y0 * stride + (size_t)x0 * 4;
    const int32_t *ncx = r->noise ? r->ncx + (x0 - r->x0) : NULL;
 #define SWEET_NROW(y) (r->noise ? r->nbase + (ptrdiff_t)r->nry[(y) - r->y0] * r->nstride : NULL)
+   if (r->f16) {
+      /* filtered, dithered and quantized here; the 8-bit row then orders and blends */
+      uint8_t tmp[TILE_SIZE * 4] __attribute__((aligned(16)));
+      const uint8_t *s1 = r->src ? r->src + (ptrdiff_t)(y0 - r->y0) * r->src_dy + (ptrdiff_t)(x0 - r->x0) * 8 : NULL;
+      for (int y = y0; y < y1; y++) {
+         sweet_f16_row(r, s1, x0 - r->x0, x1 - x0, y - r->y0, SWEET_NROW(y), ncx, tmp);
+         sweet_fast_row(r, d, tmp, x1 - x0, NULL, NULL);
+         d += stride;
+         if (s1)
+            s1 += r->src_dy;
+      }
+      return;
+   }
    if (r->scaled) {
       uint8_t tmp[TILE_SIZE * 4] __attribute__((aligned(16)));
       for (int y = y0; y < y1; y++) {
@@ -476,6 +560,7 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
       return sweet_lpf_no(SLPF_FB), false;
    const uint8_t *sbase = NULL;
    size_t sstride = 0;
+   int sf16 = 0;      /* half-float RGBA source: 8 bytes a texel, spos stays R,G,B,A */
    const struct pipe_sampler_state *samp = NULL;
    struct sweet_lpf_tab { int32_t *cx, *ry; uint8_t *wx, *wy; int nx, ny; int32_t *nc; } tab[SWEET_LPF_MAX];
    memset(tab, 0, sizeof(tab));
@@ -486,7 +571,10 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
          sweet_lpf_why("src layout", p, NULL, res ? (int)res->format : -1, lpr ? lpr->dt != NULL : -1, 0, 0);
          return sweet_lpf_no(SLPF_SRC), false;
       }
-      if (!sweet_lpf_order(res->format, spos, &sx)) {
+      if (res->format == PIPE_FORMAT_R16G16B16A16_FLOAT || res->format == PIPE_FORMAT_R16G16B16X16_FLOAT) {
+         sf16 = 1;
+         sx = res->format == PIPE_FORMAT_R16G16B16X16_FLOAT;
+      } else if (!sweet_lpf_order(res->format, spos, &sx)) {
          sweet_lpf_why("src format", p, NULL, (int)res->format, lpr->dt != NULL, 0, 0);
          return sweet_lpf_no(SLPF_SRC), false;
       }
@@ -565,7 +653,7 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
          uint64_t before[SLPF_N];
          memcpy(before, sweet_lpf_stat, sizeof(before));
          if (sweet_lpf_map(&jj, W, H, &s0, &t0, &dy) == 0) {
-            r->src = sbase + (size_t)t0 * sstride + (size_t)s0 * 4;
+            r->src = sbase + (size_t)t0 * sstride + (size_t)s0 * (sf16 ? 8 : 4);
             r->src_dy = dy * (ptrdiff_t)sstride;
          } else {
             /* not 1:1: a scaled copy, when the sampler is plain (clamp to edge, level 0) */
@@ -635,6 +723,8 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
             r->nbase = nbase;
             r->nstride = (ptrdiff_t)nstride;
             r->nk = p->nscale / 255.0f;
+            for (int ch = 0; ch < 4; ch++)
+               r->npos[ch] = (uint8_t)npos[ch];
             for (int px = 0; px < 4; px++) {
                for (int ch = 0; ch < 4; ch++)
                   r->nperm[4 * px + dpos[ch]] = (uint8_t)(4 * px + npos[ch]);
@@ -646,6 +736,8 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
                r->orm[4 * px + dpos[ch]] = ch == 3 && (sx || dx || p->kind == SWEET_LPF_OPAQUE) ? 0xff : 0;
             }
          }
+         r->f16 = sf16;
+         r->opaque = sx || p->kind == SWEET_LPF_OPAQUE;
       }
       nr++;
    }
