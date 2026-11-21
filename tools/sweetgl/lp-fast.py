@@ -64,6 +64,10 @@ struct sweet_fast_rect {
    int f16;
    uint8_t npos[4];           /* noise byte of R, G, B, A */
    uint8_t opaque;            /* alpha 1 (OPAQUE kind, RGBX source) */
+   /* a turned texture one texel high (CA's gradient ramps): texture x follows window y,
+    * so a row is one colour: ry / wy are the texel pair along x per destination row */
+   int swap1;
+   uint8_t spos[4];           /* 8-bit sources in the float path: byte of R, G, B, A */
 };'''),
     ])
 
@@ -195,23 +199,54 @@ sweet_resample_row(const struct sweet_fast_rect *r, int k0, int n, int ky, uint8
    }
 }
 
-/* one destination row from a half-float RGBA source into out (RGBA8): filter, dither, quantize */
+/* texel i of a row as RGBA floats: half-float, or 8-bit in r->spos order */
+static inline void
+sweet_texel_f(const struct sweet_fast_rect *r, const uint8_t *row, int i, float t[4])
+{
+   if (r->f16) {
+      const uint16_t *h = (const uint16_t *)(const void *)(row + 8 * i);
+      for (int ch = 0; ch < 4; ch++)
+         t[ch] = _mesa_half_to_float(h[ch]);
+   } else {
+      for (int ch = 0; ch < 4; ch++)
+         t[ch] = row[4 * i + r->spos[ch]] * (1.0f / 255);
+   }
+}
+
+/*
+ * One destination row into out (RGBA8) through float: half-float sources
+ * (1:1, or bilinear / nearest) and turned one-texel-high ramps; clamp,
+ * opaque alpha, CA's dither like the shader, quantize.
+ */
 static void
 sweet_f16_row(const struct sweet_fast_rect *r, const uint8_t *s1, int k0, int n, int ky, const uint8_t *nrow,
               const int32_t *ncx, uint8_t *out)
 {
    const uint8_t *row0 = NULL, *row1 = NULL;
-   float v = 0.0f;
-   if (r->scaled) {
+   float v = 0.0f, rowc[4] = {0, 0, 0, 0};
+   if (r->swap1) {
+      /* one colour for the whole row: the pair along the texture's only row */
+      const int c = r->ry[ky];
+      const float w = r->wy[ky] * (1.0f / 128);
+      float a[4], b[4];
+      sweet_texel_f(r, r->sbase, c, a);
+      sweet_texel_f(r, r->sbase, c + 1, b);
+      for (int ch = 0; ch < 4; ch++)
+         rowc[ch] = a[ch] + (b[ch] - a[ch]) * w;
+   } else if (r->scaled) {
       row0 = r->sbase + (ptrdiff_t)r->ry[ky] * r->sstride;
       row1 = row0 + r->sstride;
       v = r->wy[ky] * (1.0f / 128);
    }
-   for (int i = 0; i < n; i++) {
-      float t[4];
 #if defined(__aarch64__)
+   const float32x4_t zero = vdupq_n_f32(0.0f), one = vdupq_n_f32(1.0f), c255 = vdupq_n_f32(255.0f);
+   const float32x4_t rowv = vld1q_f32(rowc);
+   const float nk = r->nk * 255.0f / 255.0f;   /* nscale / 255: (nz - 127.5) * nk = (nz / 255 - .5) * nscale */
+   for (int i = 0; i < n; i++) {
       float32x4_t tv;
-      if (r->scaled) {
+      if (r->swap1) {
+         tv = rowv;
+      } else if (r->scaled) {
          const int c = r->cx[k0 + i];
          const float w = r->wx[k0 + i] * (1.0f / 128);
          uint16x8_t a = vld1q_u16((const uint16_t *)(const void *)(row0 + 8 * c));
@@ -225,39 +260,56 @@ sweet_f16_row(const struct sweet_fast_rect *r, const uint8_t *s1, int k0, int n,
       } else {
          tv = vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16((const uint16_t *)(const void *)(s1 + 8 * i))));
       }
-      vst1q_f32(t, tv);
+      tv = vminnmq_f32(vmaxnmq_f32(tv, zero), one);     /* NaN -> 0 */
+      if (r->opaque)
+         tv = vsetq_lane_f32(1.0f, tv, 3);
+      if (nrow) {
+         const uint8_t *nz = nrow + 4 * ncx[i];
+         const float nzv[4] = {nz[r->npos[0]], nz[r->npos[1]], nz[r->npos[2]], 127.5f};
+         float32x4_t a = vdupq_laneq_f32(tv, 3);
+         float32x4_t nf = vmulq_n_f32(vsubq_f32(vld1q_f32(nzv), vdupq_n_f32(127.5f)), nk);
+         float32x4_t c = vmlaq_f32(tv, nf, a);
+         tv = vminq_f32(vmaxq_f32(c, zero), a);          /* alpha: + 0, clamp to itself */
+      }
+      uint32x4_t q = vcvtnq_u32_f32(vmulq_f32(tv, c255));
+      uint16x4_t q16 = vmovn_u32(q);
+      uint8x8_t q8 = vmovn_u16(vcombine_u16(q16, q16));
+      vst1_lane_u32((uint32_t *)(void *)(out + 4 * i), vreinterpret_u32_u8(q8), 0);
+   }
 #else
-      if (r->scaled) {
+   for (int i = 0; i < n; i++) {
+      float t[4];
+      if (r->swap1) {
+         memcpy(t, rowc, sizeof(t));
+      } else if (r->scaled) {
          const int c = r->cx[k0 + i];
          const float w = r->wx[k0 + i] * (1.0f / 128);
-         const uint16_t *a = (const uint16_t *)(const void *)(row0 + 8 * c);
-         const uint16_t *b = (const uint16_t *)(const void *)(row1 + 8 * c);
+         float a0[4], a1[4], b0[4], b1[4];
+         sweet_texel_f(r, row0, c, a0), sweet_texel_f(r, row0, c + 1, a1);
+         sweet_texel_f(r, row1, c, b0), sweet_texel_f(r, row1, c + 1, b1);
          for (int ch = 0; ch < 4; ch++) {
-            float h0 = _mesa_half_to_float(a[ch]) * (1 - w) + _mesa_half_to_float(a[4 + ch]) * w;
-            float h1 = _mesa_half_to_float(b[ch]) * (1 - w) + _mesa_half_to_float(b[4 + ch]) * w;
-            t[ch] = h0 * (1 - v) + h1 * v;
+            float h0 = a0[ch] + (a1[ch] - a0[ch]) * w, h1 = b0[ch] + (b1[ch] - b0[ch]) * w;
+            t[ch] = h0 + (h1 - h0) * v;
          }
       } else {
-         const uint16_t *a = (const uint16_t *)(const void *)(s1 + 8 * i);
-         for (int ch = 0; ch < 4; ch++)
-            t[ch] = _mesa_half_to_float(a[ch]);
+         sweet_texel_f(r, s1, i, t);
       }
-#endif
       for (int ch = 0; ch < 4; ch++)
          t[ch] = t[ch] > 0.0f ? (t[ch] < 1.0f ? t[ch] : 1.0f) : 0.0f;   /* also NaN -> 0 */
       if (r->opaque)
          t[3] = 1.0f;
-      if (r->noise) {
+      if (nrow) {
          /* CA's dither in float, like the shader */
          const uint8_t *nz = nrow + 4 * ncx[i];
          for (int ch = 0; ch < 3; ch++) {
-            float c = t[ch] + ((float)nz[r->npos[ch]] / 255.0f - 0.5f) * r->nk * 255.0f * t[3];
+            float c = t[ch] + ((float)nz[r->npos[ch]] - 127.5f) * r->nk * t[3];
             t[ch] = c < 0.0f ? 0.0f : c > t[3] ? t[3] : c;
          }
       }
       for (int ch = 0; ch < 4; ch++)
          out[4 * i + ch] = (uint8_t)(t[ch] * 255.0f + 0.5f);
    }
+#endif
 }
 
 static void
@@ -276,7 +328,7 @@ lp_rast_sweet_fast(struct lp_rasterizer_task *task,
    uint8_t *d = scene->cbufs[0].map + (size_t)y0 * stride + (size_t)x0 * 4;
    const int32_t *ncx = r->noise ? r->ncx + (x0 - r->x0) : NULL;
 #define SWEET_NROW(y) (r->noise ? r->nbase + (ptrdiff_t)r->nry[(y) - r->y0] * r->nstride : NULL)
-   if (r->f16) {
+   if (r->f16 || r->swap1) {
       /* filtered, dithered and quantized here; the 8-bit row then orders and blends */
       uint8_t tmp[TILE_SIZE * 4] __attribute__((aligned(16)));
       const uint8_t *s1 = r->src ? r->src + (ptrdiff_t)(y0 - r->y0) * r->src_dy + (ptrdiff_t)(x0 - r->x0) * 8 : NULL;
@@ -658,19 +710,23 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
          } else {
             /* not 1:1: a scaled copy, when the sampler is plain (clamp to edge, level 0) */
             memcpy(sweet_lpf_stat, before, sizeof(before));
-            double scx = fabs(((double)j->ub - j->ua) * W / ((double)j->xb - j->xa));
-            double scy = fabs(((double)j->vb - j->va) * H / ((double)j->yb - j->ya));
+            /* turned: only a ramp one texel high (texture x along window y, one colour a row) */
+            const bool sw1 = j->swap && H == 1 && W >= 2;
+            double scx = sw1 ? 0.0 : fabs(((double)j->ub - j->ua) * W / ((double)j->xb - j->xa));
+            double scy = sw1 ? fabs(((double)j->ub - j->ua) * W / ((double)j->yb - j->ya))
+                             : fabs(((double)j->vb - j->va) * H / ((double)j->yb - j->ya));
             bool minify = scx > 1.0 + 1e-6 || scy > 1.0 + 1e-6;
             const char *no = NULL;
-            if (j->swap)
+            if (j->swap && !sw1)
                no = "turned";
             else if (samp == NULL || samp->unnormalized_coords || res->target != PIPE_TEXTURE_2D ||
-                     samp->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE || samp->wrap_t != PIPE_TEX_WRAP_CLAMP_TO_EDGE ||
+                     samp->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE ||
+                     (!sw1 && samp->wrap_t != PIPE_TEX_WRAP_CLAMP_TO_EDGE) ||
                      samp->min_lod > 0.0f || samp->lod_bias != 0.0f)
                no = "sampler";
             else if (minify && samp->min_mip_filter != PIPE_TEX_MIPFILTER_NONE && res->last_level > 0)
                no = "mipmaps";
-            else if (W < 2 || H < 2)
+            else if (W < 2 || (H < 2 && !sw1))
                no = "size";
             if (no) {
                sweet_lpf_why(no, p, &jj, (int)res->format, W, H, 1);
@@ -691,10 +747,19 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
                return false;
             }
             tab[nr].ry = tab[nr].cx + nx, tab[nr].wy = tab[nr].wx + nx;
-            sweet_lpf_axis(j->xa, j->xb, j->ua, j->ub, r->x0, nx, W, linear, j->tclamp, j->cu0, j->cu1,
-                           tab[nr].cx, tab[nr].wx);
-            sweet_lpf_axis(j->ya, j->yb, j->va, j->vb, r->y0, ny, H, linear, j->tclamp, j->cv0, j->cv1,
-                           tab[nr].ry, tab[nr].wy);
+            if (sw1) {
+               /* columns unused; per row the texel pair along the ramp (u along window y) */
+               memset(tab[nr].cx, 0, sizeof(int32_t) * nx);
+               memset(tab[nr].wx, 0, (size_t)nx);
+               sweet_lpf_axis(j->ya, j->yb, j->ua, j->ub, r->y0, ny, W, linear, j->tclamp, j->cu0, j->cu1,
+                              tab[nr].ry, tab[nr].wy);
+               r->swap1 = 1;
+            } else {
+               sweet_lpf_axis(j->xa, j->xb, j->ua, j->ub, r->x0, nx, W, linear, j->tclamp, j->cu0, j->cu1,
+                              tab[nr].cx, tab[nr].wx);
+               sweet_lpf_axis(j->ya, j->yb, j->va, j->vb, r->y0, ny, H, linear, j->tclamp, j->cv0, j->cv1,
+                              tab[nr].ry, tab[nr].wy);
+            }
             r->scaled = 1;
             r->sbase = sbase;
             r->sstride = (ptrdiff_t)sstride;
@@ -738,6 +803,8 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
          }
          r->f16 = sf16;
          r->opaque = sx || p->kind == SWEET_LPF_OPAQUE;
+         for (int ch = 0; ch < 4; ch++)
+            r->spos[ch] = (uint8_t)spos[ch];
       }
       nr++;
    }
