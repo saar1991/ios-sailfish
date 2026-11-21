@@ -397,11 +397,11 @@ sweet_lp_report(void (*lg)(const char *, ...))
          lg("sweetgl: lp var (no state): %.0f ms, %llu cmds", e->ticks * ms, (unsigned long long)e->cmds);
          continue;
       }
-      unsigned sk = e->skind;
+      unsigned sk = e->skind & 0xff, sprog = e->skind >> 8;
       unsigned long long sd = e->sdraws, sq = e->squal;
-      lg("sweetgl: lp var fs %u.%u %s: %.0f ms, %llu cmds; %u samplers, blend %u (%u,%u), fmt %u, "
+      lg("sweetgl: lp var fs %u.%u %s p%u: %.0f ms, %llu cmds; %u samplers, blend %u (%u,%u), fmt %u, "
           "opaque %u/%u kind %u; draws %llu, fast-path %llu",
-          e->sh, e->no, sk < sizeof(fpk) / sizeof(fpk[0]) ? fpk[sk] : "?", e->ticks * ms,
+          e->sh, e->no, sk < sizeof(fpk) / sizeof(fpk[0]) ? fpk[sk] : "?", sprog, e->ticks * ms,
           (unsigned long long)e->cmds, e->samplers, e->blend, e->src,
           e->dst, e->fmt, e->flags & 1, (e->flags >> 1) & 1, e->flags >> 4, sd, sq);
    }
@@ -694,7 +694,7 @@ patch('lp_state_fs.h', [
 ''', '''   /* For debugging/profiling purposes */
    unsigned variant_key_size;
    unsigned no;
-   unsigned sweet_kind;              /* sweetgl: eagl.c FPK_* of the last draw */
+   unsigned sweet_kind;              /* sweetgl: eagl.c FPK_* of the last draw | GL program << 8 */
    uint64_t sweet_draws, sweet_qual; /* sweetgl: draws, and those the fast path takes */
 '''),
 ])
@@ -710,7 +710,7 @@ unsigned sweet_lp_draw_kind;'''),
       llvmpipe_update_derived(lp);
 
    if (lp->fs) {
-      lp->fs->sweet_kind = sweet_lp_draw_kind & 0xff;
+      lp->fs->sweet_kind = (sweet_lp_draw_kind & 0xff) | (sweet_lp_draw_kind >> 16) << 8;
       lp->fs->sweet_draws++;
       lp->fs->sweet_qual += (sweet_lp_draw_kind >> 8) & 1;
    }

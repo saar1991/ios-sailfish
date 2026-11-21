@@ -33,6 +33,11 @@
 #define SWEET_LPF_LUMC 12               /* luminanceCurve(framebuffer, farg, alpha) */
 #define SWEET_LPF_CM4 13                /* colour matrix on the framebuffer (with its alpha row) */
 #define SWEET_LPF_CM3 14                /* colour matrix on the framebuffer */
+#define SWEET_LPF_MASK 11               /* colour * texture * texture1.a */
+#define SWEET_LPF_SUPER 15              /* colour * CA's supercircleImage(texcoord0) */
+#define SWEET_LPF_CIRCLE 16             /* colour * CA's circleImage(texcoord0) */
+#define SWEET_LPF_MASKSUP 17            /* colour * texture * supercircleImage(texcoord1) */
+#define SWEET_LPF_MIXBD 18              /* mix(texture1, framebuffer, texture.a) */
 #define SWEET_LPF_BLUR 19               /* taps of texture0, weighted (divided by alpha when bdiv) */
 #define SWEET_LPF_TAPS 16               /* fastpath.h FP_TAPS */
 /* blends (eagl.c FPB_): 0 none, 1 premul, 2 straight, 3 mixed, 4 atop, 5 dstout, 6 add */
@@ -49,6 +54,9 @@ struct sweet_lpf_job {
 	/* COPYN: the noise texel at window pixel x, y is (u, v) = (nu0 + nud * (x + .5), nv0 + nvd * (y + .5)), nearest, repeat */
 	float nu0, nud, nv0, nvd;
 	float falpha;                   /* LUMC: the vertex colour's alpha, unquantized */
+	/* MASK, MASKSUP, MIXBD: texcoord1 at xa, xb and ya, yb (swap2: u2 follows window y) */
+	float u2a, u2b, v2a, v2b;
+	int swap2;
 };
 
 struct sweet_lpf {
@@ -56,6 +64,7 @@ struct sweet_lpf {
 	int kind, blend;
 	void *src;                      /* struct pipe_resource * of texture0 (COPY, OPAQUE, COPYN) */
 	void *noise;                    /* COPYN: the noise texture */
+	void *src2;                     /* MASK, MIXBD: struct pipe_resource * of texture1 */
 	float nscale;                   /* COPYN: rgb += (noise.rgb - .5) * nscale * a, clamped to [0, a] */
 	float farg[4];                  /* LUMC: the curve's coefficients */
 	float cm[4][3];                 /* CM4 / CM3: colour matrix rows (alpha row zero for CM3) */

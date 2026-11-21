@@ -703,7 +703,7 @@ fbfetch_link(GLuint program)
  */
 #ifdef SWEETGL_LLVMPIPE
 extern int sweet_lp_fbfetch_draw;
-extern unsigned sweet_lp_draw_kind;   /* lp-sweet.py: FPK_* | 0x100 if the fast path qualifies */
+extern unsigned sweet_lp_draw_kind;   /* lp-sweet.py: FPK_* | 0x100 if the fast path qualifies | program << 16 */
 #endif
 static int fbfetch_now;   /* the next draw reads the framebuffer in the same scene */
 
@@ -1524,7 +1524,7 @@ fast_tex(GLint prog, GLint loc, GLint att, int kind, GLenum wrap, int nearest_on
 #endif
 
 static void
-lpf_offer(int kind, int blend, const struct fp_job *jobs, int n, GLuint tex, GLuint ntex, const GLfloat *W, const GLint *vp,
+lpf_offer(int kind, int blend, const struct fp_job *jobs, int n, GLuint tex, GLuint mtex, GLuint ntex, const GLfloat *W, const GLint *vp,
     GLfloat nscale, const GLfloat farg[4], GLfloat cm[4][3], int ntap, int bdiv, float toff[FP_TAPS][2], const float tw[FP_TAPS])
 {
 #ifdef SWEETGL_LLVMPIPE
@@ -1539,14 +1539,20 @@ lpf_offer(int kind, int blend, const struct fp_job *jobs, int n, GLuint tex, GLu
 	if (!on || n <= 0 || n > SWEET_LPF_MAX ||
 	    (kind != FPK_FILL && kind != FPK_COPY && kind != FPK_OPAQUE && kind != FPK_COPYN && kind != FPK_TINT &&
 	     kind != FPK_ATINT && kind != FPK_TINTN && kind != FPK_ALPHA && kind != FPK_ATINTDK && kind != FPK_COPYDKN &&
-	     kind != FPK_LUMC && kind != FPK_CM4 && kind != FPK_CM3 && kind != FPK_BLUR) ||
+	     kind != FPK_LUMC && kind != FPK_CM4 && kind != FPK_CM3 && kind != FPK_BLUR && kind != FPK_MASK &&
+	     kind != FPK_SUPER && kind != FPK_CIRCLE && kind != FPK_MASKSUP && kind != FPK_MIXBD) ||
 	    blend < FPB_NONE || blend > FPB_ADD) {
 		return;
 	}
 	p->src = NULL;
+	p->src2 = NULL;
 	p->noise = NULL;
-	const int textured = kind != FPK_FILL && kind != FPK_LUMC && kind != FPK_CM4 && kind != FPK_CM3;
+	const int textured = kind != FPK_FILL && kind != FPK_LUMC && kind != FPK_CM4 && kind != FPK_CM3 && kind != FPK_SUPER &&
+	    kind != FPK_CIRCLE;
 	if (textured && (p->src = fp_tex_resource(tex)) == NULL) {
+		return;
+	}
+	if (FAST_TEXTURED1(kind) && (p->src2 = fp_tex_resource(mtex)) == NULL) {
 		return;
 	}
 	if (FAST_NOISY(kind) && (p->noise = fp_tex_resource(ntex)) == NULL) {
@@ -1570,6 +1576,7 @@ lpf_offer(int kind, int blend, const struct fp_job *jobs, int n, GLuint tex, GLu
 		o->cu0 = j->cu0, o->cu1 = j->cu1, o->cv0 = j->cv0, o->cv1 = j->cv1;
 		memcpy(o->color, j->color, 4);
 		o->falpha = j->falpha;
+		o->u2a = j->u2a, o->u2b = j->u2b, o->v2a = j->v2a, o->v2b = j->v2b, o->swap2 = j->swap2;
 		if (FAST_NOISY(kind)) {
 			/* as fast_draw's mode 1: texcoordN = (clip.xy * W.xy + W.zw * w, w * NOISE_SIZE) */
 			o->nud = 2.0f * W[0] / ((float)vp[2] * FAST_NOISE_SIZE);
@@ -1580,7 +1587,7 @@ lpf_offer(int kind, int blend, const struct fp_job *jobs, int n, GLuint tex, GLu
 	}
 	p->n = n;
 #else
-	(void)kind, (void)blend, (void)jobs, (void)n, (void)tex, (void)ntex, (void)W, (void)vp, (void)nscale;
+	(void)kind, (void)blend, (void)jobs, (void)n, (void)tex, (void)mtex, (void)ntex, (void)W, (void)vp, (void)nscale;
 	(void)farg, (void)cm, (void)ntap, (void)bdiv, (void)toff, (void)tw;
 #endif
 }
@@ -2102,7 +2109,7 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 			fst.wait_abs++;
 		}
 		if (fast_mode == 0) {
-			lpf_offer(kind, blend, jobs, nrect, tex, ntex, W, vp, nscale, farg, cmr, kind == FPK_BLUR ? prog_blur[prog]->n : 0,
+			lpf_offer(kind, blend, jobs, nrect, tex, mtex, ntex, W, vp, nscale, farg, cmr, kind == FPK_BLUR ? prog_blur[prog]->n : 0,
 			    bdiv, boff, bw);
 		}
 		return 2;
@@ -2596,7 +2603,7 @@ sgl_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 	if (fp != 1) {
 #ifdef SWEETGL_LLVMPIPE
 		sweet_lp_fbfetch_draw = fbfetch_now;
-		sweet_lp_draw_kind = (prog > 0 && prog < PROG_MAX ? prog_kind[prog] : 0) | (fp != 0 ? 0x100u : 0);
+		sweet_lp_draw_kind = (prog > 0 && prog < PROG_MAX ? prog_kind[prog] | (unsigned)prog << 16 : 0) | (fp != 0 ? 0x100u : 0);
 #endif
 		glDrawArrays(mode, first, count);
 #ifdef SWEETGL_LLVMPIPE
@@ -2628,7 +2635,7 @@ sgl_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void
 	if (fp != 1) {
 #ifdef SWEETGL_LLVMPIPE
 		sweet_lp_fbfetch_draw = fbfetch_now;
-		sweet_lp_draw_kind = (prog > 0 && prog < PROG_MAX ? prog_kind[prog] : 0) | (fp != 0 ? 0x100u : 0);
+		sweet_lp_draw_kind = (prog > 0 && prog < PROG_MAX ? prog_kind[prog] | (unsigned)prog << 16 : 0) | (fp != 0 ? 0x100u : 0);
 #endif
 		glDrawElements(mode, count, type, indices);
 #ifdef SWEETGL_LLVMPIPE
