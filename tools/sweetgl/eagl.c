@@ -976,6 +976,14 @@ static uint8_t fast_off[FPK_COUNT][FPB_COUNT];   /* differed from softpipe: not 
 #define FAST_COLORED(k) ((k) == FPK_FILL || (k) == FPK_TINT || (k) == FPK_ATINT || (k) == FPK_TINTN || (k) == FPK_ATINTDK || \
 	(k) == FPK_MASK || (k) == FPK_LUMC || (k) == FPK_SUPER || (k) == FPK_CIRCLE || (k) == FPK_MASKSUP || (k) == FPK_CFB || \
 	(k) == FPK_OMASK || (k) == FPK_OTINT)
+/* kinds llvmpipe's rasterizer can also draw as triangles (meshes, rotated, mipmapped): lp-fast.py TRI */
+#ifdef SWEETGL_LLVMPIPE
+#define FAST_TRI_OK(k) ((k) == FPK_FILL || (k) == FPK_COPY || (k) == FPK_TINT || (k) == FPK_ATINT || (k) == FPK_OPAQUE || \
+	(k) == FPK_ALPHA || (k) == FPK_MASK || (k) == FPK_SUPER || (k) == FPK_CIRCLE || (k) == FPK_MASKSUP || \
+	(k) == FPK_MIXBD || (k) == FPK_CFB || (k) == FPK_OMASK || (k) == FPK_OTINT)
+#else
+#define FAST_TRI_OK(k) 0
+#endif
 /* kinds only llvmpipe's rasterizer draws (fp_run has no code for them) */
 #define FAST_LP_ONLY(k) ((k) >= FPK_CFB)
 /* color_matrix[0..4] (vec4 each) */
@@ -1565,6 +1573,7 @@ lpf_offer(int kind, int blend, const struct fp_job *jobs, int n, GLuint tex, GLu
 	}
 	struct sweet_lpf *p = &sweet_lpf_pending;
 	p->n = 0;
+	p->ntri = 0;
 	if (!on || n <= 0 || n > SWEET_LPF_MAX ||
 	    (kind != FPK_FILL && kind != FPK_COPY && kind != FPK_OPAQUE && kind != FPK_COPYN && kind != FPK_TINT &&
 	     kind != FPK_ATINT && kind != FPK_TINTN && kind != FPK_ALPHA && kind != FPK_ATINTDK && kind != FPK_COPYDKN &&
@@ -1879,6 +1888,108 @@ fast_pair(const struct fast_attr *ap, int *idx, int nrect)
  * Returns 0: softpipe draws; 1: drawn here; 2: qualifies (counting or
  * verifying), softpipe draws.
  */
+#ifdef SWEETGL_LLVMPIPE
+/*
+ * The draw's triangles for llvmpipe's rasterizer (lp-fast.py TRI): window
+ * positions (one w for the whole draw: affine), texcoords after texmat, one
+ * colour, the scissor. Flat triangles are left out. Returns 0 (offered) or
+ * the NO_ reason.
+ */
+static int
+fast_tris(const struct fast_in *in, const int *idx, int nidx, const GLfloat *ca, int kind, int blend, GLuint tex,
+    GLuint mtex)
+{
+	static int on = -1;
+	if (on < 0) {
+		const char *e = getenv("SGLLPTRI");
+		on = !(e != NULL && e[0] == '0');
+	}
+	struct sweet_lpf *p = &sweet_lpf_pending;
+	p->n = 0, p->ntri = 0;
+	if (!on || nidx < 3 || nidx % 3 != 0 || nidx / 3 > SWEET_LPF_TRIS) {
+		return NO_SHAPE;
+	}
+	const GLfloat *M = in->M;
+	GLfloat col0[4] = {1, 1, 1, 1}, w0 = 0.0f;
+	int nt = 0, nv = 0;
+	for (int t = 0; t < nidx / 3; t++) {
+		struct sweet_lpf_tri *o = &p->tri[nt];
+		for (int k = 0; k < 3; k++) {
+			const int i = idx[3 * t + k];
+			GLfloat q[4], c[4], tc[4];
+			fast_attr_read(in->ap, i, q);
+			float cx = M[0] * q[0] + M[4] * q[1] + M[8] * q[2] + M[12] * q[3];
+			float cy = M[1] * q[0] + M[5] * q[1] + M[9] * q[2] + M[13] * q[3];
+			float cz = M[2] * q[0] + M[6] * q[1] + M[10] * q[2] + M[14] * q[3];
+			float cw = M[3] * q[0] + M[7] * q[1] + M[11] * q[2] + M[15] * q[3];
+			if (!(cw > 0.0f) || !isfinite(cx) || !isfinite(cy) || !isfinite(cz) || fabsf(cz) > cw ||
+			    (nv > 0 && !fast_near(cw, w0, 1e-6f * w0))) {
+				return NO_SHAPE;
+			}
+			w0 = cw;
+			o->x[k] = (float)in->vp[0] + (cx / cw + 1.0f) * (float)in->vp[2] * 0.5f;
+			o->y[k] = (float)in->vp[1] + (cy / cw + 1.0f) * (float)in->vp[3] * 0.5f;
+			if (in->colored) {
+				fast_attr_read(in->ac, i, c);
+				if (nv == 0) {
+					memcpy(col0, c, sizeof(col0));
+				} else if (memcmp(c, col0, sizeof(col0)) != 0) {
+					return NO_SHAPE;
+				}
+			}
+			o->u[k] = o->v[k] = o->u2[k] = o->v2[k] = 0.0f;
+			if (in->coords) {
+				fast_attr_read(in->at, i, tc);
+				o->u[k] = tc[0] * in->tm[0] + in->tm[2];
+				o->v[k] = tc[1] * in->tm[1] + in->tm[3];
+			}
+			if (in->masked) {
+				fast_attr_read(in->at1, i, tc);
+				o->u2[k] = tc[0] * in->tm1[0] + in->tm1[2];
+				o->v2[k] = tc[1] * in->tm1[1] + in->tm1[3];
+			}
+			if (!isfinite(o->u[k]) || !isfinite(o->v[k]) || !isfinite(o->u2[k]) || !isfinite(o->v2[k])) {
+				return NO_SHAPE;
+			}
+			nv++;
+		}
+		float area = (o->x[1] - o->x[0]) * (o->y[2] - o->y[0]) - (o->x[2] - o->x[0]) * (o->y[1] - o->y[0]);
+		if (area == 0.0f) {
+			continue;
+		}
+		o->clip[0] = 0, o->clip[1] = 0, o->clip[2] = 1 << 20, o->clip[3] = 1 << 20;
+		if (in->scissor) {
+			o->clip[0] = in->sc[0], o->clip[1] = in->sc[1];
+			o->clip[2] = in->sc[0] + in->sc[2], o->clip[3] = in->sc[1] + in->sc[3];
+		}
+		nt++;
+	}
+	for (int t = 0; t < nt; t++) {
+		for (int k = 0; k < 4; k++) {
+			float c = col0[k] < 0.0f ? 0.0f : col0[k] > 1.0f ? 1.0f : col0[k];
+			p->tri[t].color[k] = (uint8_t)(c * 255.0f + 0.5f);
+		}
+	}
+	if (nt == 0) {
+		return NO_SHAPE;
+	}
+	p->src = FAST_TEXTURED(kind) ? fp_tex_resource(tex) : NULL;
+	p->src2 = FAST_TEXTURED1(kind) ? fp_tex_resource(mtex) : NULL;
+	p->noise = NULL;
+	if ((FAST_TEXTURED(kind) && p->src == NULL) || (FAST_TEXTURED1(kind) && p->src2 == NULL)) {
+		return NO_TEX;
+	}
+	p->kind = kind, p->blend = blend;
+	p->tclamp = ca != NULL;
+	if (ca != NULL) {
+		memcpy(p->cl, ca, sizeof(p->cl));
+	}
+	p->ntri = nt;
+	p->n = 1;
+	return 0;
+}
+#endif
+
 static int
 fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, const void *indices, GLint first)
 {
@@ -1898,8 +2009,16 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		}
 	}
 	/* one rectangle (6 indices or a 4-vertex strip), or several (6 indices each: nine-slices) */
+	/* tri: drawn as triangles by llvmpipe's rasterizer (not rectangles); ntidx indices of them */
+	int tri = 0, ntidx = count;
 	if (mode == GL_TRIANGLES && count >= 6 && count % 6 == 0 && count <= 6 * FAST_RECTS) {
 		nrect = count / 6;
+		for (int i = 0; i < count; i++) {
+			idx[i] = elements ? ((const GLushort *)indices)[i] : first + i;
+		}
+	} else if (mode == GL_TRIANGLES && count >= 3 && count % 3 == 0 && count <= 6 * FAST_RECTS && fast_mode == 0 &&
+	    FAST_TRI_OK(kind)) {
+		nrect = 0, tri = 1;
 		for (int i = 0; i < count; i++) {
 			idx[i] = elements ? ((const GLushort *)indices)[i] : first + i;
 		}
@@ -1909,7 +2028,7 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 			v[i] = elements ? ((const GLushort *)indices)[i] : first + i;
 		}
 		idx[0] = v[0], idx[1] = v[1], idx[2] = v[2], idx[3] = v[1], idx[4] = v[2], idx[5] = v[3];
-		nrect = 1;
+		nrect = 1, ntidx = 6;
 	} else {
 		FAST_DETAIL(NO_MODE, "mode prog %d kind %d: mode %#x n %d elements %d", prog, kind, mode, count, elements);
 		return fast_no(NO_MODE);
@@ -2006,6 +2125,8 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	if (in.scissor) {
 		glGetIntegerv(GL_SCISSOR_BOX, in.sc);
 	}
+	int tidx[6 * FAST_RECTS];
+	memcpy(tidx, idx, sizeof(int) * (size_t)ntidx);
 	if (nrect > 1) {
 		int paired = fast_pair(&ap, idx, nrect);
 		if (paired <= 0) {
@@ -2034,14 +2155,23 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 					}
 				}
 			}
-			return fast_no(NO_SHAPE);
+			if (!(fast_mode == 0 && FAST_TRI_OK(kind))) {
+				return fast_no(NO_SHAPE);
+			}
+			tri = 1;
+		} else {
+			nrect = paired;
 		}
-		nrect = paired;
 	}
 	struct fp_job jobs[FAST_RECTS];
-	for (int r = 0; r < nrect; r++) {
+	for (int r = 0; r < nrect && !tri; r++) {
 		int why = fast_rect(&in, idx + 6 * r, &jobs[r]);
 		if (why != 0) {
+			/* not an axis-aligned rectangle (rotated, sheared): as triangles */
+			if (why == NO_SHAPE && fast_mode == 0 && FAST_TRI_OK(kind)) {
+				tri = 1;
+				break;
+			}
 			return fast_no(why);
 		}
 	}
@@ -2099,6 +2229,17 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 	    fast_tex(prog, prog_loc[prog].tex1, att, kind, GL_CLAMP_TO_EDGE, 0, "mask", &mtex, &mminf, &mmagf) != 0) {
 		return fast_no(NO_TEX);
 	}
+#ifdef SWEETGL_LLVMPIPE
+	if (tri) {
+		int why = fast_tris(&in, tidx, ntidx, prog_clamp[prog] ? ca : NULL, kind, blend, tex, mtex);
+		if (why != 0) {
+			return fast_no(why);
+		}
+		fst.kind[kind]++;
+		fst.blend[blend]++;
+		return 2;
+	}
+#endif
 	GLuint ntex = 0;
 	GLfloat W[4] = {0}, nscale = 0;
 	if (FAST_NOISY(kind)) {
@@ -2656,6 +2797,7 @@ sgl_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 	fbfetch_now = 0;
 #ifdef SWEETGL_LLVMPIPE
 	sweet_lpf_pending.n = 0;        /* taken or not: never for a later draw */
+	sweet_lpf_pending.ntri = 0;
 #endif
 	uint64_t dt = mach_absolute_time() - t0;
 	fast_account(prog, fp, dt);
@@ -2688,6 +2830,7 @@ sgl_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void
 	fbfetch_now = 0;
 #ifdef SWEETGL_LLVMPIPE
 	sweet_lpf_pending.n = 0;        /* taken or not: never for a later draw */
+	sweet_lpf_pending.ntri = 0;
 #endif
 	uint64_t dt = mach_absolute_time() - t0;
 	fast_account(prog, fp, dt);
@@ -2872,6 +3015,100 @@ flush_stats(uint64_t t0, uint64_t t1)
 	}
 }
 
+/*
+ * Per-frame timeline (a frame: from one glFlush's end to the next's, CA
+ * flushes once a frame): wall time, the render thread's CPU time, time in
+ * the app's draws and in the finish. wall - cpu - finish is time the thread
+ * was off the CPU outside the finish (waiting: vsync, swap, locks). Every
+ * 10 s a summary of the frames shorter than 100 ms, grouped by length:
+ *   sweetgl: frames T: N under 100 ms (<18 a <20 b <34 c <37 d <50 e <100 f), M longer; avg ms wall/cpu/draws/finish/off:
+ *   fast (<20) ...; slow (20-100) ...
+ * and the frames themselves, 8 a line, at most 500 lines (SGLTIMELINE=0: off):
+ *   sweetgl: tl T: wall/cpu/draws/finish ... (0.1 ms)
+ */
+static void
+frame_timeline(uint64_t t0, uint64_t t1)
+{
+	static mach_timebase_info_data_t tb;
+	static uint64_t last_end, last_cpu, win_start;
+	static uint32_t nb[7], nlong;
+	static double sum[2][5];
+	static uint32_t cnt[2];
+	static char line[400];
+	static int lo, ln, lines_left = 500, on = -1;
+	if (tb.denom == 0) {
+		mach_timebase_info(&tb);
+		const char *e = getenv("SGLTIMELINE");
+		on = !(e != NULL && e[0] == '0');
+	}
+	const uint64_t cpu = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID);
+	if (on && last_end != 0) {
+		const double wall = (double)(t1 - last_end) * tb.numer / tb.denom / 1e6;
+		const double c = (double)(cpu - last_cpu) / 1e6;
+		const double dr = (double)fs.draw_abs * tb.numer / tb.denom / 1e6;
+		const double fin = (double)(t1 - t0) * tb.numer / tb.denom / 1e6;
+		double off = wall - c - fin;
+		off = off < 0 ? 0 : off;
+		if (wall < 100.0) {
+			static const double edge[6] = {18, 20, 34, 37, 50, 100};
+			int b = 0;
+			while (b < 5 && wall >= edge[b]) {
+				b++;
+			}
+			nb[b]++;
+			const int g = wall >= 20.0;
+			const double v[5] = {wall, c, dr, fin, off};
+			for (int k = 0; k < 5; k++) {
+				sum[g][k] += v[k];
+			}
+			cnt[g]++;
+			if (lines_left > 0) {
+				if (ln == 0) {
+					lo = snprintf(line, sizeof(line), "sweetgl: tl %llu:",
+					    (unsigned long long)(t1 * tb.numer / tb.denom / 1000000));
+				}
+				lo += snprintf(line + lo, sizeof(line) - (size_t)lo, " %d/%d/%d/%d", (int)(wall * 10 + 0.5),
+				    (int)(c * 10 + 0.5), (int)(dr * 10 + 0.5), (int)(fin * 10 + 0.5));
+				if (++ln == 8) {
+					sweet_drm_log("%s", line);
+					lines_left--;
+					ln = 0;
+				}
+			}
+		} else {
+			nlong++;
+			if (ln > 0 && lines_left > 0) {
+				sweet_drm_log("%s", line);     /* a pause: end the line */
+				lines_left--;
+				ln = 0;
+			}
+		}
+	}
+	last_end = t1, last_cpu = cpu;
+	if (win_start == 0) {
+		win_start = t1;
+	}
+	if (on && (t1 - win_start) * tb.numer / tb.denom >= 10000000000ull) {
+		if (cnt[0] + cnt[1] > 0) {
+			char avg[2][96];
+			for (int g = 0; g < 2; g++) {
+				double n = cnt[g] ? cnt[g] : 1;
+				snprintf(avg[g], sizeof(avg[g]), "%u frames %.1f/%.1f/%.1f/%.1f/%.1f", cnt[g], sum[g][0] / n,
+				    sum[g][1] / n, sum[g][2] / n, sum[g][3] / n, sum[g][4] / n);
+			}
+			sweet_drm_log("sweetgl: frames %llu: %u under 100 ms (<18 %u <20 %u <34 %u <37 %u <50 %u <100 %u), %u longer; "
+			    "avg ms wall/cpu/draws/finish/off: fast (<20) %s; slow (20-100) %s",
+			    (unsigned long long)(t1 * tb.numer / tb.denom / 1000000), cnt[0] + cnt[1], nb[0], nb[1], nb[2], nb[3],
+			    nb[4], nb[5], nlong, avg[0], avg[1]);
+		}
+		memset(nb, 0, sizeof(nb));
+		memset(sum, 0, sizeof(sum));
+		memset(cnt, 0, sizeof(cnt));
+		nlong = 0;
+		win_start = t1;
+	}
+}
+
 void
 sgl_Flush(void *rctx)
 {
@@ -2880,6 +3117,7 @@ sgl_Flush(void *rctx)
 	glFinish();
 	uint64_t t1 = mach_absolute_time();
 	flush_stats(t0, t1);
+	frame_timeline(t0, t1);
 	fs_end(t1 - t0, t1);
 }
 

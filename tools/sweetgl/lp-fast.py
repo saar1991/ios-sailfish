@@ -101,6 +101,21 @@ struct sweet_fast_rect {
    int shk;                   /* 15 super, 16 circle */
    /* CMB / VCM: color_matrix[0..3] (input r, g, b, a) then [4] (bias), RGBA each */
    float cmv[20];
+   /* TRI: one triangle over x0..y1 (its box, clipped), sampled per pixel (lp-fast.py TRI) */
+   int tri, tkind;
+   int64_t ea[3], eb[3], ec[3];  /* pixel (X, Y) covered when ea * X + eb * Y + ec >= 0 for all three (1/256 units) */
+   float pl[4][3];            /* u, v, u2, v2 at pixel centre (x0, y0), per pixel along x, along y */
+   struct sweet_tsrc {
+      const uint8_t *base[2]; /* the two mip levels used (the same when one) */
+      ptrdiff_t stride[2];
+      int w[2], h[2];
+      float frac;             /* weight of level 1 */
+      int fmt;                /* 1 RGBA8 (pos), 2 A8, 3 half-float RGBA, 4 L8A8 */
+      uint8_t pos[4];
+      int xa, linear;         /* xa: alpha 1 (RGBX) */
+   } ts[2];                   /* texture0, texture1 */
+   int tclamp;
+   float tcl[4];              /* texcoord0 clamp: u0, v0, u1, v1 */
    const float *shA, *shB;
    int shx0, shy0;
 };'''),
@@ -111,6 +126,7 @@ struct sweet_fast_rect {
 
 /* sweetgl (lp-fast.py): LP_RAST_OP_SWEET_FAST */
 #include "util/half_float.h"
+#include "lp_sweet_fast.h"
 #if defined(__aarch64__)
 #include <arm_neon.h>
 #endif
@@ -710,6 +726,236 @@ sweet_fx_row(const struct sweet_fast_rect *r, const uint8_t *d, const uint8_t *s
    }
 }
 
+/* ---- TRI: triangles sampled per pixel (lp-fast.py) */
+
+static inline void
+sweet_tsrc_texel(const struct sweet_tsrc *t, int l, int x, int y, float o[4])
+{
+   const uint8_t *row = t->base[l] + (ptrdiff_t)y * t->stride[l];
+   switch (t->fmt) {
+   case 2:
+      o[0] = o[1] = o[2] = 0.0f;
+      o[3] = row[x] * (1.0f / 255);
+      break;
+   case 3: {
+      const uint16_t *h = (const uint16_t *)(const void *)(row + 8 * x);
+      for (int ch = 0; ch < 4; ch++)
+         o[ch] = _mesa_half_to_float(h[ch]);
+      break;
+   }
+   case 4:
+      o[0] = o[1] = o[2] = row[2 * x] * (1.0f / 255);
+      o[3] = row[2 * x + 1] * (1.0f / 255);
+      break;
+   default:
+      for (int ch = 0; ch < 4; ch++)
+         o[ch] = row[4 * x + t->pos[ch]] * (1.0f / 255);
+      break;
+   }
+   if (t->xa)
+      o[3] = 1.0f;
+}
+
+/* GL's sample at (u, v) of level l: clamp to edge, linear or nearest */
+static inline void
+sweet_tsrc_level(const struct sweet_tsrc *t, int l, float u, float v, float o[4])
+{
+   const int w = t->w[l], h = t->h[l];
+   if (!t->linear) {
+      int i = (int)floorf(u * w), j = (int)floorf(v * h);
+      i = i < 0 ? 0 : i >= w ? w - 1 : i;
+      j = j < 0 ? 0 : j >= h ? h - 1 : j;
+      sweet_tsrc_texel(t, l, i, j, o);
+      return;
+   }
+   float x = u * w - 0.5f, y = v * h - 0.5f, fx0 = floorf(x), fy0 = floorf(y);
+   float a = x - fx0, b = y - fy0;
+   int i0 = (int)fx0, j0 = (int)fy0, i1 = i0 + 1, j1 = j0 + 1;
+   i0 = i0 < 0 ? 0 : i0 >= w ? w - 1 : i0, i1 = i1 < 0 ? 0 : i1 >= w ? w - 1 : i1;
+   j0 = j0 < 0 ? 0 : j0 >= h ? h - 1 : j0, j1 = j1 < 0 ? 0 : j1 >= h ? h - 1 : j1;
+   float p[4], q[4], r2[4], s2[4];
+   sweet_tsrc_texel(t, l, i0, j0, p), sweet_tsrc_texel(t, l, i1, j0, q);
+   sweet_tsrc_texel(t, l, i0, j1, r2), sweet_tsrc_texel(t, l, i1, j1, s2);
+   for (int ch = 0; ch < 4; ch++) {
+      float t0 = p[ch] + (q[ch] - p[ch]) * a, t1 = r2[ch] + (s2[ch] - r2[ch]) * a;
+      o[ch] = t0 + (t1 - t0) * b;
+   }
+}
+
+static inline void
+sweet_tsrc_sample(const struct sweet_tsrc *t, float u, float v, float o[4])
+{
+   sweet_tsrc_level(t, 0, u, v, o);
+   if (t->frac > 0.0f) {
+      float o1[4];
+      sweet_tsrc_level(t, 1, u, v, o1);
+      for (int ch = 0; ch < 4; ch++)
+         o[ch] += (o1[ch] - o[ch]) * t->frac;
+   }
+}
+
+static inline float
+sweet_shape_term(int k, float c)
+{
+   if (k == 16)
+      return c * c;
+   float a = fabsf(c) * 1.199f - 0.199f;
+   return powf(a > 0.0f ? a : 0.0f, 2.68f);
+}
+
+static inline float
+sweet_shape_dd(int k, float sum)
+{
+   return k == 16 ? sweet_circle_d(sum) : sum;
+}
+
+/*
+ * One row of a triangle: the covered pixels from X = xs to xe - 1 (row Y),
+ * RGBA8 into out. D: the destination row (pixel xs first).
+ */
+static void
+sweet_tri_row(const struct sweet_fast_rect *r, const uint8_t *drow, int xs, int xe, int Y, uint8_t *out)
+{
+   const int k = r->tkind, n = xe - xs;
+   const float fy = (float)(Y - r->y0);
+   /* CA's shape (SUPER, CIRCLE on texcoord0; MASKSUP on texcoord1): d per pixel of this row and of the
+    * pixel's quad partner row, from the quad's left column to its right one */
+   float d0[TILE_SIZE + 2], d1[TILE_SIZE + 2];
+   const int shp = k == SWEET_LPF_SUPER || k == SWEET_LPF_CIRCLE || k == SWEET_LPF_MASKSUP;
+   const int sx0 = xs & ~1, sx1 = (xe - 1) | 1;
+   if (shp) {
+      const int sk = k == SWEET_LPF_CIRCLE ? 16 : 15, cu = k == SWEET_LPF_MASKSUP ? 2 : 0;
+      const float *pu = r->pl[cu], *pv = r->pl[cu + 1];
+      const int Yp = Y ^ 1;
+      const float fyp = (float)(Yp - r->y0);
+      /* along x: a term changes only if its coordinate does */
+      const int ux = pu[1] != 0.0f, vx = pv[1] != 0.0f;
+      float tu0 = 0, tv0 = 0, tu1 = 0, tv1 = 0;
+      if (!ux)
+         tu0 = sweet_shape_term(sk, pu[0] + pu[2] * fy), tu1 = sweet_shape_term(sk, pu[0] + pu[2] * fyp);
+      if (!vx)
+         tv0 = sweet_shape_term(sk, pv[0] + pv[2] * fy), tv1 = sweet_shape_term(sk, pv[0] + pv[2] * fyp);
+      for (int X = sx0; X <= sx1; X++) {
+         const float fx = (float)(X - r->x0);
+         float a0 = tu0, b0 = tv0, a1 = tu1, b1 = tv1;
+         if (ux) {
+            a0 = sweet_shape_term(sk, pu[0] + pu[1] * fx + pu[2] * fy);
+            a1 = pu[2] != 0.0f ? sweet_shape_term(sk, pu[0] + pu[1] * fx + pu[2] * fyp) : a0;
+         }
+         if (vx) {
+            b0 = sweet_shape_term(sk, pv[0] + pv[1] * fx + pv[2] * fy);
+            b1 = pv[2] != 0.0f ? sweet_shape_term(sk, pv[0] + pv[1] * fx + pv[2] * fyp) : b0;
+         }
+         d0[X - sx0] = sweet_shape_dd(sk, a0 + b0);
+         d1[X - sx0] = sweet_shape_dd(sk, a1 + b1);
+      }
+   }
+   for (int i = 0; i < n; i++) {
+      const int X = xs + i;
+      const float fx = (float)(X - r->x0);
+      float D[4], t[4] = {0, 0, 0, 1}, m[4] = {0, 0, 0, 1}, R[4], l = 1.0f;
+      for (int ch = 0; ch < 4; ch++)
+         D[ch] = drow[4 * i + r->dpos[ch]] * (1.0f / 255);
+      if (r->dx)
+         D[3] = 1.0f;
+      if (r->ts[0].base[0]) {
+         float u = r->pl[0][0] + r->pl[0][1] * fx + r->pl[0][2] * fy;
+         float v = r->pl[1][0] + r->pl[1][1] * fx + r->pl[1][2] * fy;
+         if (r->tclamp) {
+            u = u < r->tcl[0] ? r->tcl[0] : u > r->tcl[2] ? r->tcl[2] : u;
+            v = v < r->tcl[1] ? r->tcl[1] : v > r->tcl[3] ? r->tcl[3] : v;
+         }
+         sweet_tsrc_sample(&r->ts[0], u, v, t);
+      }
+      if (r->ts[1].base[0]) {
+         float u = r->pl[2][0] + r->pl[2][1] * fx + r->pl[2][2] * fy;
+         float v = r->pl[3][0] + r->pl[3][1] * fx + r->pl[3][2] * fy;
+         sweet_tsrc_sample(&r->ts[1], u, v, m);
+      }
+      if (shp) {
+         const int j = X - sx0, jl = (X & ~1) - sx0, jr = (X | 1) - sx0;
+         float d = d0[j], w = fabsf(d0[jr] - d0[jl]) + fabsf(d1[j] - d0[j]);
+         w = w > 1e-4f ? w : 1e-4f;
+         l = (w * 0.5f + (1.0f - d)) / w;
+         l = l < 0.0f ? 0.0f : l > 1.0f ? 1.0f : l;
+      }
+      switch (k) {
+      case SWEET_LPF_FILL:
+         memcpy(R, r->col, sizeof(R));
+         break;
+      case SWEET_LPF_COPY:
+         memcpy(R, t, sizeof(R));
+         break;
+      case SWEET_LPF_OPAQUE:
+         R[0] = t[0], R[1] = t[1], R[2] = t[2], R[3] = 1.0f;
+         break;
+      case SWEET_LPF_ALPHA:
+         R[0] = R[1] = R[2] = R[3] = t[3];
+         break;
+      case SWEET_LPF_TINT:
+      case SWEET_LPF_MASK:
+      case SWEET_LPF_MASKSUP:
+         for (int ch = 0; ch < 4; ch++)
+            R[ch] = r->col[ch] * t[ch] * (k == SWEET_LPF_MASK ? m[3] : k == SWEET_LPF_MASKSUP ? l : 1.0f);
+         break;
+      case SWEET_LPF_ATINT:
+         for (int ch = 0; ch < 4; ch++)
+            R[ch] = r->col[ch] * t[3];
+         break;
+      case SWEET_LPF_OTINT:
+      case SWEET_LPF_OMASK:
+         for (int ch = 0; ch < 4; ch++)
+            R[ch] = r->col[ch] * (ch == 3 ? 1.0f : t[ch]) * (k == SWEET_LPF_OMASK ? m[3] : 1.0f);
+         break;
+      case SWEET_LPF_SUPER:
+      case SWEET_LPF_CIRCLE:
+         for (int ch = 0; ch < 4; ch++)
+            R[ch] = r->col[ch] * l;
+         break;
+      case SWEET_LPF_MIXBD:
+         for (int ch = 0; ch < 4; ch++)
+            R[ch] = m[ch] * (1.0f - t[3]) + D[ch] * t[3];
+         break;
+      default: /* CFB */
+         for (int ch = 0; ch < 4; ch++)
+            R[ch] = r->col[ch] * D[ch];
+         break;
+      }
+      for (int ch = 0; ch < 4; ch++) {
+         float c = R[ch] > 0.0f ? (R[ch] < 1.0f ? R[ch] : 1.0f) : 0.0f;
+         out[4 * i + ch] = (uint8_t)(c * 255.0f + 0.5f);
+      }
+   }
+}
+
+/* the triangle's pixels in this tile */
+static void
+sweet_tri_tile(const struct sweet_fast_rect *r, uint8_t *d, unsigned stride, int x0, int y0, int x1, int y1)
+{
+   uint8_t tmp[TILE_SIZE * 4] __attribute__((aligned(16)));
+   for (int y = y0; y < y1; y++, d += stride) {
+      const int64_t Py = (int64_t)y * 256 + 128;
+      int xs = -1, xe = -1;
+      for (int x = x0; x < x1; x++) {
+         const int64_t Px = (int64_t)x * 256 + 128;
+         const bool in = r->ea[0] * Px + r->eb[0] * Py + r->ec[0] >= 0 && r->ea[1] * Px + r->eb[1] * Py + r->ec[1] >= 0 &&
+                         r->ea[2] * Px + r->eb[2] * Py + r->ec[2] >= 0;
+         if (in) {
+            if (xs < 0)
+               xs = x;
+            xe = x + 1;
+         } else if (xs >= 0) {
+            break;        /* convex: one span a row */
+         }
+      }
+      if (xs < 0)
+         continue;
+      uint8_t *dr = d + (size_t)(xs - x0) * 4;
+      sweet_tri_row(r, dr, xs, xe, y, tmp);
+      sweet_fast_row(r, dr, tmp, xe - xs, NULL, NULL, 1);
+   }
+}
+
 static void
 lp_rast_sweet_fast(struct lp_rasterizer_task *task,
                    const union lp_rast_cmd_arg arg)
@@ -724,6 +970,10 @@ lp_rast_sweet_fast(struct lp_rasterizer_task *task,
       return;
    const unsigned stride = scene->cbufs[0].stride;
    uint8_t *d = scene->cbufs[0].map + (size_t)y0 * stride + (size_t)x0 * 4;
+   if (r->tri) {
+      sweet_tri_tile(r, d, stride, x0, y0, x1, y1);
+      return;
+   }
    const int32_t *ncx = r->noise ? r->ncx + (x0 - r->x0) : NULL;
 #define SWEET_NROW(y) (r->noise ? r->nbase + (ptrdiff_t)r->nry[(y) - r->y0] * r->nstride : NULL)
    if (r->fx) {
@@ -839,7 +1089,7 @@ lp_rast_sweet_fast(struct lp_rasterizer_task *task,
 #include "lp_sweet_fast.h"
 struct sweet_lpf sweet_lpf_pending;
 enum { SLPF_DRAWS, SLPF_RECTS, SLPF_PIXELS, SLPF_FB, SLPF_SRC, SLPF_SCALE, SLPF_OFFSET, SLPF_BOUNDS,
-       SLPF_SWAP, SLPF_CLAMP, SLPF_OOM, SLPF_KIND, SLPF_SCALED, SLPF_N };
+       SLPF_SWAP, SLPF_CLAMP, SLPF_OOM, SLPF_KIND, SLPF_SCALED, SLPF_TRIS, SLPF_TRIDRAWS, SLPF_MIPTRI, SLPF_N };
 uint64_t sweet_lpf_stat[SLPF_N];
 bool sweet_lp_fast_draw(struct llvmpipe_context *lp);
 
@@ -1051,6 +1301,260 @@ sweet_lpf_bin(struct lp_setup_context *setup, const struct sweet_fast_rect *prot
    return true;
 }
 
+/* ---- TRI (lp-fast.py): triangles sampled per pixel */
+
+/*
+ * A texture for per-pixel sampling: the bound view, its sampler, the mip
+ * level(s) llvmpipe would use for the derivatives (du/dx..dv/dy, normalized):
+ * rho = max(|du/dx| W, |du/dy| W, |dv/dx| H, |dv/dy| H); rho <= 1 magnifies
+ * (level 0); nearest mip: level floor(log2 rho + .5); linear mip: llvmpipe's
+ * brilinear split (factor 2). False when not usable.
+ */
+static bool
+sweet_tsrc_make(struct llvmpipe_context *lp, struct pipe_resource *res, const float g[4], struct sweet_tsrc *t)
+{
+   struct lp_setup_context *setup = lp->setup;
+   const struct lp_jit_texture *jt = NULL;
+   const struct pipe_sampler_state *samp = NULL;
+   int xa = 0;
+   memset(t, 0, sizeof(*t));
+   if (res == NULL || res->nr_samples > 1 || res->array_size > 1 || res->target != PIPE_TEXTURE_2D ||
+       res == lp->framebuffer.cbufs[0].texture)
+      return false;
+   for (unsigned i = 0; i < setup->fs.current_tex_num && i < PIPE_MAX_SHADER_SAMPLER_VIEWS; i++) {
+      const struct lp_jit_texture *c = &setup->fs.current.jit_resources.textures[i];
+      if (setup->fs.current_tex[i] == res && c->base != NULL && c->first_level == 0) {
+         jt = c;
+         samp = i < PIPE_MAX_SAMPLERS ? lp->samplers[MESA_SHADER_FRAGMENT][i] : NULL;
+         break;
+      }
+   }
+   if (jt == NULL || samp == NULL || samp->unnormalized_coords || samp->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE ||
+       samp->wrap_t != PIPE_TEX_WRAP_CLAMP_TO_EDGE || samp->min_lod > 0.0f || samp->lod_bias != 0.0f)
+      return false;
+   if (res->format == PIPE_FORMAT_R16G16B16A16_FLOAT || res->format == PIPE_FORMAT_R16G16B16X16_FLOAT)
+      t->fmt = 3, xa = res->format == PIPE_FORMAT_R16G16B16X16_FLOAT;
+   else if (res->format == PIPE_FORMAT_A8_UNORM)
+      t->fmt = 2;
+   else if (res->format == PIPE_FORMAT_L8A8_UNORM)
+      t->fmt = 4;
+   else {
+      int pos[4];
+      if (!sweet_lpf_order(res->format, pos, &xa))
+         return false;
+      t->fmt = 1;
+      for (int ch = 0; ch < 4; ch++)
+         t->pos[ch] = (uint8_t)pos[ch];
+   }
+   t->xa = xa;
+   const int W = (int)res->width0, H = (int)res->height0, last = MIN2((int)res->last_level, (int)jt->last_level);
+   double rho = MAX2(MAX2(fabs(g[0]) * W, fabs(g[1]) * W), MAX2(fabs(g[2]) * H, fabs(g[3]) * H));
+   int l0 = 0, l1 = 0;
+   float frac = 0.0f;
+   const bool minify = rho > 1.0;
+   t->linear = (minify ? samp->min_img_filter : samp->mag_img_filter) == PIPE_TEX_FILTER_LINEAR;
+   if (minify && last > 0 && samp->min_mip_filter == PIPE_TEX_MIPFILTER_NEAREST) {
+      l0 = l1 = (int)floor(log2(rho) + 0.5);
+   } else if (minify && last > 0 && samp->min_mip_filter == PIPE_TEX_MIPFILTER_LINEAR) {
+      const double factor = 2.0, pre = (2 * factor - 0.5) / (M_SQRT2 * factor);
+      int e;
+      double m = frexp(rho * pre, &e) * 2.0;     /* rho * pre = m * 2^(e - 1), m in [1, 2) */
+      l0 = e - 1, l1 = l0 + 1;
+      frac = (float)(m * factor + (1 - 2 * factor));
+      if (frac <= 0.0f)
+         frac = 0.0f, l1 = l0;
+      frac = frac > 1.0f ? 1.0f : frac;
+   }
+   if (l0 < 0)
+      l0 = 0, l1 = 0, frac = 0.0f;
+   if (l0 >= last)
+      l0 = last, l1 = last, frac = 0.0f;
+   if (l1 > last)
+      l1 = last;
+   const int lv[2] = {l0, l1};
+   for (int k = 0; k < 2; k++) {
+      t->base[k] = (const uint8_t *)jt->base + jt->mip_offsets[lv[k]];
+      t->stride[k] = (ptrdiff_t)jt->row_stride[lv[k]];
+      t->w[k] = MAX2(W >> lv[k], 1);
+      t->h[k] = MAX2(H >> lv[k], 1);
+   }
+   t->frac = l1 != l0 ? frac : 0.0f;
+   return t->stride[0] != 0;
+}
+
+/* the pending draw's triangles into sweet_fast_rects, binned; false: drawn normally */
+static bool
+sweet_lp_tri_draw(struct llvmpipe_context *lp)
+{
+   struct sweet_lpf *p = &sweet_lpf_pending;
+   struct lp_setup_context *setup = lp->setup;
+   const struct pipe_framebuffer_state *fb = &lp->framebuffer;
+   const int kd = p->kind;
+   int dpos[4], dx;
+   if (p->ntri <= 0 || p->ntri > SWEET_LPF_TRIS || p->blend < 0 || p->blend > 6)
+      return false;
+   if (!(kd == SWEET_LPF_FILL || kd == SWEET_LPF_COPY || kd == SWEET_LPF_TINT || kd == SWEET_LPF_ATINT ||
+         kd == SWEET_LPF_OPAQUE || kd == SWEET_LPF_ALPHA || kd == SWEET_LPF_MASK || kd == SWEET_LPF_SUPER ||
+         kd == SWEET_LPF_CIRCLE || kd == SWEET_LPF_MASKSUP || kd == SWEET_LPF_MIXBD || kd == SWEET_LPF_CFB ||
+         kd == SWEET_LPF_OMASK || kd == SWEET_LPF_OTINT))
+      return sweet_lpf_no(SLPF_KIND), false;
+   if (fb->nr_cbufs != 1 || !fb->cbufs[0].texture || fb->layers > 1 ||
+       !sweet_lpf_order(fb->cbufs[0].format, dpos, &dx) ||
+       lp->active_occlusion_queries || lp->active_statistics_queries || lp->active_primgen_queries)
+      return sweet_lpf_no(SLPF_FB), false;
+   const bool tex0 = kd != SWEET_LPF_FILL && kd != SWEET_LPF_SUPER && kd != SWEET_LPF_CIRCLE && kd != SWEET_LPF_CFB;
+   const bool tex1 = kd == SWEET_LPF_MASK || kd == SWEET_LPF_MIXBD || kd == SWEET_LPF_OMASK;
+   struct pipe_resource *res = tex0 ? p->src : NULL, *res2 = tex1 ? p->src2 : NULL;
+   if ((tex0 && res == NULL) || (tex1 && res2 == NULL))
+      return sweet_lpf_no(SLPF_SRC), false;
+   struct sweet_fast_rect proto[SWEET_LPF_TRIS];
+   const int fbw = (int)fb->width, fbh = (int)fb->height;
+   int nr = 0;
+   for (int t = 0; t < p->ntri; t++) {
+      const struct sweet_lpf_tri *q = &p->tri[t];
+      struct sweet_fast_rect *r = &proto[nr];
+      memset(r, 0, sizeof(*r));
+      /* covered pixels: the box of the vertices, clipped */
+      double bx0 = MIN3(q->x[0], q->x[1], q->x[2]), bx1 = MAX3(q->x[0], q->x[1], q->x[2]);
+      double by0 = MIN3(q->y[0], q->y[1], q->y[2]), by1 = MAX3(q->y[0], q->y[1], q->y[2]);
+      r->x0 = MAX3((int)floor(bx0), q->clip[0], 0), r->x1 = MIN3((int)ceil(bx1) + 1, q->clip[2], fbw);
+      r->y0 = MAX3((int)floor(by0), q->clip[1], 0), r->y1 = MIN3((int)ceil(by1) + 1, q->clip[3], fbh);
+      if (r->x0 >= r->x1 || r->y0 >= r->y1)
+         continue;
+      /* edges in 1/256 pixel, the inside on the left of each (counter-clockwise order), shared edges
+       * given to one of their two triangles (E == 0 kept on edges going down, or right when flat) */
+      int64_t X[3], Y[3];
+      for (int k = 0; k < 3; k++)
+         X[k] = llrint((double)q->x[k] * 256.0), Y[k] = llrint((double)q->y[k] * 256.0);
+      int64_t area = (X[1] - X[0]) * (Y[2] - Y[0]) - (X[2] - X[0]) * (Y[1] - Y[0]);
+      if (area == 0)
+         continue;
+      int o[3] = {0, 1, 2};
+      if (area < 0)
+         o[1] = 2, o[2] = 1;
+      for (int e = 0; e < 3; e++) {
+         const int i = o[e], j = o[(e + 1) % 3];
+         const int64_t ddx = X[j] - X[i], ddy = Y[j] - Y[i];
+         /* E(P) = ddx * (Py - Yi) - ddy * (Px - Xi): > 0 inside */
+         r->ea[e] = -ddy, r->eb[e] = ddx, r->ec[e] = ddy * X[i] - ddx * Y[i];
+         if (!(ddy < 0 || (ddy == 0 && ddx > 0)))
+            r->ec[e] -= 1;
+      }
+      /* planes: a(px, py) at pixel centres, from the unsnapped vertices */
+      const double x0c = r->x0 + 0.5, y0c = r->y0 + 0.5;
+      const double e1x = (double)q->x[1] - q->x[0], e1y = (double)q->y[1] - q->y[0];
+      const double e2x = (double)q->x[2] - q->x[0], e2y = (double)q->y[2] - q->y[0];
+      const double det = e1x * e2y - e2x * e1y;
+      const float *at[4] = {q->u, q->v, q->u2, q->v2};
+      float g0[4], g1[4];
+      for (int a = 0; a < 4; a++) {
+         const double d1 = (double)at[a][1] - at[a][0], d2 = (double)at[a][2] - at[a][0];
+         const double gx = (d1 * e2y - d2 * e1y) / det, gy = (d2 * e1x - d1 * e2x) / det;
+         r->pl[a][0] = (float)(at[a][0] + gx * (x0c - q->x[0]) + gy * (y0c - q->y[0]));
+         r->pl[a][1] = (float)gx, r->pl[a][2] = (float)gy;
+      }
+      g0[0] = r->pl[0][1], g0[1] = r->pl[0][2], g0[2] = r->pl[1][1], g0[3] = r->pl[1][2];
+      g1[0] = r->pl[2][1], g1[1] = r->pl[2][2], g1[2] = r->pl[3][1], g1[3] = r->pl[3][2];
+      if ((tex0 && !sweet_tsrc_make(lp, res, g0, &r->ts[0])) || (tex1 && !sweet_tsrc_make(lp, res2, g1, &r->ts[1]))) {
+         sweet_lpf_why("tri texture", p, NULL, tex0 && res ? (int)res->format : -1, tex1 && res2 ? (int)res2->format : -1,
+                       0, 0);
+         return sweet_lpf_no(SLPF_SRC), false;
+      }
+      r->tri = 1;
+      r->tkind = kd;
+      r->blend = p->blend;
+      r->dx = dx;
+      r->tclamp = p->tclamp;
+      memcpy(r->tcl, p->cl, sizeof(r->tcl));
+      for (int ch = 0; ch < 4; ch++) {
+         r->dpos[ch] = (uint8_t)dpos[ch];
+         r->col[ch] = q->color[ch] * (1.0f / 255);
+      }
+      for (int px = 0; px < 4; px++) {
+         for (int ch = 0; ch < 4; ch++) {
+            r->perm2[4 * px + dpos[ch]] = (uint8_t)(4 * px + ch);
+            r->orm2[4 * px + dpos[ch]] = ch == 3 && dx ? 0xff : 0;
+         }
+      }
+      nr++;
+   }
+   if (nr == 0)
+      return true;      /* nothing covered: done */
+   if (!lp_setup_update_state(setup, true))
+      return false;
+   for (int k = 0; k < nr; k++) {
+      struct sweet_fast_rect *made = NULL;
+#define SWEET_TRI_PUT() ((!res || lp_scene_add_resource_reference(setup->scene, res, false, false)) && \
+                         (!res2 || lp_scene_add_resource_reference(setup->scene, res2, false, false)) && \
+                         sweet_lpf_bin(setup, &proto[k], &made))
+      if (!SWEET_TRI_PUT()) {
+         if (made)
+            made->disable = 1;
+         made = NULL;
+         sweet_lpf_stat[SLPF_OOM]++;
+         if (!lp_setup_flush_and_restart(setup))
+            break;
+         if (!SWEET_TRI_PUT()) {
+            if (made)
+               made->disable = 1;
+            continue;
+         }
+      }
+#undef SWEET_TRI_PUT
+      sweet_lpf_stat[SLPF_TRIS]++;
+      sweet_lpf_stat[SLPF_PIXELS] += (uint64_t)(proto[k].x1 - proto[k].x0) * (uint64_t)(proto[k].y1 - proto[k].y0) / 2;
+   }
+   sweet_lpf_stat[SLPF_DRAWS]++;
+   sweet_lpf_stat[SLPF_TRIDRAWS]++;
+   return true;
+}
+
+/* rectangle jobs that need mipmaps: the same draw as two triangles each */
+static bool
+sweet_lp_rects_as_tris(struct llvmpipe_context *lp)
+{
+   struct sweet_lpf *p = &sweet_lpf_pending;
+   const int kd = p->kind;
+   if (p->n <= 0 || 2 * p->n > SWEET_LPF_TRIS ||
+       !(kd == SWEET_LPF_COPY || kd == SWEET_LPF_TINT || kd == SWEET_LPF_ATINT || kd == SWEET_LPF_OPAQUE ||
+         kd == SWEET_LPF_ALPHA || kd == SWEET_LPF_MASK || kd == SWEET_LPF_MASKSUP || kd == SWEET_LPF_MIXBD ||
+         kd == SWEET_LPF_OMASK || kd == SWEET_LPF_OTINT))
+      return false;
+   int nt = 0;
+   for (int k = 0; k < p->n; k++) {
+      const struct sweet_lpf_job *j = &p->job[k];
+      if (j->x0 >= j->x1 || j->y0 >= j->y1)
+         continue;
+      /* corners: (xa, ya), (xb, ya), (xb, yb), (xa, yb) */
+      const float cx[4] = {j->xa, j->xb, j->xb, j->xa}, cy[4] = {j->ya, j->ya, j->yb, j->yb};
+      float u[4], v[4], u2[4], v2[4];
+      for (int c = 0; c < 4; c++) {
+         const int hx = c == 1 || c == 2, hy = c >= 2;
+         u[c] = j->swap ? (hy ? j->ub : j->ua) : (hx ? j->ub : j->ua);
+         v[c] = j->swap ? (hx ? j->vb : j->va) : (hy ? j->vb : j->va);
+         u2[c] = j->swap2 ? (hy ? j->u2b : j->u2a) : (hx ? j->u2b : j->u2a);
+         v2[c] = j->swap2 ? (hx ? j->v2b : j->v2a) : (hy ? j->v2b : j->v2a);
+      }
+      static const int tv[2][3] = {{0, 1, 2}, {0, 2, 3}};
+      for (int t = 0; t < 2; t++) {
+         struct sweet_lpf_tri *q = &p->tri[nt++];
+         for (int c = 0; c < 3; c++) {
+            const int i = tv[t][c];
+            q->x[c] = cx[i], q->y[c] = cy[i], q->u[c] = u[i], q->v[c] = v[i], q->u2[c] = u2[i], q->v2[c] = v2[i];
+         }
+         q->clip[0] = j->x0, q->clip[1] = j->y0, q->clip[2] = j->x1, q->clip[3] = j->y1;
+         memcpy(q->color, j->color, 4);
+      }
+   }
+   p->tclamp = p->job[0].tclamp;
+   p->cl[0] = p->job[0].cu0, p->cl[1] = p->job[0].cv0, p->cl[2] = p->job[0].cu1, p->cl[3] = p->job[0].cv1;
+   p->ntri = nt;
+   if (nt == 0)
+      return false;
+   sweet_lpf_stat[SLPF_MIPTRI]++;
+   return sweet_lp_tri_draw(lp);
+}
+
 bool
 sweet_lp_fast_draw(struct llvmpipe_context *lp)
 {
@@ -1061,6 +1565,8 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
    struct pipe_resource *res = p->src;
    struct llvmpipe_resource *lpr = NULL;
 
+   if (p->ntri > 0)
+      return sweet_lp_tri_draw(lp);
    if (p->n <= 0 || p->n > SWEET_LPF_MAX)
       return false;
    const int kd = p->kind;
@@ -1332,6 +1838,9 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
                sweet_lpf_why(no, p, &jj, (int)res->format, W, H, 1);
                for (int q = 0; q < nr; q++)
                   SWEET_TAB_FREE(q);
+               /* turned or mipmapped: per-pixel triangles can */
+               if ((no[0] == 't' || no[0] == 'm') && sweet_lp_rects_as_tris(lp))
+                  return true;
                return sweet_lpf_no(no[0] == 't' ? SLPF_SWAP : SLPF_SCALE), false;
             }
             bool linear = (minify ? samp->min_img_filter : samp->mag_img_filter) == PIPE_TEX_FILTER_LINEAR;
@@ -1479,6 +1988,8 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
             sweet_lpf_why(j->swap2 ? "mask turned" : "mask mipmaps", p, j, (int)res2->format, MW, MH, 1);
             for (int q = 0; q <= nr; q++)
                SWEET_TAB_FREE(q);
+            if (sweet_lp_rects_as_tris(lp))
+               return true;
             return sweet_lpf_no(j->swap2 ? SLPF_SWAP : SLPF_SCALE), false;
          }
          bool linear = (minify ? msamp->min_img_filter : msamp->mag_img_filter) == PIPE_TEX_FILTER_LINEAR;
@@ -1576,17 +2087,19 @@ bool sweet_lp_fast_draw(struct llvmpipe_context *lp);   /* lp_setup.c */'''),
    lg("%s", l);
    {
       extern uint64_t sweet_lpf_stat[];
-      static uint64_t pl[13];
-      uint64_t d[13];
-      for (int i = 0; i < 13; i++) {
+      static uint64_t pl[16];
+      uint64_t d[16];
+      for (int i = 0; i < 16; i++) {
          d[i] = sweet_lpf_stat[i] - pl[i];
          pl[i] = sweet_lpf_stat[i];
       }
       lg("sweetgl: lp fast: %llu draws, %llu rects (%llu scaled), %llu kpx; not taken: kind %llu fb %llu src %llu scale %llu "
-         "offset %llu bounds %llu turned %llu clamp %llu; out of scene memory %llu",
+         "offset %llu bounds %llu turned %llu clamp %llu; out of scene memory %llu; as triangles %llu draws "
+         "(%llu of them mipmapped / turned rectangles), %llu triangles",
          (unsigned long long)d[0], (unsigned long long)d[1], (unsigned long long)d[12], (unsigned long long)(d[2] / 1000),
          (unsigned long long)d[11], (unsigned long long)d[3], (unsigned long long)d[4], (unsigned long long)d[5],
          (unsigned long long)d[6], (unsigned long long)d[7], (unsigned long long)d[8], (unsigned long long)d[9],
-         (unsigned long long)d[10]);
+         (unsigned long long)d[10], (unsigned long long)d[14], (unsigned long long)d[15],
+         (unsigned long long)d[13]);
    }'''),
     ])

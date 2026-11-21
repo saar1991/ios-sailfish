@@ -64,8 +64,25 @@ struct sweet_lpf_job {
 	int swap2;
 };
 
+/*
+ * Triangles (lp-fast.py TRI): draws that are not rectangles (meshes, rotated
+ * pictures), and rectangles whose texture needs mipmaps. Window coordinates
+ * (framebuffer rows), texture coordinates after texmat, the pixels allowed
+ * (scissor / framebuffer / the rectangle's own coverage), the colour.
+ */
+#define SWEET_LPF_TRIS 32
+struct sweet_lpf_tri {
+	float x[3], y[3], u[3], v[3], u2[3], v2[3];
+	int clip[4];                    /* x0, y0, x1, y1: half-open */
+	uint8_t color[4];
+};
+
 struct sweet_lpf {
-	int n;                          /* rectangles; 0: nothing pending */
+	int n;                          /* rectangles; 0: nothing pending (1 with ntri > 0) */
+	int ntri;                       /* > 0: the draw is these triangles instead of job[] */
+	int tclamp;                     /* triangles: texcoord0 clamped to cl (coord_arg) first */
+	float cl[4];                    /* u0, v0, u1, v1 */
+	struct sweet_lpf_tri tri[SWEET_LPF_TRIS];
 	int kind, blend;
 	void *src;                      /* struct pipe_resource * of texture0 (COPY, OPAQUE, COPYN) */
 	void *noise;                    /* COPYN: the noise texture */
