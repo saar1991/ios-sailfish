@@ -389,7 +389,7 @@ sweet_lp_report(void (*lg)(const char *, ...))
    qsort(all, nall, sizeof(all[0]), swp_cmp_var);
    static const char *const fpk[] = {
       "?", "fill", "copy", "tint", "atint", "opaque", "alpha", "copyn", "tintn", "atintdk", "copydkn",
-      "mask", "lumc", "cm4", "cm3", "super", "circle", "masksup", "mixbd", "blur",
+      "mask", "lumc", "cm4", "cm3", "super", "circle", "masksup", "mixbd", "blur", "cfb", "cmb", "vcm", "omask", "otint",
    };
    for (unsigned j = 0; j < nall && j < 14; j++) {
       struct swp_var *e = &all[j];

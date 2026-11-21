@@ -37,6 +37,12 @@ enum fp_kind {
 	FPK_MASKSUP,    /* color * texture * supercircleImage(texcoord1).a (masked icons) */
 	FPK_MIXBD,      /* mix(texture1, framebuffer, texture.a) */
 	FPK_BLUR,       /* CA's Gaussian blur pass: weighted taps of texture0 at texcoord0 + offsets */
+	/* llvmpipe's rasterizer only (lp-fast.py), never drawn by fp_run */
+	FPK_CFB,        /* color * framebuffer */
+	FPK_CMB,        /* CA's colorMatrix4x4Bias(framebuffer): unpremultiplied, color_matrix[0..3] + [4], premultiplied */
+	FPK_VCM,        /* sgl_vcm(texture): the framebuffer through the vibrant colour matrix, mixed in by texture.a */
+	FPK_OMASK,      /* color * vec4(texture.rgb, 1) * texture1.a */
+	FPK_OTINT,      /* color * vec4(texture.rgb, 1) */
 	FPK_COUNT
 };
 

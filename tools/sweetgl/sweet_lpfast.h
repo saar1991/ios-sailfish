@@ -39,6 +39,11 @@
 #define SWEET_LPF_MASKSUP 17            /* colour * texture * supercircleImage(texcoord1) */
 #define SWEET_LPF_MIXBD 18              /* mix(texture1, framebuffer, texture.a) */
 #define SWEET_LPF_BLUR 19               /* taps of texture0, weighted (divided by alpha when bdiv) */
+#define SWEET_LPF_CFB 20                /* colour * framebuffer */
+#define SWEET_LPF_CMB 21                /* CA's colorMatrix4x4Bias(framebuffer) */
+#define SWEET_LPF_VCM 22                /* sgl_vcm(texture): vibrant colour matrix on the framebuffer, by texture.a */
+#define SWEET_LPF_OMASK 23              /* colour * vec4(texture.rgb, 1) * texture1.a */
+#define SWEET_LPF_OTINT 24              /* colour * vec4(texture.rgb, 1) */
 #define SWEET_LPF_TAPS 16               /* fastpath.h FP_TAPS */
 /* blends (eagl.c FPB_): 0 none, 1 premul, 2 straight, 3 mixed, 4 atop, 5 dstout, 6 add */
 #define SWEET_LPF_BLEND_NONE 0
@@ -68,6 +73,7 @@ struct sweet_lpf {
 	float nscale;                   /* COPYN: rgb += (noise.rgb - .5) * nscale * a, clamped to [0, a] */
 	float farg[4];                  /* LUMC: the curve's coefficients */
 	float cm[4][3];                 /* CM4 / CM3: colour matrix rows (alpha row zero for CM3) */
+	float cm5[5][4];                /* CMB / VCM: color_matrix[0..3] (input r, g, b, a) and [4] (bias), RGBA each */
 	int ntap, bdiv;                 /* BLUR */
 	float toff[SWEET_LPF_TAPS][2], tw[SWEET_LPF_TAPS];
 	struct sweet_lpf_job job[SWEET_LPF_MAX];
