@@ -1524,7 +1524,8 @@ fast_tex(GLint prog, GLint loc, GLint att, int kind, GLenum wrap, int nearest_on
 #endif
 
 static void
-lpf_offer(int kind, int blend, const struct fp_job *jobs, int n, GLuint tex)
+lpf_offer(int kind, int blend, const struct fp_job *jobs, int n, GLuint tex, GLuint ntex, const GLfloat *W, const GLint *vp,
+    GLfloat nscale)
 {
 #ifdef SWEETGL_LLVMPIPE
 	static int on = -1;
@@ -1535,14 +1536,20 @@ lpf_offer(int kind, int blend, const struct fp_job *jobs, int n, GLuint tex)
 	}
 	struct sweet_lpf *p = &sweet_lpf_pending;
 	p->n = 0;
-	if (!on || n <= 0 || n > SWEET_LPF_MAX || (kind != FPK_FILL && kind != FPK_COPY && kind != FPK_OPAQUE) ||
+	if (!on || n <= 0 || n > SWEET_LPF_MAX ||
+	    (kind != FPK_FILL && kind != FPK_COPY && kind != FPK_OPAQUE && kind != FPK_COPYN) ||
 	    (blend != FPB_NONE && blend != FPB_PREMUL)) {
 		return;
 	}
 	p->src = NULL;
+	p->noise = NULL;
 	if (kind != FPK_FILL && (p->src = fp_tex_resource(tex)) == NULL) {
 		return;
 	}
+	if (kind == FPK_COPYN && (p->noise = fp_tex_resource(ntex)) == NULL) {
+		return;
+	}
+	p->nscale = nscale;
 	p->kind = kind;
 	p->blend = blend;
 	for (int r = 0; r < n; r++) {
@@ -1554,10 +1561,17 @@ lpf_offer(int kind, int blend, const struct fp_job *jobs, int n, GLuint tex)
 		o->swap = j->swap, o->tclamp = j->tclamp;
 		o->cu0 = j->cu0, o->cu1 = j->cu1, o->cv0 = j->cv0, o->cv1 = j->cv1;
 		memcpy(o->color, j->color, 4);
+		if (kind == FPK_COPYN) {
+			/* as fast_draw's mode 1: texcoordN = (clip.xy * W.xy + W.zw * w, w * NOISE_SIZE) */
+			o->nud = 2.0f * W[0] / ((float)vp[2] * FAST_NOISE_SIZE);
+			o->nu0 = (W[2] - W[0] - 2.0f * W[0] * (float)vp[0] / (float)vp[2]) / FAST_NOISE_SIZE;
+			o->nvd = 2.0f * W[1] / ((float)vp[3] * FAST_NOISE_SIZE);
+			o->nv0 = (W[3] - W[1] - 2.0f * W[1] * (float)vp[1] / (float)vp[3]) / FAST_NOISE_SIZE;
+		}
 	}
 	p->n = n;
 #else
-	(void)kind, (void)blend, (void)jobs, (void)n, (void)tex;
+	(void)kind, (void)blend, (void)jobs, (void)n, (void)tex, (void)ntex, (void)W, (void)vp, (void)nscale;
 #endif
 }
 
@@ -2078,7 +2092,7 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 			fst.wait_abs++;
 		}
 		if (fast_mode == 0) {
-			lpf_offer(kind, blend, jobs, nrect, tex);
+			lpf_offer(kind, blend, jobs, nrect, tex, ntex, W, vp, nscale);
 		}
 		return 2;
 	}

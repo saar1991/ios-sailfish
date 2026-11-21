@@ -23,6 +23,7 @@
 #define SWEET_LPF_FILL 1
 #define SWEET_LPF_COPY 2
 #define SWEET_LPF_OPAQUE 5
+#define SWEET_LPF_COPYN 7               /* copy, then CA's noise dither */
 #define SWEET_LPF_BLEND_NONE 0
 #define SWEET_LPF_BLEND_PREMUL 1
 
@@ -33,12 +34,16 @@ struct sweet_lpf_job {
 	int swap, tclamp;
 	float cu0, cu1, cv0, cv1;
 	uint8_t color[4];               /* RGBA, FILL */
+	/* COPYN: the noise texel at window pixel x, y is (u, v) = (nu0 + nud * (x + .5), nv0 + nvd * (y + .5)), nearest, repeat */
+	float nu0, nud, nv0, nvd;
 };
 
 struct sweet_lpf {
 	int n;                          /* rectangles; 0: nothing pending */
 	int kind, blend;
-	void *src;                      /* struct pipe_resource * of texture0 (COPY, OPAQUE) */
+	void *src;                      /* struct pipe_resource * of texture0 (COPY, OPAQUE, COPYN) */
+	void *noise;                    /* COPYN: the noise texture */
+	float nscale;                   /* COPYN: rgb += (noise.rgb - .5) * nscale * a, clamped to [0, a] */
 	struct sweet_lpf_job job[SWEET_LPF_MAX];
 };
 
