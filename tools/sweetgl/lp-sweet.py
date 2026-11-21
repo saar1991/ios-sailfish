@@ -17,6 +17,12 @@
 #    framebuffer fetch, emulated by sampling): flush, no wait. 8d9994d's
 #    profile showed ~1100 of these per 10 s during animations, ~3 s of
 #    GL-thread waiting.
+#    Framebuffer-fetch draws (eagl.c sets sweet_lp_fbfetch_draw around them)
+#    stay in the scene being built: each fragment reads only its own pixel,
+#    llvmpipe renders straight into the texture and runs a bin's commands in
+#    order on one thread, so earlier draws are already in memory. The opaque
+#    whole-tile bin reset (which drops a bin's earlier commands) is skipped
+#    while a bound fragment sampler reads a framebuffer texture.
 # 2. A profile of the rasterizer threads, printed by eagl.c every 10 s
 #    (sweet_lp_report): scenes and their sizes, busy and barrier time, why
 #    scenes were flushed, where the GL thread waited, time by command and by
@@ -449,7 +455,33 @@ set_scene_state(struct lp_setup_context *setup,
 ]
 SETUP_EDITS.pop()
 SETUP_EDITS.append(('''/**
- * Called by vbuf code when we're about to draw something.''', '''/* sweetgl: does the scene being built, or the framebuffer it draws to, write texture? */
+ * Called by vbuf code when we're about to draw something.''', '''/* sweetgl: is texture a colour buffer of the framebuffer being drawn to? */
+bool sweet_lp_setup_fb_has(const struct lp_setup_context *setup, const struct pipe_resource *texture);
+bool
+sweet_lp_setup_fb_has(const struct lp_setup_context *setup, const struct pipe_resource *texture)
+{
+   for (unsigned i = 0; i < setup->fb.nr_cbufs; i++) {
+      if (setup->fb.cbufs[i].texture == texture)
+         return true;
+   }
+   return false;
+}
+
+/* sweetgl: does a bound fragment sampler read a framebuffer texture? Then an
+ * opaque tile must not drop the bin's earlier commands (it may read them). */
+uint64_t sweet_lp_resets_kept;
+bool sweet_lp_fb_sampled(const struct lp_setup_context *setup);
+bool
+sweet_lp_fb_sampled(const struct lp_setup_context *setup)
+{
+   for (unsigned i = 0; i < setup->fs.current_tex_num && i < PIPE_MAX_SHADER_SAMPLER_VIEWS; i++) {
+      if (setup->fs.current_tex[i] && sweet_lp_setup_fb_has(setup, setup->fs.current_tex[i]))
+         return true;
+   }
+   return false;
+}
+
+/* sweetgl: does the scene being built, or the framebuffer it draws to, write texture? */
 bool sweet_lp_setup_writes(struct lp_setup_context *setup, const struct pipe_resource *texture);
 bool
 sweet_lp_setup_writes(struct lp_setup_context *setup, const struct pipe_resource *texture)
@@ -530,6 +562,12 @@ sweet_lp_nowait(void)
    return on;
 }
 
+/* set by eagl.c around a framebuffer-fetch draw */
+int sweet_lp_fbfetch_draw;
+static uint64_t swp_nw_same;
+extern bool sweet_lp_setup_fb_has(const struct lp_setup_context *setup, const struct pipe_resource *texture);
+extern uint64_t sweet_lp_resets_kept;
+
 bool
 sweet_lp_sampler_flush(struct pipe_context *pipe, struct pipe_resource *resource)
 {
@@ -551,6 +589,10 @@ sweet_lp_sampler_flush(struct pipe_context *pipe, struct pipe_resource *resource
    }
    if (!(llvmpipe_is_resource_referenced(pipe, resource, 0) & LP_REFERENCED_FOR_WRITE))
       return true;
+   if (sweet_lp_fbfetch_draw && sweet_lp_setup_fb_has(llvmpipe_context(pipe)->setup, resource)) {
+      swp_nw_same++;    /* framebuffer fetch: same scene (see lp-sweet.py) */
+      return true;
+   }
    if (sweet_lp_setup_writes(llvmpipe_context(pipe)->setup, resource)) {
       llvmpipe_flush(pipe, NULL, "sampler_view (no wait)");
       swp_nw_flush++;
@@ -581,10 +623,13 @@ sweet_lp_waits_report(void (*lg)(const char *, ...), double ms)
       if (d && o < (int)sizeof(l) - 48)
          o += snprintf(l + o, sizeof(l) - o, " %s %llu/%.0f", sweet_lp_waits[i].r, (unsigned long long)d, dt * ms);
    }
-   static uint64_t pb;
-   o += snprintf(l + o, sizeof(l) - o, "; texture barriers without wait %llu",
-                 (unsigned long long)(sweet_lp_barriers_nowait - pb));
+   static uint64_t pb, pss, prk;
+   o += snprintf(l + o, sizeof(l) - o, "; texture barriers without wait %llu; fbfetch binds in the same scene %llu, opaque-tile resets kept %llu",
+                 (unsigned long long)(sweet_lp_barriers_nowait - pb), (unsigned long long)(swp_nw_same - pss),
+                 (unsigned long long)(sweet_lp_resets_kept - prk));
    pb = sweet_lp_barriers_nowait;
+   pss = swp_nw_same;
+   prk = sweet_lp_resets_kept;
    o += snprintf(l + o, sizeof(l) - o, "; sampler binds without wait: skipped %llu, flushed %llu, other ctx %llu, stock %llu",
                  (unsigned long long)(swp_nw_skip - ps[0]), (unsigned long long)(swp_nw_flush - ps[1]),
                  (unsigned long long)(swp_nw_other - ps[2]), (unsigned long long)(swp_nw_stock - ps[3]));
@@ -621,6 +666,18 @@ llvmpipe_texture_barrier(struct pipe_context *pipe, unsigned flags)
    llvmpipe_finish(pipe, "barrier");
 }
 '''),
+])
+
+# ---------------------------------------------------------------- lp_setup_rect.c
+patch('lp_setup_rect.c', [
+    ('''#include "lp_state_setup.h"''', '''#include "lp_state_setup.h"
+bool sweet_lp_fb_sampled(const struct lp_setup_context *setup);   /* sweetgl: lp_setup.c */
+extern uint64_t sweet_lp_resets_kept;'''),
+    ('''      if (!scene->fb.zsbuf.texture && scene->fb_max_layer == 0 &&
+          !scene->had_queries) {''', '''      bool sweet_keep = sweet_lp_fb_sampled(setup);
+      sweet_lp_resets_kept += sweet_keep;
+      if (!scene->fb.zsbuf.texture && scene->fb_max_layer == 0 &&
+          !scene->had_queries && !sweet_keep) {'''),
 ])
 
 # ---------------------------------------------------------------- lp_state_sampler.c

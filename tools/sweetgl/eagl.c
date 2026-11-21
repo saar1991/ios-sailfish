@@ -693,6 +693,35 @@ fbfetch_link(GLuint program)
 	}
 }
 
+/*
+ * llvmpipe: a framebuffer-fetch draw can stay in the scene being built
+ * (lp-sweet.py): each fragment reads only its own pixel, llvmpipe renders
+ * straight into the texture and runs a tile's commands in order, so the
+ * earlier draws are already in memory. No flush, no barrier; Mesa is told
+ * through sweet_lp_fbfetch_draw while the draw runs. SGLFBSAME=0: flush
+ * and barrier as before (needed for softpipe, which keeps a tile cache).
+ */
+#ifdef SWEETGL_LLVMPIPE
+extern int sweet_lp_fbfetch_draw;
+#endif
+static int fbfetch_now;   /* the next draw reads the framebuffer in the same scene */
+
+static int
+fbfetch_same_scene(void)
+{
+#ifdef SWEETGL_LLVMPIPE
+	static int on = -1;
+	if (on < 0) {
+		const char *e = getenv("SGLFBSAME"), *d = getenv("GALLIUM_DRIVER");
+		on = !(e != NULL && e[0] == '0') && !(d != NULL && strcmp(d, "softpipe") == 0);
+		sweet_drm_log("sweetgl: framebuffer fetch in the same scene: %s", on ? "on" : "off");
+	}
+	return on;
+#else
+	return 0;
+#endif
+}
+
 /* before a draw of an fbfetch program: the framebuffer's texture on FBFETCH_UNIT, flushed */
 static void
 fbfetch_bind(GLint prog)
@@ -733,8 +762,12 @@ fbfetch_bind(GLint prog)
 	 * the framebuffer fetch reads them (test: rounded corners came out right
 	 * only while the trace's glReadPixels forced this flush).
 	 */
-	glFlush();
-	_mesa_TextureBarrierNV();
+	if (fbfetch_same_scene()) {
+		fbfetch_now = 1;
+	} else {
+		glFlush();
+		_mesa_TextureBarrierNV();
+	}
 	/* SWEETGL_GLERR: an error here comes from the setup above, not from the app's draw */
 	if (sgl_check_errors) {
 		static int setup_logged;
@@ -2484,8 +2517,15 @@ sgl_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 	glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
 	int fp = fast_draw(prog, mode, count, 0, 0, NULL, first);
 	if (fp != 1) {
+#ifdef SWEETGL_LLVMPIPE
+		sweet_lp_fbfetch_draw = fbfetch_now;
+#endif
 		glDrawArrays(mode, first, count);
+#ifdef SWEETGL_LLVMPIPE
+		sweet_lp_fbfetch_draw = 0;
+#endif
 	}
+	fbfetch_now = 0;
 	uint64_t dt = mach_absolute_time() - t0;
 	fast_account(prog, fp, dt);
 	if (fast_pend.buf != NULL) {
@@ -2505,8 +2545,15 @@ sgl_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void
 	glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
 	int fp = fast_draw(prog, mode, count, 1, type, indices, 0);
 	if (fp != 1) {
+#ifdef SWEETGL_LLVMPIPE
+		sweet_lp_fbfetch_draw = fbfetch_now;
+#endif
 		glDrawElements(mode, count, type, indices);
+#ifdef SWEETGL_LLVMPIPE
+		sweet_lp_fbfetch_draw = 0;
+#endif
 	}
+	fbfetch_now = 0;
 	uint64_t dt = mach_absolute_time() - t0;
 	fast_account(prog, fp, dt);
 	if (fast_pend.buf != NULL) {
