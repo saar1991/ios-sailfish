@@ -75,6 +75,21 @@ struct sweet_fast_rect {
    float tcolf[4];
    /* after the float row (RGBA8, already tinted / dithered): order into the destination only */
    uint8_t perm2[16], orm2[16];
+   /* blends 2..6 read the destination alpha: 1 for formats without one */
+   int dx;
+   /* A8 sources: one byte a texel (alpha, rgb 0), expanded to RGBA first */
+   int a8;
+   /* framebuffer / multi-tap kinds, drawn through float (lp-fast.py FX):
+    * 12 lumc, 13 cm4, 14 cm3, 9 atintdk, 10 copydkn, 19 blur */
+   int fx;
+   uint8_t dpos[4];           /* byte of R, G, B, A in the destination */
+   uint8_t permr[16], ormr[16];  /* 8-bit source bytes into RGBA order */
+   float fp[16];              /* lumc: farg[0..3], falpha; cm: rows m0..m3 (4 floats each, rgb + 0) */
+   float col[4];              /* the colour, RGBA 0..1 (atintdk) */
+   int ntap, bdiv;
+   float tw[16];
+   const int32_t *bcx[16], *bry[16];   /* blur: per tap, the texel pairs per column / row */
+   const uint8_t *bwx[16], *bwy[16];
 };'''),
     ])
 
@@ -93,6 +108,17 @@ sweet_div255(unsigned t)
    t += 128;
    return (uint8_t)((t + (t >> 8)) >> 8);
 }
+
+#if defined(__aarch64__)
+/* a * b / 255, rounded, per byte */
+static inline uint8x16_t
+sweet_mul255q(uint8x16_t a, uint8x16_t b)
+{
+   uint16x8_t lo = vmull_u8(vget_low_u8(a), vget_low_u8(b));
+   uint16x8_t hi = vmull_high_u8(a, b);
+   return vcombine_u8(vrshrn_n_u16(vrsraq_n_u16(lo, lo, 8), 8), vrshrn_n_u16(vrsraq_n_u16(hi, hi, 8), 8));
+}
+#endif
 
 /* CA's dither on one pixel in destination order (alpha byte 3), noise in the same order */
 static inline void
@@ -118,6 +144,8 @@ sweet_fast_row(const struct sweet_fast_rect *r, uint8_t *d, const uint8_t *s, in
    const uint8x16_t aidx = vld1q_u8(aidx_b);
    const uint8x16_t perm = vld1q_u8(pt), orm = vld1q_u8(ot);
    const uint8x16_t fill = vreinterpretq_u8_u32(vdupq_n_u32(r->color));
+   const uint8x16_t amask = vreinterpretq_u8_u32(vdupq_n_u32(0xff000000u));
+   const uint8x16_t dxa = r->dx ? amask : vdupq_n_u8(0);
    const uint8x16_t nperm = vld1q_u8(r->nperm);
    const uint8x16_t tcol = vld1q_u8(r->tcol);
    const float32x4_t half = vdupq_n_f32(127.5f), zero = vdupq_n_f32(0.0f);
@@ -151,12 +179,31 @@ sweet_fast_row(const struct sweet_fast_rect *r, uint8_t *d, const uint8_t *s, in
       if (r->blend) {
          uint8x16_t dv = vld1q_u8(d + 4 * i);
          uint8x16_t ia = vmvnq_u8(vqtbl1q_u8(sv, aidx));
-         uint16x8_t lo = vmull_u8(vget_low_u8(dv), vget_low_u8(ia));
-         uint16x8_t hi = vmull_high_u8(dv, ia);
-         /* (t + 128 + ((t + 128) >> 8)) >> 8: t / 255, rounded */
-         uint8x16_t q = vcombine_u8(vrshrn_n_u16(vrsraq_n_u16(lo, lo, 8), 8),
-                                    vrshrn_n_u16(vrsraq_n_u16(hi, hi, 8), 8));
-         sv = vqaddq_u8(sv, q);
+         switch (r->blend) {
+         case 1:  /* premultiplied over */
+            sv = vqaddq_u8(sv, sweet_mul255q(dv, ia));
+            break;
+         case 2:  /* straight: s * sa + d * (1 - sa) */
+            sv = vqaddq_u8(sweet_mul255q(sv, vqtbl1q_u8(sv, aidx)), sweet_mul255q(dv, ia));
+            break;
+         case 3: {  /* mixed: rgb straight, alpha premultiplied */
+            uint8x16_t st = vqaddq_u8(sweet_mul255q(sv, vqtbl1q_u8(sv, aidx)), sweet_mul255q(dv, ia));
+            uint8x16_t pm = vqaddq_u8(sv, sweet_mul255q(dv, ia));
+            sv = vbslq_u8(amask, pm, st);
+            break;
+         }
+         case 4: {  /* atop: s * da + d * (1 - sa) */
+            uint8x16_t da = vorrq_u8(vqtbl1q_u8(dv, aidx), dxa);
+            sv = vqaddq_u8(sweet_mul255q(sv, da), sweet_mul255q(dv, ia));
+            break;
+         }
+         case 5:  /* destination out */
+            sv = sweet_mul255q(dv, ia);
+            break;
+         default: /* add */
+            sv = vqaddq_u8(sv, dv);
+            break;
+         }
       }
       vst1q_u8(d + 4 * i, sv);
    }
@@ -178,9 +225,17 @@ sweet_fast_row(const struct sweet_fast_rect *r, uint8_t *d, const uint8_t *s, in
          sweet_dither_px(px, nz, r->nk);
       }
       if (r->blend) {
-         unsigned ia = 255u - px[3];
+         unsigned sa = px[3], ia = 255u - sa, da = r->dx ? 255u : dp[3];
          for (int c = 0; c < 4; c++) {
-            unsigned v = px[c] + sweet_div255(dp[c] * ia);
+            unsigned v;
+            switch (r->blend) {
+            case 1: v = px[c] + sweet_div255(dp[c] * ia); break;
+            case 2: v = sweet_div255(px[c] * sa) + sweet_div255(dp[c] * ia); break;
+            case 3: v = c == 3 ? px[c] + sweet_div255(dp[c] * ia) : sweet_div255(px[c] * sa) + sweet_div255(dp[c] * ia); break;
+            case 4: v = sweet_div255(px[c] * da) + sweet_div255(dp[c] * ia); break;
+            case 5: v = sweet_div255(dp[c] * ia); break;
+            default: v = px[c] + dp[c]; break;
+            }
             px[c] = (uint8_t)(v > 255 ? 255 : v);
          }
       }
@@ -239,8 +294,11 @@ sweet_texel_f(const struct sweet_fast_rect *r, const uint8_t *row, int i, float 
  */
 static void
 sweet_f16_row(const struct sweet_fast_rect *r, const uint8_t *s1, int k0, int n, int ky, const uint8_t *nrow,
-              const int32_t *ncx, uint8_t *out)
+              const int32_t *ncx, uint8_t *out, int raw)
 {
+   const int tint = raw ? 0 : r->tint;
+   if (raw)
+      nrow = NULL;
    const uint8_t *row0 = NULL, *row1 = NULL;
    float v = 0.0f, rowc[4] = {0, 0, 0, 0};
    if (r->swap1) {
@@ -282,8 +340,8 @@ sweet_f16_row(const struct sweet_fast_rect *r, const uint8_t *s1, int k0, int n,
       tv = vminnmq_f32(vmaxnmq_f32(tv, zero), one);     /* NaN -> 0 */
       if (r->opaque)
          tv = vsetq_lane_f32(1.0f, tv, 3);
-      if (r->tint) {
-         if (r->tint == 2)
+      if (tint) {
+         if (tint == 2)
             tv = vdupq_laneq_f32(tv, 3);
          tv = vmulq_f32(tv, vld1q_f32(r->tcolf));
       }
@@ -322,10 +380,10 @@ sweet_f16_row(const struct sweet_fast_rect *r, const uint8_t *s1, int k0, int n,
          t[ch] = t[ch] > 0.0f ? (t[ch] < 1.0f ? t[ch] : 1.0f) : 0.0f;   /* also NaN -> 0 */
       if (r->opaque)
          t[3] = 1.0f;
-      if (r->tint) {
+      if (tint) {
          float a = t[3];
          for (int ch = 0; ch < 4; ch++)
-            t[ch] = (r->tint == 2 ? a : t[ch]) * r->tcolf[ch];
+            t[ch] = (tint == 2 ? a : t[ch]) * r->tcolf[ch];
       }
       if (nrow) {
          /* CA's dither in float, like the shader */
@@ -339,6 +397,147 @@ sweet_f16_row(const struct sweet_fast_rect *r, const uint8_t *s1, int k0, int n,
          out[4 * i + ch] = (uint8_t)(t[ch] * 255.0f + 0.5f);
    }
 #endif
+}
+
+/* A8 texels of one destination row as RGBA8 (0, 0, 0, a): 1:1 from s1, or bilinear / nearest */
+static void
+sweet_a8_row(const struct sweet_fast_rect *r, const uint8_t *s1, int k0, int n, int ky, uint8_t *out)
+{
+   if (!r->scaled) {
+      for (int i = 0; i < n; i++) {
+         out[4 * i] = out[4 * i + 1] = out[4 * i + 2] = 0;
+         out[4 * i + 3] = s1[i];
+      }
+      return;
+   }
+   const uint8_t *row0 = r->sbase + (ptrdiff_t)r->ry[ky] * r->sstride, *row1 = row0 + r->sstride;
+   const unsigned v = r->wy[ky];
+   for (int i = 0; i < n; i++) {
+      const int c = r->cx[k0 + i];
+      const unsigned w = r->wx[k0 + i];
+      unsigned ta = row0[c] * (128 - w) + row0[c + 1] * w, tb = row1[c] * (128 - w) + row1[c + 1] * w;
+      out[4 * i] = out[4 * i + 1] = out[4 * i + 2] = 0;
+      out[4 * i + 3] = (uint8_t)((ta * (128 - v) + tb * v + 8192) >> 14);
+   }
+}
+
+/* the texture's texels of one destination row as RGBA8 (no tint, no dither): any source */
+static void
+sweet_tex_row(const struct sweet_fast_rect *r, const uint8_t *s1, int k0, int n, int ky, uint8_t *out)
+{
+   if (r->a8) {
+      sweet_a8_row(r, s1, k0, n, ky, out);
+      return;
+   }
+   if (r->f16 || r->swap1) {
+      sweet_f16_row(r, s1, k0, n, ky, NULL, NULL, out, 1);
+      return;
+   }
+   uint8_t tmp[TILE_SIZE * 4] __attribute__((aligned(16)));
+   const uint8_t *src = s1;
+   if (r->scaled) {
+      sweet_resample_row(r, k0, n, ky, tmp);
+      src = tmp;
+   }
+   for (int i = 0; i < n; i++) {
+      for (int c = 0; c < 4; c++)
+         out[4 * i + c] = (uint8_t)(src[4 * i + (r->permr[c] & 3)] | r->ormr[c]);
+   }
+}
+
+/* one tap: the bilinear sample at column table k, row table ky, RGBA floats */
+static inline void
+sweet_tap(const struct sweet_fast_rect *r, int t, int k, int ky, float o[4])
+{
+   const uint8_t *row0 = r->sbase + (ptrdiff_t)r->bry[t][ky] * r->sstride, *row1 = row0 + r->sstride;
+   const int c = r->bcx[t][k];
+   const float w = r->bwx[t][k] * (1.0f / 128), v = r->bwy[t][ky] * (1.0f / 128);
+   float a[4], b[4], e[4], f[4];
+   sweet_texel_f(r, row0, c, a), sweet_texel_f(r, row0, c + 1, b);
+   sweet_texel_f(r, row1, c, e), sweet_texel_f(r, row1, c + 1, f);
+   for (int ch = 0; ch < 4; ch++) {
+      float h0 = a[ch] + (b[ch] - a[ch]) * w, h1 = e[ch] + (f[ch] - e[ch]) * w;
+      o[ch] = h0 + (h1 - h0) * v;
+   }
+}
+
+/*
+ * Framebuffer and multi-tap kinds for one destination row into out (RGBA8),
+ * in float like CA's shaders; the 8-bit row then orders and blends. d is
+ * the destination row before the draw (read here, written later).
+ */
+static void
+sweet_fx_row(const struct sweet_fast_rect *r, const uint8_t *d, const uint8_t *s1, int k0, int n, int ky,
+             const uint8_t *nrow, const int32_t *ncx, uint8_t *out)
+{
+   uint8_t tex[TILE_SIZE * 4] __attribute__((aligned(16)));
+   const int textured = r->fx == 9 || r->fx == 10;
+   if (textured)
+      sweet_tex_row(r, s1, k0, n, ky, tex);
+   for (int i = 0; i < n; i++) {
+      float D[4], S[4], R[4];
+      for (int ch = 0; ch < 4; ch++)
+         D[ch] = d[4 * i + r->dpos[ch]] * (1.0f / 255);
+      if (r->dx)
+         D[3] = 1.0f;
+      switch (r->fx) {
+      case 13:
+      case 14:
+         /* vec4(D.r * m0 + D.g * m1 + D.b * m2 (+ D.a * m3), D.a) */
+         for (int ch = 0; ch < 3; ch++)
+            R[ch] = D[0] * r->fp[ch] + D[1] * r->fp[4 + ch] + D[2] * r->fp[8 + ch] + D[3] * r->fp[12 + ch];
+         R[3] = D[3];
+         break;
+      case 12: {
+         /* luminanceCurve(D, p, a): x = curve(luma(D)); vec4(mix(D.rgb, vec3(x), a), D.a) */
+         float l = D[0] * 0.2125f + D[1] * 0.7154f + D[2] * 0.0721f;
+         float x = ((r->fp[0] * l + r->fp[1]) * l + r->fp[2]) * l + r->fp[3];
+         x = x < 0.0f ? 0.0f : x > 1.0f ? 1.0f : x;
+         for (int ch = 0; ch < 3; ch++)
+            R[ch] = D[ch] * (1.0f - r->fp[4]) + x * r->fp[4];
+         R[3] = D[3];
+         break;
+      }
+      case 9:
+      case 10: {
+         /* darkenSover(S, D): y = luma(D); S *= y^4; R = D * (1 - S.a) + S */
+         for (int ch = 0; ch < 4; ch++)
+            S[ch] = r->fx == 9 ? r->col[ch] * (tex[4 * i + 3] * (1.0f / 255)) : tex[4 * i + ch] * (1.0f / 255);
+         float y = D[0] * 0.2125f + D[1] * 0.7154f + D[2] * 0.0721f, y4 = (y * y) * (y * y);
+         for (int ch = 0; ch < 4; ch++)
+            R[ch] = D[ch] * (1.0f - S[3] * y4) + S[ch] * y4;
+         break;
+      }
+      default: {
+         /* blur: acc = sum of tap * weight; / max(.001, acc.a) when bdiv */
+         float acc[4] = {0, 0, 0, 0}, q[4];
+         for (int t = 0; t < r->ntap; t++) {
+            sweet_tap(r, t, k0 + i, ky, q);
+            for (int ch = 0; ch < 4; ch++)
+               acc[ch] = q[ch] * r->tw[t] + acc[ch];
+         }
+         if (r->bdiv) {
+            float m = acc[3] > 0.001f ? acc[3] : 0.001f;
+            for (int ch = 0; ch < 4; ch++)
+               acc[ch] /= m;
+         }
+         memcpy(R, acc, sizeof(R));
+         break;
+      }
+      }
+      if (nrow) {
+         /* CA's dither on the result, in float like the shader */
+         const uint8_t *nz = nrow + 4 * ncx[i];
+         for (int ch = 0; ch < 3; ch++) {
+            float c = R[ch] + ((float)nz[r->npos[ch]] - 127.5f) * r->nk * R[3];
+            R[ch] = c < 0.0f ? 0.0f : c > R[3] ? R[3] : c;
+         }
+      }
+      for (int ch = 0; ch < 4; ch++) {
+         float c = R[ch] > 0.0f ? (R[ch] < 1.0f ? R[ch] : 1.0f) : 0.0f;
+         out[4 * i + ch] = (uint8_t)(c * 255.0f + 0.5f);
+      }
+   }
 }
 
 static void
@@ -357,12 +556,39 @@ lp_rast_sweet_fast(struct lp_rasterizer_task *task,
    uint8_t *d = scene->cbufs[0].map + (size_t)y0 * stride + (size_t)x0 * 4;
    const int32_t *ncx = r->noise ? r->ncx + (x0 - r->x0) : NULL;
 #define SWEET_NROW(y) (r->noise ? r->nbase + (ptrdiff_t)r->nry[(y) - r->y0] * r->nstride : NULL)
+   if (r->fx) {
+      /* framebuffer / multi-tap kinds: computed here from the destination, then ordered and blended */
+      uint8_t tmp[TILE_SIZE * 4] __attribute__((aligned(16)));
+      const int bpp = r->a8 ? 1 : r->f16 ? 8 : 4;
+      const uint8_t *s1 = r->src ? r->src + (ptrdiff_t)(y0 - r->y0) * r->src_dy + (ptrdiff_t)(x0 - r->x0) * bpp : NULL;
+      for (int y = y0; y < y1; y++) {
+         sweet_fx_row(r, d, s1, x0 - r->x0, x1 - x0, y - r->y0, SWEET_NROW(y), ncx, tmp);
+         sweet_fast_row(r, d, tmp, x1 - x0, NULL, NULL, 1);
+         d += stride;
+         if (s1)
+            s1 += r->src_dy;
+      }
+      return;
+   }
+   if (r->a8) {
+      /* A8: expanded to RGBA (0, 0, 0, a), then the 8-bit row (order, tint, dither, blend) */
+      uint8_t tmp[TILE_SIZE * 4] __attribute__((aligned(16)));
+      const uint8_t *s1 = r->src ? r->src + (ptrdiff_t)(y0 - r->y0) * r->src_dy + (ptrdiff_t)(x0 - r->x0) : NULL;
+      for (int y = y0; y < y1; y++) {
+         sweet_a8_row(r, s1, x0 - r->x0, x1 - x0, y - r->y0, tmp);
+         sweet_fast_row(r, d, tmp, x1 - x0, SWEET_NROW(y), ncx, 0);
+         d += stride;
+         if (s1)
+            s1 += r->src_dy;
+      }
+      return;
+   }
    if (r->f16 || r->swap1) {
       /* filtered, dithered and quantized here; the 8-bit row then orders and blends */
       uint8_t tmp[TILE_SIZE * 4] __attribute__((aligned(16)));
       const uint8_t *s1 = r->src ? r->src + (ptrdiff_t)(y0 - r->y0) * r->src_dy + (ptrdiff_t)(x0 - r->x0) * 8 : NULL;
       for (int y = y0; y < y1; y++) {
-         sweet_f16_row(r, s1, x0 - r->x0, x1 - x0, y - r->y0, SWEET_NROW(y), ncx, tmp);
+         sweet_f16_row(r, s1, x0 - r->x0, x1 - x0, y - r->y0, SWEET_NROW(y), ncx, tmp, 0);
          sweet_fast_row(r, d, tmp, x1 - x0, NULL, NULL, 1);
          d += stride;
          if (s1)
@@ -596,6 +822,27 @@ sweet_lpf_tables(struct lp_setup_context *setup, struct sweet_fast_rect *r, cons
    return true;
 }
 
+/* a blur rectangle's per-tap tables into the current scene's memory; false: out of memory */
+static bool
+sweet_lpf_btables(struct lp_setup_context *setup, struct sweet_fast_rect *r, const int32_t *bt, const uint8_t *bw,
+                  int nt, int nx, int ny)
+{
+   size_t n = (size_t)(nx + ny);
+   if (sizeof(int32_t) * n > DATA_BLOCK_SIZE)
+      return false;
+   for (int t = 0; t < nt; t++) {
+      int32_t *ci = lp_scene_alloc(setup->scene, (unsigned)(sizeof(int32_t) * n));
+      uint8_t *cw = ci ? lp_scene_alloc(setup->scene, (unsigned)n) : NULL;
+      if (cw == NULL)
+         return false;
+      memcpy(ci, bt + (size_t)t * n, sizeof(int32_t) * n);
+      memcpy(cw, bw + (size_t)t * n, n);
+      r->bcx[t] = ci, r->bry[t] = ci + nx;
+      r->bwx[t] = cw, r->bwy[t] = cw + nx;
+   }
+   return true;
+}
+
 /* bin one rectangle into every tile it covers; false: out of scene memory */
 static bool
 sweet_lpf_bin(struct lp_setup_context *setup, const struct sweet_fast_rect *proto, struct sweet_fast_rect **made)
@@ -631,11 +878,17 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
 
    if (p->n <= 0 || p->n > SWEET_LPF_MAX)
       return false;
-   if (!((p->kind == SWEET_LPF_FILL || p->kind == SWEET_LPF_COPY || p->kind == SWEET_LPF_OPAQUE ||
-          p->kind == SWEET_LPF_COPYN || p->kind == SWEET_LPF_TINT || p->kind == SWEET_LPF_ATINT ||
-          p->kind == SWEET_LPF_TINTN) &&
-         (p->blend == SWEET_LPF_BLEND_NONE || p->blend == SWEET_LPF_BLEND_PREMUL)))
+   const int kd = p->kind;
+   if (!((kd == SWEET_LPF_FILL || kd == SWEET_LPF_COPY || kd == SWEET_LPF_OPAQUE || kd == SWEET_LPF_COPYN ||
+          kd == SWEET_LPF_TINT || kd == SWEET_LPF_ATINT || kd == SWEET_LPF_TINTN || kd == SWEET_LPF_ALPHA ||
+          kd == SWEET_LPF_ATINTDK || kd == SWEET_LPF_COPYDKN || kd == SWEET_LPF_LUMC || kd == SWEET_LPF_CM4 ||
+          kd == SWEET_LPF_CM3 || (kd == SWEET_LPF_BLUR && p->ntap > 0 && p->ntap <= SWEET_LPF_TAPS)) &&
+         p->blend >= 0 && p->blend <= 6))
       return sweet_lpf_no(SLPF_KIND), false;
+   /* drawn through float from the framebuffer (and texture): lp_rast's sweet_fx_row */
+   const int fxk = kd == SWEET_LPF_ATINTDK || kd == SWEET_LPF_COPYDKN || kd == SWEET_LPF_LUMC || kd == SWEET_LPF_CM4 ||
+                   kd == SWEET_LPF_CM3 || kd == SWEET_LPF_BLUR ? kd : 0;
+   const bool needs_tex = kd != SWEET_LPF_FILL && kd != SWEET_LPF_LUMC && kd != SWEET_LPF_CM4 && kd != SWEET_LPF_CM3;
    if (fb->nr_cbufs != 1 || !fb->cbufs[0].texture || fb->layers > 1 ||
        !sweet_lpf_order(fb->cbufs[0].format, dpos, &dx) ||
        lp->active_occlusion_queries || lp->active_statistics_queries || lp->active_primgen_queries)
@@ -643,10 +896,12 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
    const uint8_t *sbase = NULL;
    size_t sstride = 0;
    int sf16 = 0;      /* half-float RGBA source: 8 bytes a texel, spos stays R,G,B,A */
+   int sa8 = 0;       /* A8 source: 1 byte a texel, expanded to RGBA (spos stays R,G,B,A) */
    const struct pipe_sampler_state *samp = NULL;
-   struct sweet_lpf_tab { int32_t *cx, *ry; uint8_t *wx, *wy; int nx, ny; int32_t *nc; } tab[SWEET_LPF_MAX];
+   struct sweet_lpf_tab { int32_t *cx, *ry; uint8_t *wx, *wy; int nx, ny; int32_t *nc; int32_t *bt; uint8_t *bw; } tab[SWEET_LPF_MAX];
    memset(tab, 0, sizeof(tab));
-   if (p->kind != SWEET_LPF_FILL) {
+#define SWEET_TAB_FREE(q) (free(tab[q].cx), free(tab[q].wx), free(tab[q].nc), free(tab[q].bt), free(tab[q].bw))
+   if (needs_tex) {
       lpr = res ? llvmpipe_resource(res) : NULL;
       if (lpr == NULL || res->nr_samples > 1 || res->array_size > 1 ||
           (res->target != PIPE_TEXTURE_2D && res->target != PIPE_TEXTURE_RECT) || res == fb->cbufs[0].texture) {
@@ -656,6 +911,8 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
       if (res->format == PIPE_FORMAT_R16G16B16A16_FLOAT || res->format == PIPE_FORMAT_R16G16B16X16_FLOAT) {
          sf16 = 1;
          sx = res->format == PIPE_FORMAT_R16G16B16X16_FLOAT;
+      } else if (res->format == PIPE_FORMAT_A8_UNORM && kd != SWEET_LPF_BLUR) {
+         sa8 = 1;
       } else if (!sweet_lpf_order(res->format, spos, &sx)) {
          sweet_lpf_why("src format", p, NULL, (int)res->format, lpr->dt != NULL, 0, 0);
          return sweet_lpf_no(SLPF_SRC), false;
@@ -684,7 +941,7 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
       W = (int)res->width0, H = (int)res->height0;
    }
    /* COPYN: the noise texture's texels as bound for this draw */
-   const bool noisy = p->kind == SWEET_LPF_COPYN || p->kind == SWEET_LPF_TINTN;
+   const bool noisy = kd == SWEET_LPF_COPYN || kd == SWEET_LPF_TINTN || kd == SWEET_LPF_COPYDKN;
    struct pipe_resource *nres = noisy ? p->noise : NULL;
    const uint8_t *nbase = NULL;
    size_t nstride = 0;
@@ -716,7 +973,17 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
       const struct sweet_lpf_job *j = &p->job[k];
       struct sweet_fast_rect *r = &proto[nr];
       memset(r, 0, sizeof(*r));
-      r->blend = p->blend == SWEET_LPF_BLEND_PREMUL;
+      r->blend = p->blend;
+      r->dx = dx;
+      r->fx = fxk;
+      for (int ch = 0; ch < 4; ch++)
+         r->dpos[ch] = (uint8_t)dpos[ch];
+      for (int px = 0; px < 4; px++) {
+         for (int ch = 0; ch < 4; ch++) {
+            r->perm2[4 * px + dpos[ch]] = (uint8_t)(4 * px + ch);
+            r->orm2[4 * px + dpos[ch]] = ch == 3 && dx ? 0xff : 0;
+         }
+      }
       r->x0 = MAX2(j->x0, 0), r->x1 = MIN2(j->x1, fbw);
       r->y0 = MAX2(j->y0, 0), r->y1 = MIN2(j->y1, fbh);
       if (r->x0 >= r->x1 || r->y0 >= r->y1)
@@ -728,6 +995,64 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
          if (dx)
             c[dpos[3]] = 255;
          memcpy(&r->color, c, 4);
+      } else if (!needs_tex) {
+         /* LUMC / CM4 / CM3: from the framebuffer only */
+         if (kd == SWEET_LPF_LUMC) {
+            memcpy(r->fp, p->farg, sizeof(p->farg));
+            r->fp[4] = j->falpha;
+         } else {
+            for (int m = 0; m < (kd == SWEET_LPF_CM4 ? 4 : 3); m++) {
+               for (int ch = 0; ch < 3; ch++)
+                  r->fp[4 * m + ch] = p->cm[m][ch];
+            }
+         }
+      } else if (kd == SWEET_LPF_BLUR) {
+         /* taps: per tap the texel pairs of (u, v) + toff along columns and rows */
+         double scx = fabs(((double)j->ub - j->ua) * W / ((double)j->xb - j->xa));
+         double scy = fabs(((double)j->vb - j->va) * H / ((double)j->yb - j->ya));
+         bool minify = scx > 1.0 + 1e-6 || scy > 1.0 + 1e-6;
+         const char *no = NULL;
+         if (j->swap)
+            no = "turned";
+         else if (samp == NULL || samp->unnormalized_coords || res->target != PIPE_TEXTURE_2D ||
+                  samp->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE || samp->wrap_t != PIPE_TEX_WRAP_CLAMP_TO_EDGE ||
+                  samp->min_lod > 0.0f || samp->lod_bias != 0.0f)
+            no = "sampler";
+         else if (minify && samp->min_mip_filter != PIPE_TEX_MIPFILTER_NONE && res->last_level > 0)
+            no = "mipmaps";
+         else if (W < 2 || H < 2)
+            no = "size";
+         if (no) {
+            sweet_lpf_why(no, p, j, (int)res->format, W, H, 1);
+            for (int q = 0; q < nr; q++)
+               SWEET_TAB_FREE(q);
+            return sweet_lpf_no(no[0] == 't' ? SLPF_SWAP : SLPF_SCALE), false;
+         }
+         bool linear = (minify ? samp->min_img_filter : samp->mag_img_filter) == PIPE_TEX_FILTER_LINEAR;
+         int nx = r->x1 - r->x0, ny = r->y1 - r->y0, nt = p->ntap;
+         tab[nr].nx = nx, tab[nr].ny = ny;
+         tab[nr].bt = malloc(sizeof(int32_t) * (size_t)nt * (size_t)(nx + ny));
+         tab[nr].bw = malloc((size_t)nt * (size_t)(nx + ny));
+         if (tab[nr].bt == NULL || tab[nr].bw == NULL) {
+            for (int q = 0; q <= nr; q++)
+               SWEET_TAB_FREE(q);
+            return false;
+         }
+         for (int t = 0; t < nt; t++) {
+            int32_t *bi = tab[nr].bt + (size_t)t * (nx + ny);
+            uint8_t *bw = tab[nr].bw + (size_t)t * (nx + ny);
+            sweet_lpf_axis(j->xa, j->xb, j->ua + p->toff[t][0], j->ub + p->toff[t][0], r->x0, nx, W, linear,
+                           false, 0, 1, bi, bw);
+            sweet_lpf_axis(j->ya, j->yb, j->va + p->toff[t][1], j->vb + p->toff[t][1], r->y0, ny, H, linear,
+                           false, 0, 1, bi + nx, bw + nx);
+         }
+         r->ntap = nt, r->bdiv = p->bdiv;
+         memcpy(r->tw, p->tw, sizeof(r->tw));
+         r->sbase = sbase;
+         r->sstride = (ptrdiff_t)sstride;
+         r->f16 = sf16;
+         for (int ch = 0; ch < 4; ch++)
+            r->spos[ch] = (uint8_t)spos[ch];
       } else {
          /* clipped to the framebuffer: map the clipped corner */
          struct sweet_lpf_job jj = *j;
@@ -736,7 +1061,7 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
          uint64_t before[SLPF_N];
          memcpy(before, sweet_lpf_stat, sizeof(before));
          if (sweet_lpf_map(&jj, W, H, &s0, &t0, &dy) == 0) {
-            r->src = sbase + (size_t)t0 * sstride + (size_t)s0 * (sf16 ? 8 : 4);
+            r->src = sbase + (size_t)t0 * sstride + (size_t)s0 * (sf16 ? 8 : sa8 ? 1 : 4);
             r->src_dy = dy * (ptrdiff_t)sstride;
          } else {
             /* not 1:1: a scaled copy, when the sampler is plain (clamp to edge, level 0) */
@@ -759,10 +1084,12 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
                no = "mipmaps";
             else if (W < 2 || (H < 2 && !sw1))
                no = "size";
+            else if (sw1 && sa8)
+               no = "turned";
             if (no) {
                sweet_lpf_why(no, p, &jj, (int)res->format, W, H, 1);
                for (int q = 0; q < nr; q++)
-                  free(tab[q].cx), free(tab[q].wx), free(tab[q].nc);
+                  SWEET_TAB_FREE(q);
                return sweet_lpf_no(no[0] == 't' ? SLPF_SWAP : SLPF_SCALE), false;
             }
             bool linear = (minify ? samp->min_img_filter : samp->mag_img_filter) == PIPE_TEX_FILTER_LINEAR;
@@ -774,7 +1101,7 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
                free(tab[nr].cx), free(tab[nr].wx);
                tab[nr].cx = NULL, tab[nr].wx = NULL;
                for (int q = 0; q < nr; q++)
-                  free(tab[q].cx), free(tab[q].wx), free(tab[q].nc);
+                  SWEET_TAB_FREE(q);
                return false;
             }
             tab[nr].ry = tab[nr].cx + nx, tab[nr].wy = tab[nr].wx + nx;
@@ -802,7 +1129,7 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
             tab[nr].nc = malloc(sizeof(int32_t) * (size_t)(nx + ny));
             if (tab[nr].nc == NULL) {
                for (int q = 0; q <= nr; q++)
-                  free(tab[q].cx), free(tab[q].wx), free(tab[q].nc);
+                  SWEET_TAB_FREE(q);
                return false;
             }
             for (int k2 = 0; k2 < nx; k2++) {
@@ -832,8 +1159,8 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
                r->orm[4 * px + dpos[ch]] = ch == 3 && (sx || dx || p->kind == SWEET_LPF_OPAQUE) ? 0xff : 0;
             }
          }
-         if (p->kind == SWEET_LPF_ATINT) {
-            /* colour * texel alpha: the source alpha into every byte (X sources: 255 via orm) */
+         if (p->kind == SWEET_LPF_ATINT || p->kind == SWEET_LPF_ALPHA) {
+            /* (colour *) texel alpha: the source alpha into every byte (X sources: 255 via orm) */
             for (int px = 0; px < 4; px++) {
                for (int ch = 0; ch < 4; ch++) {
                   r->perm[4 * px + dpos[ch]] = (uint8_t)(4 * px + spos[3]);
@@ -857,15 +1184,24 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
             }
          }
          r->f16 = sf16;
+         r->a8 = sa8;
          r->opaque = sx || p->kind == SWEET_LPF_OPAQUE;
-         for (int ch = 0; ch < 4; ch++)
+         for (int ch = 0; ch < 4; ch++) {
             r->spos[ch] = (uint8_t)spos[ch];
+            r->permr[ch] = (uint8_t)spos[ch];
+            r->ormr[ch] = ch == 3 && sx ? 0xff : 0;
+            r->col[ch] = j->color[ch] * (1.0f / 255);
+         }
+         if (fxk) {
+            /* the 8-bit row only orders and blends what sweet_fx_row computed */
+            r->tint = 0;
+         }
       }
       nr++;
    }
    if (!lp_setup_update_state(setup, true)) {
       for (int k = 0; k < nr; k++)
-         free(tab[k].cx), free(tab[k].wx), free(tab[k].nc);
+         SWEET_TAB_FREE(k);
       return false;
    }
    for (int k = 0; k < nr; k++) {
@@ -875,6 +1211,7 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
                          (!nres || lp_scene_add_resource_reference(setup->scene, nres, false, false)) && \
                          ((!tab[k].cx && !tab[k].nc) || \
                           sweet_lpf_tables(setup, &proto[k], tab[k].cx, tab[k].wx, tab[k].nc, tab[k].nx, tab[k].ny)) && \
+                         (!tab[k].bt || sweet_lpf_btables(setup, &proto[k], tab[k].bt, tab[k].bw, proto[k].ntap, tab[k].nx, tab[k].ny)) && \
                          sweet_lpf_bin(setup, &proto[k], &made))
       if (!SWEET_LPF_PUT()) {
          /* out of scene memory half way: drop what was binned, new scene, again */
@@ -895,7 +1232,7 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
       sweet_lpf_stat[SLPF_PIXELS] += (uint64_t)(proto[k].x1 - proto[k].x0) * (uint64_t)(proto[k].y1 - proto[k].y0);
    }
    for (int k = 0; k < nr; k++)
-      free(tab[k].cx), free(tab[k].wx), free(tab[k].nc);
+      SWEET_TAB_FREE(k);
    sweet_lpf_stat[SLPF_DRAWS]++;
    return true;
 }

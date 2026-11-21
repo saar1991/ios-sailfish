@@ -26,7 +26,16 @@
 #define SWEET_LPF_TINT 3                /* colour * texture */
 #define SWEET_LPF_ATINT 4               /* colour * texture.a */
 #define SWEET_LPF_COPYN 7               /* copy, then CA's noise dither */
+#define SWEET_LPF_ALPHA 6               /* texture.a in every channel */
 #define SWEET_LPF_TINTN 8               /* colour * texture, then the dither */
+#define SWEET_LPF_ATINTDK 9             /* CA's darkenSover(colour * texture.a, framebuffer) */
+#define SWEET_LPF_COPYDKN 10            /* darkenSover(texture, framebuffer), then the dither */
+#define SWEET_LPF_LUMC 12               /* luminanceCurve(framebuffer, farg, alpha) */
+#define SWEET_LPF_CM4 13                /* colour matrix on the framebuffer (with its alpha row) */
+#define SWEET_LPF_CM3 14                /* colour matrix on the framebuffer */
+#define SWEET_LPF_BLUR 19               /* taps of texture0, weighted (divided by alpha when bdiv) */
+#define SWEET_LPF_TAPS 16               /* fastpath.h FP_TAPS */
+/* blends (eagl.c FPB_): 0 none, 1 premul, 2 straight, 3 mixed, 4 atop, 5 dstout, 6 add */
 #define SWEET_LPF_BLEND_NONE 0
 #define SWEET_LPF_BLEND_PREMUL 1
 
@@ -39,6 +48,7 @@ struct sweet_lpf_job {
 	uint8_t color[4];               /* RGBA: FILL, TINT, ATINT, TINTN */
 	/* COPYN: the noise texel at window pixel x, y is (u, v) = (nu0 + nud * (x + .5), nv0 + nvd * (y + .5)), nearest, repeat */
 	float nu0, nud, nv0, nvd;
+	float falpha;                   /* LUMC: the vertex colour's alpha, unquantized */
 };
 
 struct sweet_lpf {
@@ -47,6 +57,10 @@ struct sweet_lpf {
 	void *src;                      /* struct pipe_resource * of texture0 (COPY, OPAQUE, COPYN) */
 	void *noise;                    /* COPYN: the noise texture */
 	float nscale;                   /* COPYN: rgb += (noise.rgb - .5) * nscale * a, clamped to [0, a] */
+	float farg[4];                  /* LUMC: the curve's coefficients */
+	float cm[4][3];                 /* CM4 / CM3: colour matrix rows (alpha row zero for CM3) */
+	int ntap, bdiv;                 /* BLUR */
+	float toff[SWEET_LPF_TAPS][2], tw[SWEET_LPF_TAPS];
 	struct sweet_lpf_job job[SWEET_LPF_MAX];
 };
 
