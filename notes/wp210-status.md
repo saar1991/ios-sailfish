@@ -1349,3 +1349,10 @@ The changes come from the iOS boot in the trace image, not from our install.
   - **mask p19** (4.4 s + 1.0 s): ~1/3 of draws are rotated/meshed (eagl "not 0x20", triangles that do not pair), and most of the rest have an **L8A8 (format 318) mask texture**: `mask format ... 318` refusals, 400-1500 per 10 s.
   - **masksup p67** (1.5 + 0.6 s) and **mixbd p17** (0.9 s): 0 of their draws qualify in eagl: 18 / 8 triangles that do not pair into rectangles (mixbd: four corner triangles plus degenerate ones).
   - Unnamed, now by program: p83 `color * d0` (fb, 1.2 s), p63 `colorMatrix4x4Bias(d0)` (0.95 s), p53 `sgl_vcm(texture)` (0.9 s), p39 `color * vec4(t0.rgb,1) * s1.a` atop (0.6 s), p77 `color * vec4(t0.rgb,1)` (0.46 s), p71 supercircle + plus-lighter composite (0.2 s).
+
+### Frame work, step 5: L8A8, five more kinds, mesh dumps (llvmpipe 78d67c3, run 44920851389)
+
+- L8A8 (format 318) pictures and masks expand to (L, L, L, A): 1:1 and bilinear for texture0, float taps for texture1.
+- New eagl kinds, offered only to llvmpipe (`FAST_LP_ONLY`, refused when SGLFAST runs fp_run): CFB `color * d0`, CMB `colorMatrix4x4Bias(d0)` (unpremultiply, color_matrix[0..3] + [4], premultiply; helper checked in the whole source), VCM `sgl_vcm(s0)` (helper checked after the fbfetch rewrite), OMASK `color * vec4(t0.rgb,1) * s1.a`, OTINT `color * vec4(t0.rgb,1)`. color_matrix[5] read as five vec4 uniforms.
+- Unpaired-triangle draws dump positions and the texcoords their kind uses (`fast mesh prog P kind K xy|tc0|tc1`), a few per kind (masksup 6, mixbd 6, mask 4, super 4, omask 4).
+- Host test: L8A8 rows exact; cfb, cmb, vcm, omask within 1. Payload c1730cd5..., dylib 4a36e75f... (51360128 bytes); `notes/scripts/install-sweetgl-llvmpipe-78d67c3.sh` (OLD = 710f034 payload 161fd986...).
