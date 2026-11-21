@@ -201,10 +201,36 @@ sweet_lpf_order(enum pipe_format f, int pos[4], int *x)
    }
 }
 
+extern void sweet_drm_log(const char *fmt, ...);
+static unsigned sweet_lpf_logged;
+
+/* the first 40 draws not taken, then one in 500: what they looked like */
+static void
+sweet_lpf_why(const char *what, const struct sweet_lpf *p, const struct sweet_lpf_job *j, int fmt, int a, int b,
+              int is_map)
+{
+   unsigned n = sweet_lpf_logged++;
+   if (n >= 40 && n % 500 != 0)
+      return;
+   if (j == NULL) {
+      sweet_drm_log("sweetgl: lp fast no (%s): kind %d blend %d rects %d, format %d dt %d", what, p->kind, p->blend,
+                    p->n, fmt, a);
+      return;
+   }
+   double dx = (double)j->xb - j->xa, dyw = (double)j->yb - j->ya;
+   (void)is_map;
+   sweet_drm_log("sweetgl: lp fast no (%s): kind %d blend %d, tex %dx%d fmt %d, px %d,%d-%d,%d win %.2f,%.2f-%.2f,%.2f "
+                 "uv %.5f,%.5f-%.5f,%.5f scale %.4f,%.4f swap %d clamp %d", what, p->kind, p->blend, a, b, fmt,
+                 j->x0, j->y0, j->x1, j->y1, j->xa, j->ya, j->xb, j->yb, j->ua, j->va, j->ub, j->vb,
+                 ((double)j->ub - j->ua) * a / dx, ((double)j->vb - j->va) * b / dyw, j->swap, j->tclamp);
+}
+
+static int sweet_lpf_last;
 static int
 sweet_lpf_no(int why)
 {
    sweet_lpf_stat[why]++;
+   sweet_lpf_last = why;
    return -1;
 }
 
@@ -281,12 +307,32 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
        !sweet_lpf_order(fb->cbufs[0].format, dpos, &dx) ||
        lp->active_occlusion_queries || lp->active_statistics_queries || lp->active_primgen_queries)
       return sweet_lpf_no(SLPF_FB), false;
+   const uint8_t *sbase = NULL;
+   size_t sstride = 0;
    if (p->kind != SWEET_LPF_FILL) {
       lpr = res ? llvmpipe_resource(res) : NULL;
-      if (lpr == NULL || lpr->dt || lpr->tex_data == NULL || res->nr_samples > 1 || res->array_size > 1 ||
-          (res->target != PIPE_TEXTURE_2D && res->target != PIPE_TEXTURE_RECT) || res == fb->cbufs[0].texture ||
-          !sweet_lpf_order(res->format, spos, &sx))
+      if (lpr == NULL || res->nr_samples > 1 || res->array_size > 1 ||
+          (res->target != PIPE_TEXTURE_2D && res->target != PIPE_TEXTURE_RECT) || res == fb->cbufs[0].texture) {
+         sweet_lpf_why("src layout", p, NULL, res ? (int)res->format : -1, lpr ? lpr->dt != NULL : -1, 0, 0);
          return sweet_lpf_no(SLPF_SRC), false;
+      }
+      if (!sweet_lpf_order(res->format, spos, &sx)) {
+         sweet_lpf_why("src format", p, NULL, (int)res->format, lpr->dt != NULL, 0, 0);
+         return sweet_lpf_no(SLPF_SRC), false;
+      }
+      /* the texels as the JIT shader reads them for this draw: the bound view (maps display targets) */
+      for (unsigned i = 0; i < setup->fs.current_tex_num && i < PIPE_MAX_SHADER_SAMPLER_VIEWS; i++) {
+         const struct lp_jit_texture *jt = &setup->fs.current.jit_resources.textures[i];
+         if (setup->fs.current_tex[i] == res && jt->base != NULL && jt->first_level == 0) {
+            sbase = (const uint8_t *)jt->base + jt->mip_offsets[0];
+            sstride = jt->row_stride[0];
+            break;
+         }
+      }
+      if (sbase == NULL || sstride == 0) {
+         sweet_lpf_why("src not bound", p, NULL, (int)res->format, lpr->dt != NULL, 0, 0);
+         return sweet_lpf_no(SLPF_SRC), false;
+      }
       W = (int)res->width0, H = (int)res->height0;
    }
    /* every rectangle first: all or nothing */
@@ -313,11 +359,15 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
          struct sweet_lpf_job jj = *j;
          jj.x0 = r->x0, jj.x1 = r->x1, jj.y0 = r->y0, jj.y1 = r->y1;
          int s0, t0, dy;
-         if (sweet_lpf_map(&jj, W, H, &s0, &t0, &dy) != 0)
+         if (sweet_lpf_map(&jj, W, H, &s0, &t0, &dy) != 0) {
+            static const char *const nm[SLPF_N] = {[SLPF_SCALE] = "scale", [SLPF_OFFSET] = "offset",
+                                                   [SLPF_BOUNDS] = "bounds", [SLPF_SWAP] = "turned",
+                                                   [SLPF_CLAMP] = "clamp"};
+            sweet_lpf_why(nm[sweet_lpf_last] ? nm[sweet_lpf_last] : "map", p, &jj, (int)res->format, W, H, 1);
             return false;
-         r->src = (const uint8_t *)lpr->tex_data + lpr->mip_offsets[0] +
-                  (size_t)t0 * lpr->row_stride[0] + (size_t)s0 * 4;
-         r->src_dy = dy * (ptrdiff_t)lpr->row_stride[0];
+         }
+         r->src = sbase + (size_t)t0 * sstride + (size_t)s0 * 4;
+         r->src_dy = dy * (ptrdiff_t)sstride;
          for (int px = 0; px < 4; px++) {
             for (int ch = 0; ch < 4; ch++) {
                r->perm[4 * px + dpos[ch]] = (uint8_t)(4 * px + spos[ch]);
