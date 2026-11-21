@@ -68,6 +68,13 @@ struct sweet_fast_rect {
     * so a row is one colour: ry / wy are the texel pair along x per destination row */
    int swap1;
    uint8_t spos[4];           /* 8-bit sources in the float path: byte of R, G, B, A */
+   /* TINT / ATINT / TINTN: the texel (ATINT: its alpha in every channel, by perm) times the
+    * colour: tcol in destination order for the 8-bit row, tcolf RGBA for the float row */
+   int tint;
+   uint8_t tcol[16];
+   float tcolf[4];
+   /* after the float row (RGBA8, already tinted / dithered): order into the destination only */
+   uint8_t perm2[16], orm2[16];
 };'''),
     ])
 
@@ -101,18 +108,26 @@ sweet_dither_px(uint8_t px[4], const uint8_t nz[4], float nk)
 
 static void
 sweet_fast_row(const struct sweet_fast_rect *r, uint8_t *d, const uint8_t *s, int n, const uint8_t *nrow,
-               const int32_t *ncx)
+               const int32_t *ncx, int post)
 {
    int i = 0;
+   const uint8_t *pt = post ? r->perm2 : r->perm, *ot = post ? r->orm2 : r->orm;
+   const int tint = post ? 0 : r->tint;
 #if defined(__aarch64__)
    static const uint8_t aidx_b[16] = {3, 3, 3, 3, 7, 7, 7, 7, 11, 11, 11, 11, 15, 15, 15, 15};
    const uint8x16_t aidx = vld1q_u8(aidx_b);
-   const uint8x16_t perm = vld1q_u8(r->perm), orm = vld1q_u8(r->orm);
+   const uint8x16_t perm = vld1q_u8(pt), orm = vld1q_u8(ot);
    const uint8x16_t fill = vreinterpretq_u8_u32(vdupq_n_u32(r->color));
    const uint8x16_t nperm = vld1q_u8(r->nperm);
+   const uint8x16_t tcol = vld1q_u8(r->tcol);
    const float32x4_t half = vdupq_n_f32(127.5f), zero = vdupq_n_f32(0.0f);
    for (; i + 4 <= n; i += 4) {
       uint8x16_t sv = s ? vorrq_u8(vqtbl1q_u8(vld1q_u8(s + 4 * i), perm), orm) : fill;
+      if (tint) {
+         uint16x8_t lo = vmull_u8(vget_low_u8(sv), vget_low_u8(tcol));
+         uint16x8_t hi = vmull_high_u8(sv, tcol);
+         sv = vcombine_u8(vrshrn_n_u16(vrsraq_n_u16(lo, lo, 8), 8), vrshrn_n_u16(vrsraq_n_u16(hi, hi, 8), 8));
+      }
       if (nrow) {
          uint32_t nb[4];
          for (int q = 0; q < 4; q++)
@@ -149,8 +164,12 @@ sweet_fast_row(const struct sweet_fast_rect *r, uint8_t *d, const uint8_t *s, in
    for (; i < n; i++) {
       uint8_t px[4], *dp = d + 4 * i;
       for (int c = 0; c < 4; c++) {
-         px[c] = s ? (uint8_t)((r->perm[c] < 4 ? s[4 * i + r->perm[c]] : 0) | r->orm[c])
+         px[c] = s ? (uint8_t)((pt[c] < 4 ? s[4 * i + pt[c]] : 0) | ot[c])
                    : (uint8_t)(r->color >> (8 * c));
+      }
+      if (tint) {
+         for (int c = 0; c < 4; c++)
+            px[c] = sweet_div255((unsigned)px[c] * r->tcol[c]);
       }
       if (nrow) {
          uint8_t nz[4];
@@ -263,6 +282,11 @@ sweet_f16_row(const struct sweet_fast_rect *r, const uint8_t *s1, int k0, int n,
       tv = vminnmq_f32(vmaxnmq_f32(tv, zero), one);     /* NaN -> 0 */
       if (r->opaque)
          tv = vsetq_lane_f32(1.0f, tv, 3);
+      if (r->tint) {
+         if (r->tint == 2)
+            tv = vdupq_laneq_f32(tv, 3);
+         tv = vmulq_f32(tv, vld1q_f32(r->tcolf));
+      }
       if (nrow) {
          const uint8_t *nz = nrow + 4 * ncx[i];
          const float nzv[4] = {nz[r->npos[0]], nz[r->npos[1]], nz[r->npos[2]], 127.5f};
@@ -298,6 +322,11 @@ sweet_f16_row(const struct sweet_fast_rect *r, const uint8_t *s1, int k0, int n,
          t[ch] = t[ch] > 0.0f ? (t[ch] < 1.0f ? t[ch] : 1.0f) : 0.0f;   /* also NaN -> 0 */
       if (r->opaque)
          t[3] = 1.0f;
+      if (r->tint) {
+         float a = t[3];
+         for (int ch = 0; ch < 4; ch++)
+            t[ch] = (r->tint == 2 ? a : t[ch]) * r->tcolf[ch];
+      }
       if (nrow) {
          /* CA's dither in float, like the shader */
          const uint8_t *nz = nrow + 4 * ncx[i];
@@ -334,7 +363,7 @@ lp_rast_sweet_fast(struct lp_rasterizer_task *task,
       const uint8_t *s1 = r->src ? r->src + (ptrdiff_t)(y0 - r->y0) * r->src_dy + (ptrdiff_t)(x0 - r->x0) * 8 : NULL;
       for (int y = y0; y < y1; y++) {
          sweet_f16_row(r, s1, x0 - r->x0, x1 - x0, y - r->y0, SWEET_NROW(y), ncx, tmp);
-         sweet_fast_row(r, d, tmp, x1 - x0, NULL, NULL);
+         sweet_fast_row(r, d, tmp, x1 - x0, NULL, NULL, 1);
          d += stride;
          if (s1)
             s1 += r->src_dy;
@@ -345,14 +374,14 @@ lp_rast_sweet_fast(struct lp_rasterizer_task *task,
       uint8_t tmp[TILE_SIZE * 4] __attribute__((aligned(16)));
       for (int y = y0; y < y1; y++) {
          sweet_resample_row(r, x0 - r->x0, x1 - x0, y - r->y0, tmp);
-         sweet_fast_row(r, d, tmp, x1 - x0, SWEET_NROW(y), ncx);
+         sweet_fast_row(r, d, tmp, x1 - x0, SWEET_NROW(y), ncx, 0);
          d += stride;
       }
       return;
    }
    const uint8_t *s = r->src ? r->src + (ptrdiff_t)(y0 - r->y0) * r->src_dy + (ptrdiff_t)(x0 - r->x0) * 4 : NULL;
    for (int y = y0; y < y1; y++) {
-      sweet_fast_row(r, d, s, x1 - x0, SWEET_NROW(y), ncx);
+      sweet_fast_row(r, d, s, x1 - x0, SWEET_NROW(y), ncx, 0);
       d += stride;
       if (s)
          s += r->src_dy;
@@ -603,7 +632,8 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
    if (p->n <= 0 || p->n > SWEET_LPF_MAX)
       return false;
    if (!((p->kind == SWEET_LPF_FILL || p->kind == SWEET_LPF_COPY || p->kind == SWEET_LPF_OPAQUE ||
-          p->kind == SWEET_LPF_COPYN) &&
+          p->kind == SWEET_LPF_COPYN || p->kind == SWEET_LPF_TINT || p->kind == SWEET_LPF_ATINT ||
+          p->kind == SWEET_LPF_TINTN) &&
          (p->blend == SWEET_LPF_BLEND_NONE || p->blend == SWEET_LPF_BLEND_PREMUL)))
       return sweet_lpf_no(SLPF_KIND), false;
    if (fb->nr_cbufs != 1 || !fb->cbufs[0].texture || fb->layers > 1 ||
@@ -654,11 +684,12 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
       W = (int)res->width0, H = (int)res->height0;
    }
    /* COPYN: the noise texture's texels as bound for this draw */
-   struct pipe_resource *nres = p->kind == SWEET_LPF_COPYN ? p->noise : NULL;
+   const bool noisy = p->kind == SWEET_LPF_COPYN || p->kind == SWEET_LPF_TINTN;
+   struct pipe_resource *nres = noisy ? p->noise : NULL;
    const uint8_t *nbase = NULL;
    size_t nstride = 0;
    int npos[4] = {0, 1, 2, 3}, nxa = 0, NW = 0, NH = 0;
-   if (p->kind == SWEET_LPF_COPYN) {
+   if (noisy) {
       if (nres == NULL || nres->nr_samples > 1 || nres->array_size > 1 || nres->target != PIPE_TEXTURE_2D ||
           !sweet_lpf_order(nres->format, npos, &nxa)) {
          sweet_lpf_why("noise texture", p, NULL, nres ? (int)nres->format : -1, 0, 0, 0);
@@ -799,6 +830,30 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
             for (int ch = 0; ch < 4; ch++) {
                r->perm[4 * px + dpos[ch]] = (uint8_t)(4 * px + spos[ch]);
                r->orm[4 * px + dpos[ch]] = ch == 3 && (sx || dx || p->kind == SWEET_LPF_OPAQUE) ? 0xff : 0;
+            }
+         }
+         if (p->kind == SWEET_LPF_ATINT) {
+            /* colour * texel alpha: the source alpha into every byte (X sources: 255 via orm) */
+            for (int px = 0; px < 4; px++) {
+               for (int ch = 0; ch < 4; ch++) {
+                  r->perm[4 * px + dpos[ch]] = (uint8_t)(4 * px + spos[3]);
+                  r->orm[4 * px + dpos[ch]] = sx ? 0xff : 0;
+               }
+            }
+         }
+         if (p->kind == SWEET_LPF_TINT || p->kind == SWEET_LPF_ATINT || p->kind == SWEET_LPF_TINTN) {
+            r->tint = p->kind == SWEET_LPF_ATINT ? 2 : 1;
+            for (int px = 0; px < 4; px++) {
+               for (int ch = 0; ch < 4; ch++)
+                  r->tcol[4 * px + dpos[ch]] = j->color[ch];
+            }
+            for (int ch = 0; ch < 4; ch++)
+               r->tcolf[ch] = j->color[ch] * (1.0f / 255);
+         }
+         for (int px = 0; px < 4; px++) {
+            for (int ch = 0; ch < 4; ch++) {
+               r->perm2[4 * px + dpos[ch]] = (uint8_t)(4 * px + ch);
+               r->orm2[4 * px + dpos[ch]] = ch == 3 && dx ? 0xff : 0;
             }
          }
          r->f16 = sf16;

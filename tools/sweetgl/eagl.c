@@ -1537,7 +1537,8 @@ lpf_offer(int kind, int blend, const struct fp_job *jobs, int n, GLuint tex, GLu
 	struct sweet_lpf *p = &sweet_lpf_pending;
 	p->n = 0;
 	if (!on || n <= 0 || n > SWEET_LPF_MAX ||
-	    (kind != FPK_FILL && kind != FPK_COPY && kind != FPK_OPAQUE && kind != FPK_COPYN) ||
+	    (kind != FPK_FILL && kind != FPK_COPY && kind != FPK_OPAQUE && kind != FPK_COPYN && kind != FPK_TINT &&
+	     kind != FPK_ATINT && kind != FPK_TINTN) ||
 	    (blend != FPB_NONE && blend != FPB_PREMUL)) {
 		return;
 	}
@@ -1546,7 +1547,7 @@ lpf_offer(int kind, int blend, const struct fp_job *jobs, int n, GLuint tex, GLu
 	if (kind != FPK_FILL && (p->src = fp_tex_resource(tex)) == NULL) {
 		return;
 	}
-	if (kind == FPK_COPYN && (p->noise = fp_tex_resource(ntex)) == NULL) {
+	if ((kind == FPK_COPYN || kind == FPK_TINTN) && (p->noise = fp_tex_resource(ntex)) == NULL) {
 		return;
 	}
 	p->nscale = nscale;
@@ -1561,7 +1562,7 @@ lpf_offer(int kind, int blend, const struct fp_job *jobs, int n, GLuint tex, GLu
 		o->swap = j->swap, o->tclamp = j->tclamp;
 		o->cu0 = j->cu0, o->cu1 = j->cu1, o->cv0 = j->cv0, o->cv1 = j->cv1;
 		memcpy(o->color, j->color, 4);
-		if (kind == FPK_COPYN) {
+		if (kind == FPK_COPYN || kind == FPK_TINTN) {
 			/* as fast_draw's mode 1: texcoordN = (clip.xy * W.xy + W.zw * w, w * NOISE_SIZE) */
 			o->nud = 2.0f * W[0] / ((float)vp[2] * FAST_NOISE_SIZE);
 			o->nu0 = (W[2] - W[0] - 2.0f * W[0] * (float)vp[0] / (float)vp[2]) / FAST_NOISE_SIZE;

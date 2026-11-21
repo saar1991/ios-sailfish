@@ -23,7 +23,10 @@
 #define SWEET_LPF_FILL 1
 #define SWEET_LPF_COPY 2
 #define SWEET_LPF_OPAQUE 5
+#define SWEET_LPF_TINT 3                /* colour * texture */
+#define SWEET_LPF_ATINT 4               /* colour * texture.a */
 #define SWEET_LPF_COPYN 7               /* copy, then CA's noise dither */
+#define SWEET_LPF_TINTN 8               /* colour * texture, then the dither */
 #define SWEET_LPF_BLEND_NONE 0
 #define SWEET_LPF_BLEND_PREMUL 1
 
@@ -33,7 +36,7 @@ struct sweet_lpf_job {
 	float ua, ub, va, vb;           /* normalized texture coordinates at xa, xb and ya, yb */
 	int swap, tclamp;
 	float cu0, cu1, cv0, cv1;
-	uint8_t color[4];               /* RGBA, FILL */
+	uint8_t color[4];               /* RGBA: FILL, TINT, ATINT, TINTN */
 	/* COPYN: the noise texel at window pixel x, y is (u, v) = (nu0 + nud * (x + .5), nv0 + nvd * (y + .5)), nearest, repeat */
 	float nu0, nud, nv0, nvd;
 };
