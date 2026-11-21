@@ -43,6 +43,14 @@ struct sweet_fast_rect {
    uint8_t perm[16];          /* destination byte i of 4 pixels <- source byte perm[i] */
    uint8_t orm[16];           /* OR-ed after the lookup (opaque alpha) */
    uint32_t color;            /* fill: the pixel, destination byte order */
+   /* scaled copies (bilinear or nearest, clamp to edge): per destination column / row
+    * (index from x0 / y0) the left / top texel of a 2x2 pair and the weight of the
+    * right / bottom one in 128ths */
+   int scaled;
+   const int32_t *cx, *ry;
+   const uint8_t *wx, *wy;
+   const uint8_t *sbase;      /* texel 0,0 */
+   ptrdiff_t sstride;
 };'''),
     ])
 
@@ -102,6 +110,36 @@ sweet_fast_row(const struct sweet_fast_rect *r, uint8_t *d, const uint8_t *s, in
    }
 }
 
+/* one destination row of a scaled copy into out (source byte order), n <= TILE_SIZE */
+static void
+sweet_resample_row(const struct sweet_fast_rect *r, int k0, int n, int ky, uint8_t *out)
+{
+   const uint8_t *row0 = r->sbase + (ptrdiff_t)r->ry[ky] * r->sstride, *row1 = row0 + r->sstride;
+   const unsigned v = r->wy[ky];
+   for (int i = 0; i < n; i++) {
+      const int c = r->cx[k0 + i];
+      const unsigned w = r->wx[k0 + i];
+#if defined(__aarch64__)
+      uint8x8_t a = vld1_u8(row0 + 4 * c), b = vld1_u8(row1 + 4 * c);
+      uint8x8_t wv = vext_u8(vdup_n_u8((uint8_t)(128 - w)), vdup_n_u8((uint8_t)w), 4);
+      uint16x8_t ha = vmull_u8(a, wv), hb = vmull_u8(b, wv);
+      uint16x4_t ta = vadd_u16(vget_low_u16(ha), vget_high_u16(ha));
+      uint16x4_t tb = vadd_u16(vget_low_u16(hb), vget_high_u16(hb));
+      uint32x4_t acc = vmull_n_u16(ta, (uint16_t)(128 - v));
+      acc = vmlal_n_u16(acc, tb, (uint16_t)v);
+      uint16x4_t q = vrshrn_n_u32(acc, 14);
+      uint8x8_t q8 = vmovn_u16(vcombine_u16(q, q));
+      vst1_lane_u32((uint32_t *)(void *)(out + 4 * i), vreinterpret_u32_u8(q8), 0);
+#else
+      for (int ch = 0; ch < 4; ch++) {
+         unsigned ta = row0[4 * c + ch] * (128 - w) + row0[4 * c + 4 + ch] * w;
+         unsigned tb = row1[4 * c + ch] * (128 - w) + row1[4 * c + 4 + ch] * w;
+         out[4 * i + ch] = (uint8_t)((ta * (128 - v) + tb * v + 8192) >> 14);
+      }
+#endif
+   }
+}
+
 static void
 lp_rast_sweet_fast(struct lp_rasterizer_task *task,
                    const union lp_rast_cmd_arg arg)
@@ -116,6 +154,15 @@ lp_rast_sweet_fast(struct lp_rasterizer_task *task,
       return;
    const unsigned stride = scene->cbufs[0].stride;
    uint8_t *d = scene->cbufs[0].map + (size_t)y0 * stride + (size_t)x0 * 4;
+   if (r->scaled) {
+      uint8_t tmp[TILE_SIZE * 4] __attribute__((aligned(16)));
+      for (int y = y0; y < y1; y++) {
+         sweet_resample_row(r, x0 - r->x0, x1 - x0, y - r->y0, tmp);
+         sweet_fast_row(r, d, tmp, x1 - x0);
+         d += stride;
+      }
+      return;
+   }
    const uint8_t *s = r->src ? r->src + (ptrdiff_t)(y0 - r->y0) * r->src_dy + (ptrdiff_t)(x0 - r->x0) * 4 : NULL;
    for (int y = y0; y < y1; y++) {
       sweet_fast_row(r, d, s, x1 - x0);
@@ -179,7 +226,7 @@ lp_rast_sweet_fast(struct lp_rasterizer_task *task,
 #include "lp_sweet_fast.h"
 struct sweet_lpf sweet_lpf_pending;
 enum { SLPF_DRAWS, SLPF_RECTS, SLPF_PIXELS, SLPF_FB, SLPF_SRC, SLPF_SCALE, SLPF_OFFSET, SLPF_BOUNDS,
-       SLPF_SWAP, SLPF_CLAMP, SLPF_OOM, SLPF_KIND, SLPF_N };
+       SLPF_SWAP, SLPF_CLAMP, SLPF_OOM, SLPF_KIND, SLPF_SCALED, SLPF_N };
 uint64_t sweet_lpf_stat[SLPF_N];
 bool sweet_lp_fast_draw(struct llvmpipe_context *lp);
 
@@ -265,6 +312,64 @@ sweet_lpf_map(const struct sweet_lpf_job *j, int W, int H, int *s0, int *t0, int
    return 0;
 }
 
+/*
+ * A scaled copy: the 2x2 texel pair and weights of every destination column
+ * and row, as GL samples it (texel centres at (i + .5) / size, clamp to
+ * edge, the texture's clamp rectangle first). Linear: weights in 128ths;
+ * nearest: the texel itself. The tables go into scene memory with the
+ * rectangle. Returns 0, or -1 when the texture or sampler does not fit.
+ */
+static int
+sweet_lpf_axis(double a0, double a1, double ta, double tb, int p0, int n, int size, bool linear, bool clamp,
+               double c0, double c1, int32_t *idx, uint8_t *wt)
+{
+   for (int k = 0; k < n; k++) {
+      double t = ta + (tb - ta) * ((p0 + k + 0.5) - a0) / (a1 - a0);
+      if (clamp)
+         t = t < c0 ? c0 : t > c1 ? c1 : t;
+      int i;
+      unsigned w;
+      if (linear) {
+         double sc = t * size - 0.5, fl = floor(sc);
+         i = (int)fl;
+         w = (unsigned)floor((sc - fl) * 128 + 0.5);
+         if (w == 128)
+            i++, w = 0;
+         if (i < 0)
+            i = 0, w = 0;
+      } else {
+         i = (int)floor(t * size);
+         w = 0;
+         if (i < 0)
+            i = 0;
+      }
+      if (i >= size - 1)
+         i = size - 2, w = 128;       /* the last texel, as the right half of the pair */
+      idx[k] = i;
+      wt[k] = (uint8_t)w;
+   }
+   return 0;
+}
+
+/* a scaled rectangle's tables into the current scene's memory; false: out of memory */
+static bool
+sweet_lpf_tables(struct lp_setup_context *setup, struct sweet_fast_rect *r, const int32_t *cx, const uint8_t *wx,
+                 int nx, int ny)
+{
+   size_t ni = sizeof(int32_t) * (size_t)(nx + ny), nw = (size_t)(nx + ny);
+   if (ni > DATA_BLOCK_SIZE)
+      return false;
+   int32_t *ci = lp_scene_alloc(setup->scene, (unsigned)ni);
+   uint8_t *cw = ci ? lp_scene_alloc(setup->scene, (unsigned)nw) : NULL;
+   if (cw == NULL)
+      return false;
+   memcpy(ci, cx, ni);
+   memcpy(cw, wx, nw);
+   r->cx = ci, r->ry = ci + nx;
+   r->wx = cw, r->wy = cw + nx;
+   return true;
+}
+
 /* bin one rectangle into every tile it covers; false: out of scene memory */
 static bool
 sweet_lpf_bin(struct lp_setup_context *setup, const struct sweet_fast_rect *proto, struct sweet_fast_rect **made)
@@ -309,6 +414,9 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
       return sweet_lpf_no(SLPF_FB), false;
    const uint8_t *sbase = NULL;
    size_t sstride = 0;
+   const struct pipe_sampler_state *samp = NULL;
+   struct sweet_lpf_tab { int32_t *cx, *ry; uint8_t *wx, *wy; int nx, ny; } tab[SWEET_LPF_MAX];
+   memset(tab, 0, sizeof(tab));
    if (p->kind != SWEET_LPF_FILL) {
       lpr = res ? llvmpipe_resource(res) : NULL;
       if (lpr == NULL || res->nr_samples > 1 || res->array_size > 1 ||
@@ -327,6 +435,14 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
             sbase = (const uint8_t *)jt->base + jt->mip_offsets[0];
             sstride = jt->row_stride[0];
             break;
+         }
+      }
+      if (sbase != NULL) {
+         for (unsigned i = 0; i < setup->fs.current_tex_num && i < PIPE_MAX_SHADER_SAMPLER_VIEWS; i++) {
+            if (setup->fs.current_tex[i] == res) {
+               samp = i < PIPE_MAX_SAMPLERS ? lp->samplers[MESA_SHADER_FRAGMENT][i] : NULL;
+               break;
+            }
          }
       }
       if (sbase == NULL || sstride == 0) {
@@ -359,15 +475,56 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
          struct sweet_lpf_job jj = *j;
          jj.x0 = r->x0, jj.x1 = r->x1, jj.y0 = r->y0, jj.y1 = r->y1;
          int s0, t0, dy;
-         if (sweet_lpf_map(&jj, W, H, &s0, &t0, &dy) != 0) {
-            static const char *const nm[SLPF_N] = {[SLPF_SCALE] = "scale", [SLPF_OFFSET] = "offset",
-                                                   [SLPF_BOUNDS] = "bounds", [SLPF_SWAP] = "turned",
-                                                   [SLPF_CLAMP] = "clamp"};
-            sweet_lpf_why(nm[sweet_lpf_last] ? nm[sweet_lpf_last] : "map", p, &jj, (int)res->format, W, H, 1);
-            return false;
+         uint64_t before[SLPF_N];
+         memcpy(before, sweet_lpf_stat, sizeof(before));
+         if (sweet_lpf_map(&jj, W, H, &s0, &t0, &dy) == 0) {
+            r->src = sbase + (size_t)t0 * sstride + (size_t)s0 * 4;
+            r->src_dy = dy * (ptrdiff_t)sstride;
+         } else {
+            /* not 1:1: a scaled copy, when the sampler is plain (clamp to edge, level 0) */
+            memcpy(sweet_lpf_stat, before, sizeof(before));
+            double scx = fabs(((double)j->ub - j->ua) * W / ((double)j->xb - j->xa));
+            double scy = fabs(((double)j->vb - j->va) * H / ((double)j->yb - j->ya));
+            bool minify = scx > 1.0 + 1e-6 || scy > 1.0 + 1e-6;
+            const char *no = NULL;
+            if (j->swap)
+               no = "turned";
+            else if (samp == NULL || samp->unnormalized_coords || res->target != PIPE_TEXTURE_2D ||
+                     samp->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE || samp->wrap_t != PIPE_TEX_WRAP_CLAMP_TO_EDGE ||
+                     samp->min_lod > 0.0f || samp->lod_bias != 0.0f)
+               no = "sampler";
+            else if (minify && samp->min_mip_filter != PIPE_TEX_MIPFILTER_NONE && res->last_level > 0)
+               no = "mipmaps";
+            else if (W < 2 || H < 2)
+               no = "size";
+            if (no) {
+               sweet_lpf_why(no, p, &jj, (int)res->format, W, H, 1);
+               for (int q = 0; q < nr; q++)
+                  free(tab[q].cx), free(tab[q].wx);
+               return sweet_lpf_no(no[0] == 't' ? SLPF_SWAP : SLPF_SCALE), false;
+            }
+            bool linear = (minify ? samp->min_img_filter : samp->mag_img_filter) == PIPE_TEX_FILTER_LINEAR;
+            int nx = r->x1 - r->x0, ny = r->y1 - r->y0;
+            tab[nr].nx = nx, tab[nr].ny = ny;
+            tab[nr].cx = malloc(sizeof(int32_t) * (nx + ny));
+            tab[nr].wx = malloc((size_t)nx + ny);
+            if (tab[nr].cx == NULL || tab[nr].wx == NULL) {
+               free(tab[nr].cx), free(tab[nr].wx);
+               tab[nr].cx = NULL, tab[nr].wx = NULL;
+               for (int q = 0; q < nr; q++)
+                  free(tab[q].cx), free(tab[q].wx);
+               return false;
+            }
+            tab[nr].ry = tab[nr].cx + nx, tab[nr].wy = tab[nr].wx + nx;
+            sweet_lpf_axis(j->xa, j->xb, j->ua, j->ub, r->x0, nx, W, linear, j->tclamp, j->cu0, j->cu1,
+                           tab[nr].cx, tab[nr].wx);
+            sweet_lpf_axis(j->ya, j->yb, j->va, j->vb, r->y0, ny, H, linear, j->tclamp, j->cv0, j->cv1,
+                           tab[nr].ry, tab[nr].wy);
+            r->scaled = 1;
+            r->sbase = sbase;
+            r->sstride = (ptrdiff_t)sstride;
+            sweet_lpf_stat[SLPF_SCALED]++;
          }
-         r->src = sbase + (size_t)t0 * sstride + (size_t)s0 * 4;
-         r->src_dy = dy * (ptrdiff_t)sstride;
          for (int px = 0; px < 4; px++) {
             for (int ch = 0; ch < 4; ch++) {
                r->perm[4 * px + dpos[ch]] = (uint8_t)(4 * px + spos[ch]);
@@ -377,30 +534,37 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
       }
       nr++;
    }
-   if (!lp_setup_update_state(setup, true))
+   if (!lp_setup_update_state(setup, true)) {
+      for (int k = 0; k < nr; k++)
+         free(tab[k].cx), free(tab[k].wx);
       return false;
+   }
    for (int k = 0; k < nr; k++) {
+      /* texture reference, a scaled rectangle's tables and the commands, all in one scene */
       struct sweet_fast_rect *made = NULL;
-      if (res && !lp_scene_add_resource_reference(setup->scene, res, false, false)) {
-         if (!lp_setup_flush_and_restart(setup))
-            return true;      /* nothing binned for this or the later rectangles */
-      }
-      if (!sweet_lpf_bin(setup, &proto[k], &made)) {
+#define SWEET_LPF_PUT() ((!res || lp_scene_add_resource_reference(setup->scene, res, false, false)) && \
+                         (!tab[k].cx || sweet_lpf_tables(setup, &proto[k], tab[k].cx, tab[k].wx, tab[k].nx, tab[k].ny)) && \
+                         sweet_lpf_bin(setup, &proto[k], &made))
+      if (!SWEET_LPF_PUT()) {
          /* out of scene memory half way: drop what was binned, new scene, again */
          if (made)
             made->disable = 1;
+         made = NULL;
          sweet_lpf_stat[SLPF_OOM]++;
-         if (!lp_setup_flush_and_restart(setup) ||
-             (res && !lp_scene_add_resource_reference(setup->scene, res, false, false)) ||
-             !sweet_lpf_bin(setup, &proto[k], &made)) {
+         if (!lp_setup_flush_and_restart(setup))
+            break;
+         if (!SWEET_LPF_PUT()) {
             if (made)
                made->disable = 1;
             continue;
          }
       }
+#undef SWEET_LPF_PUT
       sweet_lpf_stat[SLPF_RECTS]++;
       sweet_lpf_stat[SLPF_PIXELS] += (uint64_t)(proto[k].x1 - proto[k].x0) * (uint64_t)(proto[k].y1 - proto[k].y0);
    }
+   for (int k = 0; k < nr; k++)
+      free(tab[k].cx), free(tab[k].wx);
    sweet_lpf_stat[SLPF_DRAWS]++;
    return true;
 }
@@ -438,15 +602,15 @@ bool sweet_lp_fast_draw(struct llvmpipe_context *lp);   /* lp_setup.c */'''),
    lg("%s", l);
    {
       extern uint64_t sweet_lpf_stat[];
-      static uint64_t pl[12];
-      uint64_t d[12];
-      for (int i = 0; i < 12; i++) {
+      static uint64_t pl[13];
+      uint64_t d[13];
+      for (int i = 0; i < 13; i++) {
          d[i] = sweet_lpf_stat[i] - pl[i];
          pl[i] = sweet_lpf_stat[i];
       }
-      lg("sweetgl: lp fast: %llu draws, %llu rects, %llu kpx; not taken: kind %llu fb %llu src %llu scale %llu "
+      lg("sweetgl: lp fast: %llu draws, %llu rects (%llu scaled), %llu kpx; not taken: kind %llu fb %llu src %llu scale %llu "
          "offset %llu bounds %llu turned %llu clamp %llu; out of scene memory %llu",
-         (unsigned long long)d[0], (unsigned long long)d[1], (unsigned long long)(d[2] / 1000),
+         (unsigned long long)d[0], (unsigned long long)d[1], (unsigned long long)d[12], (unsigned long long)(d[2] / 1000),
          (unsigned long long)d[11], (unsigned long long)d[3], (unsigned long long)d[4], (unsigned long long)d[5],
          (unsigned long long)d[6], (unsigned long long)d[7], (unsigned long long)d[8], (unsigned long long)d[9],
          (unsigned long long)d[10]);
