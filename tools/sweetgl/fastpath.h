@@ -111,6 +111,7 @@ extern int fp_map_why;
 extern unsigned fp_map_format;
 int fp_map_tex(unsigned tex, int write, struct fp_img *m);
 void fp_unmap(struct fp_img *m);
+void *fp_tex_resource(unsigned tex);    /* struct pipe_resource *, not mapped; NULL if not a plain 2D texture */
 void fp_read_rgba(const struct fp_img *m, int x, int y, uint8_t rgba[4]);
 
 /*

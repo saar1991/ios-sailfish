@@ -111,6 +111,27 @@ fp_map_tex(unsigned tex, int write, struct fp_img *m)
 	return 0;
 }
 
+/* the resource behind GL texture name tex, level 0 of a plain 2D texture, or NULL (no mapping) */
+void *
+fp_tex_resource(unsigned tex)
+{
+	struct gl_context *ctx = _mesa_get_current_context();
+	if (ctx == NULL || ctx->st == NULL || tex == 0) {
+		return NULL;
+	}
+	struct gl_texture_object *obj = _mesa_lookup_texture(ctx, tex);
+	if (obj == NULL || obj->Target != GL_TEXTURE_2D || obj->pt == NULL) {
+		return NULL;
+	}
+	struct gl_texture_image *img = obj->Image[0][0];
+	struct pipe_resource *res = obj->pt;
+	if (img == NULL || img->pt != res || res->nr_samples > 1 || res->array_size > 1 ||
+	    (res->target != PIPE_TEXTURE_2D && res->target != PIPE_TEXTURE_RECT)) {
+		return NULL;
+	}
+	return res;
+}
+
 void
 fp_unmap(struct fp_img *m)
 {

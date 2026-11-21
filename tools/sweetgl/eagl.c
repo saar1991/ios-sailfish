@@ -1513,6 +1513,54 @@ fast_tex(GLint prog, GLint loc, GLint att, int kind, GLenum wrap, int nearest_on
 	return 0;
 }
 
+/*
+ * llvmpipe: hand the rectangles of a fill, copy or opaque-copy draw to the
+ * rasterizer threads (lp-fast.py via sweet_lpfast.h); llvmpipe takes them
+ * when it can draw every rectangle exactly, else the draw runs as usual.
+ * SGLLPFAST=0: never.
+ */
+#ifdef SWEETGL_LLVMPIPE
+#include "sweet_lpfast.h"
+#endif
+
+static void
+lpf_offer(int kind, int blend, const struct fp_job *jobs, int n, GLuint tex)
+{
+#ifdef SWEETGL_LLVMPIPE
+	static int on = -1;
+	if (on < 0) {
+		const char *e = getenv("SGLLPFAST"), *d = getenv("GALLIUM_DRIVER");
+		on = !(e != NULL && e[0] == '0') && !(d != NULL && strcmp(d, "softpipe") == 0);
+		sweet_drm_log("sweetgl: rasterizer fast path for fills and 1:1 copies: %s", on ? "on" : "off");
+	}
+	struct sweet_lpf *p = &sweet_lpf_pending;
+	p->n = 0;
+	if (!on || n <= 0 || n > SWEET_LPF_MAX || (kind != FPK_FILL && kind != FPK_COPY && kind != FPK_OPAQUE) ||
+	    (blend != FPB_NONE && blend != FPB_PREMUL)) {
+		return;
+	}
+	p->src = NULL;
+	if (kind != FPK_FILL && (p->src = fp_tex_resource(tex)) == NULL) {
+		return;
+	}
+	p->kind = kind;
+	p->blend = blend;
+	for (int r = 0; r < n; r++) {
+		const struct fp_job *j = &jobs[r];
+		struct sweet_lpf_job *o = &p->job[r];
+		o->x0 = j->x0, o->y0 = j->y0, o->x1 = j->x1, o->y1 = j->y1;
+		o->xa = j->xa, o->xb = j->xb, o->ya = j->ya, o->yb = j->yb;
+		o->ua = j->ua, o->ub = j->ub, o->va = j->va, o->vb = j->vb;
+		o->swap = j->swap, o->tclamp = j->tclamp;
+		o->cu0 = j->cu0, o->cu1 = j->cu1, o->cv0 = j->cv0, o->cv1 = j->cv1;
+		memcpy(o->color, j->color, 4);
+	}
+	p->n = n;
+#else
+	(void)kind, (void)blend, (void)jobs, (void)n, (void)tex;
+#endif
+}
+
 /* what one rectangle of a draw needs from its 6 vertices, before the textures are mapped */
 struct fast_in {
 	GLint prog;
@@ -2029,6 +2077,9 @@ fast_draw(GLint prog, GLenum mode, GLsizei count, int elements, GLenum itype, co
 		if (check && fast_mode == 1 && !fast_off[kind][blend]) {
 			fst.wait_abs++;
 		}
+		if (fast_mode == 0) {
+			lpf_offer(kind, blend, jobs, nrect, tex);
+		}
 		return 2;
 	}
 	struct fp_img dst = {0}, src = {0}, mimg = {0}, nimg = {0};
@@ -2528,6 +2579,9 @@ sgl_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 #endif
 	}
 	fbfetch_now = 0;
+#ifdef SWEETGL_LLVMPIPE
+	sweet_lpf_pending.n = 0;        /* taken or not: never for a later draw */
+#endif
 	uint64_t dt = mach_absolute_time() - t0;
 	fast_account(prog, fp, dt);
 	if (fast_pend.buf != NULL) {
@@ -2557,6 +2611,9 @@ sgl_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void
 #endif
 	}
 	fbfetch_now = 0;
+#ifdef SWEETGL_LLVMPIPE
+	sweet_lpf_pending.n = 0;        /* taken or not: never for a later draw */
+#endif
 	uint64_t dt = mach_absolute_time() - t0;
 	fast_account(prog, fp, dt);
 	if (fast_pend.buf != NULL) {

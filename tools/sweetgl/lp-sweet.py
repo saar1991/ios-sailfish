@@ -33,18 +33,19 @@ M = sys.argv[1]
 LP = os.path.join(M, 'src/gallium/drivers/llvmpipe')
 
 
-def patch(name, edits):
+def patch(name, edits, tag='lp-sweet'):
     p = os.path.join(LP, name)
     s = open(p).read()
-    if 'sweetgl:' in s and '/* sweetgl: lp-sweet */' in s:
-        print('already patched', p)
+    mark = f'/* sweetgl: {tag} */'
+    if mark in s:
+        print('already patched', p, tag)
         return
     for a, b in edits:
         assert s.count(a) == 1, f'{name}: anchor not found once: {a[:60]!r}'
         s = s.replace(a, b)
-    s = '/* sweetgl: lp-sweet */\n' + s
+    s = mark + '\n' + s
     open(p, 'w').write(s)
-    print('patched', p)
+    print('patched', p, tag)
 
 
 # ---------------------------------------------------------------- lp_rast.c
@@ -364,7 +365,7 @@ sweet_lp_report(void (*lg)(const char *, ...))
       static const char *const name[LP_RAST_OP_MAX] = {
          [LP_RAST_OP_CLEAR_COLOR] = "clear", [LP_RAST_OP_CLEAR_ZSTENCIL] = "clearz",
          [LP_RAST_OP_SHADE_TILE] = "tile", [LP_RAST_OP_SHADE_TILE_OPAQUE] = "tile-opaque",
-         [LP_RAST_OP_SET_STATE] = "state",
+         [LP_RAST_OP_SET_STATE] = "state", [LP_RAST_OP_SWEET_FAST] = "fast",
       };
       char l[400];
       int o = snprintf(l, sizeof(l), "sweetgl: lp commands (ms/thousands):");
@@ -738,3 +739,9 @@ patch('lp_state_sampler.c', [
     ('''#include "lp_context.h"''', '''#include "lp_context.h"
 bool sweet_lp_sampler_flush(struct pipe_context *pipe, struct pipe_resource *resource);   /* sweetgl: lp_flush.c */'''),
 ])
+
+# ---------------------------------------------------------------- part 3: lp-fast.py
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import importlib
+lpfast = importlib.import_module('lp-fast')
+lpfast.run(M, LP, lambda name, edits: patch(name, edits, 'lp-fast'), os.path.dirname(os.path.abspath(__file__)))
