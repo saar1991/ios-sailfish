@@ -104,6 +104,7 @@ struct sweet_fast_rect {
    /* TRI: one triangle over x0..y1 (its box, clipped), sampled per pixel (lp-fast.py TRI) */
    int tri, tkind;
    int pk;                    /* the draw's SWEET_LPF_ kind (the profile's routes) */
+   int fxpx;                  /* 1: sweet_fx_row pixel by pixel only (tests; SGLLPSOA=0) */
    int64_t ea[3], eb[3], ec[3];  /* pixel (X, Y) covered when ea * X + eb * Y + ec >= 0 for all three (1/256 units) */
    float pl[4][3];            /* u, v, u2, v2 at pixel centre (x0, y0), per pixel along x, along y */
    struct sweet_tsrc {
@@ -279,7 +280,24 @@ sweet_resample_row(const struct sweet_fast_rect *r, int k0, int n, int ky, uint8
 {
    const uint8_t *row0 = r->sbase + (ptrdiff_t)r->ry[ky] * r->sstride, *row1 = row0 + r->sstride;
    const unsigned v = r->wy[ky];
-   for (int i = 0; i < n; i++) {
+   /* the run of columns from k0 on that step one texel a pixel with one weight (a 1:1 scale at a
+    * fractional offset, the usual case): the same sums byte by byte, which the compiler vectorizes */
+   int u = 1;
+   const int32_t c0 = r->cx[k0];
+   const unsigned w0 = r->wx[k0];
+   while (u < n && r->cx[k0 + u] == c0 + u && r->wx[k0 + u] == w0)
+      u++;
+   int i0 = 0;
+   if (u >= 4) {
+      const uint8_t *a = row0 + 4 * (ptrdiff_t)c0, *b = row1 + 4 * (ptrdiff_t)c0;
+      const unsigned wa = 128 - w0, va = 128 - v;
+      for (int j = 0; j < 4 * u; j++) {
+         unsigned ta = a[j] * wa + a[j + 4] * w0, tb = b[j] * wa + b[j + 4] * w0;
+         out[j] = (uint8_t)((ta * va + tb * v + 8192) >> 14);
+      }
+      i0 = u;
+   }
+   for (int i = i0; i < n; i++) {
       const int c = r->cx[k0 + i];
       const unsigned w = r->wx[k0 + i];
 #if defined(__aarch64__)
@@ -582,6 +600,135 @@ sweet_tap(const struct sweet_fast_rect *r, int t, int k, int ky, float o[4])
 }
 
 /*
+ * The framebuffer kinds that dominate (LUMC, CM4, CM3, ATINTDK, COPYDKN) and
+ * BLUR whose taps step one texel a pixel, a channel at a time over the row
+ * (plain loops the compiler vectorizes), with exactly sweet_fx_row's maths.
+ * False: not one of these (or blur taps that do not step), use sweet_fx_row.
+ */
+static bool
+sweet_fx_row_soa(const struct sweet_fast_rect *r, const uint8_t *d, const uint8_t *s1, int k0, int n, int ky,
+                 const uint8_t *nrow, const int32_t *ncx, uint8_t *out)
+{
+   const int fx = r->fx;
+   if (!(fx == 9 || fx == 10 || fx == 12 || fx == 13 || fx == 14 || fx == 19) || n <= 0 || n > TILE_SIZE)
+      return false;
+   float R[4][TILE_SIZE];
+   if (fx == 19) {
+      for (int t = 0; t < r->ntap; t++) {
+         const int32_t c0 = r->bcx[t][k0];
+         const uint8_t w0 = r->bwx[t][k0];
+         for (int i = 1; i < n; i++) {
+            if (r->bcx[t][k0 + i] != c0 + i || r->bwx[t][k0 + i] != w0)
+               return false;
+         }
+      }
+      for (int ch = 0; ch < 4; ch++) {
+         for (int i = 0; i < n; i++)
+            R[ch][i] = 0.0f;
+      }
+      for (int t = 0; t < r->ntap; t++) {
+         const uint8_t *row0 = r->sbase + (ptrdiff_t)r->bry[t][ky] * r->sstride, *row1 = row0 + r->sstride;
+         const int32_t c0 = r->bcx[t][k0];
+         const float w = r->bwx[t][k0] * (1.0f / 128), v = r->bwy[t][ky] * (1.0f / 128), tw = r->tw[t];
+         for (int ch = 0; ch < 4; ch++) {
+            float *acc = R[ch];
+            if (r->f16) {
+               const uint16_t *h0 = (const uint16_t *)(const void *)(row0 + 8 * (ptrdiff_t)c0) + ch;
+               const uint16_t *h1 = (const uint16_t *)(const void *)(row1 + 8 * (ptrdiff_t)c0) + ch;
+               for (int i = 0; i < n; i++) {
+                  float a = _mesa_half_to_float(h0[4 * i]), b = _mesa_half_to_float(h0[4 * i + 4]);
+                  float e = _mesa_half_to_float(h1[4 * i]), f = _mesa_half_to_float(h1[4 * i + 4]);
+                  float g0 = a + (b - a) * w, g1 = e + (f - e) * w;
+                  float q = g0 + (g1 - g0) * v;
+                  acc[i] = q * tw + acc[i];
+               }
+            } else {
+               const uint8_t *p0 = row0 + 4 * (ptrdiff_t)c0 + r->spos[ch], *p1 = row1 + 4 * (ptrdiff_t)c0 + r->spos[ch];
+               for (int i = 0; i < n; i++) {
+                  float a = p0[4 * i] * (1.0f / 255), b = p0[4 * i + 4] * (1.0f / 255);
+                  float e = p1[4 * i] * (1.0f / 255), f = p1[4 * i + 4] * (1.0f / 255);
+                  float g0 = a + (b - a) * w, g1 = e + (f - e) * w;
+                  float q = g0 + (g1 - g0) * v;
+                  acc[i] = q * tw + acc[i];
+               }
+            }
+         }
+      }
+      if (r->bdiv) {
+         for (int i = 0; i < n; i++) {
+            float m = R[3][i] > 0.001f ? R[3][i] : 0.001f;
+            for (int ch = 0; ch < 4; ch++)
+               R[ch][i] /= m;
+         }
+      }
+   } else {
+      float D[4][TILE_SIZE];
+      for (int ch = 0; ch < 4; ch++) {
+         const uint8_t *p = d + r->dpos[ch];
+         for (int i = 0; i < n; i++)
+            D[ch][i] = p[4 * i] * (1.0f / 255);
+      }
+      if (r->dx) {
+         for (int i = 0; i < n; i++)
+            D[3][i] = 1.0f;
+      }
+      if (fx == 13 || fx == 14) {
+         for (int ch = 0; ch < 3; ch++) {
+            const float m0 = r->fp[ch], m1 = r->fp[4 + ch], m2 = r->fp[8 + ch], m3 = r->fp[12 + ch];
+            for (int i = 0; i < n; i++)
+               R[ch][i] = D[0][i] * m0 + D[1][i] * m1 + D[2][i] * m2 + D[3][i] * m3;
+         }
+         for (int i = 0; i < n; i++)
+            R[3][i] = D[3][i];
+      } else if (fx == 12) {
+         const float f0 = r->fp[0], f1 = r->fp[1], f2 = r->fp[2], f3 = r->fp[3], fa = r->fp[4];
+         for (int i = 0; i < n; i++) {
+            float l = D[0][i] * 0.2125f + D[1][i] * 0.7154f + D[2][i] * 0.0721f;
+            float x = ((f0 * l + f1) * l + f2) * l + f3;
+            x = x < 0.0f ? 0.0f : x > 1.0f ? 1.0f : x;
+            for (int ch = 0; ch < 3; ch++)
+               R[ch][i] = D[ch][i] * (1.0f - fa) + x * fa;
+            R[3][i] = D[3][i];
+         }
+      } else {
+         uint8_t tex[TILE_SIZE * 4] __attribute__((aligned(16)));
+         sweet_tex_row(r, s1, k0, n, ky, tex);
+         float y4v[TILE_SIZE];
+         for (int i = 0; i < n; i++) {
+            float y = D[0][i] * 0.2125f + D[1][i] * 0.7154f + D[2][i] * 0.0721f;
+            y4v[i] = (y * y) * (y * y);
+         }
+         float S[4][TILE_SIZE];
+         for (int ch = 0; ch < 4; ch++) {
+            const float cc = r->col[ch];
+            for (int i = 0; i < n; i++)
+               S[ch][i] = fx == 9 ? cc * (tex[4 * i + 3] * (1.0f / 255)) : tex[4 * i + ch] * (1.0f / 255);
+         }
+         for (int ch = 0; ch < 4; ch++) {
+            for (int i = 0; i < n; i++)
+               R[ch][i] = D[ch][i] * (1.0f - S[3][i] * y4v[i]) + S[ch][i] * y4v[i];
+         }
+      }
+   }
+   if (nrow) {
+      for (int i = 0; i < n; i++) {
+         const uint8_t *nz = nrow + 4 * ncx[i];
+         for (int ch = 0; ch < 3; ch++) {
+            float c = R[ch][i] + ((float)nz[r->npos[ch]] - 127.5f) * r->nk * R[3][i];
+            R[ch][i] = c < 0.0f ? 0.0f : c > R[3][i] ? R[3][i] : c;
+         }
+      }
+   }
+   for (int ch = 0; ch < 4; ch++) {
+      for (int i = 0; i < n; i++) {
+         float c = R[ch][i] > 0.0f ? (R[ch][i] < 1.0f ? R[ch][i] : 1.0f) : 0.0f;
+         out[4 * i + ch] = (uint8_t)(c * 255.0f + 0.5f);
+      }
+   }
+   return true;
+}
+
+/*
  * Framebuffer and multi-tap kinds for one destination row into out (RGBA8),
  * in float like CA's shaders; the 8-bit row then orders and blends. d is
  * the destination row before the draw (read here, written later).
@@ -590,6 +737,8 @@ static void
 sweet_fx_row(const struct sweet_fast_rect *r, const uint8_t *d, const uint8_t *s1, int k0, int n, int ky,
              const uint8_t *nrow, const int32_t *ncx, uint8_t *out)
 {
+   if (!r->fxpx && sweet_fx_row_soa(r, d, s1, k0, n, ky, nrow, ncx, out))
+      return;
    uint8_t tex[TILE_SIZE * 4] __attribute__((aligned(16)));
    const int textured = r->fx == 9 || r->fx == 10 || r->fx == 11 || r->fx == 17 || r->fx == 18 || r->fx == 22 ||
                         r->fx == 23;
@@ -1728,6 +1877,14 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
       r->dx = dx;
       r->fx = fxk;
       r->pk = kd;
+      {
+         static int soa = -1;
+         if (soa < 0) {
+            const char *e = getenv("SGLLPSOA");
+            soa = !(e != NULL && e[0] == '0');
+         }
+         r->fxpx = !soa;
+      }
       for (int ch = 0; ch < 4; ch++)
          r->col[ch] = j->color[ch] * (1.0f / 255);
       if (kd == SWEET_LPF_CMB || kd == SWEET_LPF_VCM)
