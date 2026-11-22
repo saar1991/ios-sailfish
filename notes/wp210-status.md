@@ -1411,3 +1411,9 @@ The changes come from the iOS boot in the trace image, not from our install.
 - Row pass for rescaled 8-bit pictures: sweet_resample_row's own NEON first step (vmull_u8 by the weight pair, halves added), so a row costs what it did before and is reused when it can be.
 - Ramp rows (swap1): one colour a row; clamp / opaque / tint once, then only the dither: a channel at a time, four pixels a step, the per-pixel loop's operations lane by lane (vsub, vmul_n, vmla, vmax, vmin, vcvtn); no dither: one colour copied.
 - Host tests (scalar paths) still identical. Payload 2caef7b5..., dylib 7d5fe54e... (51410992 bytes); `notes/scripts/install-sweetgl-llvmpipe-71db0e0.sh` (OLD = faff098 payload 1973d801...).
+- **71db0e0 (log fc270e2b, video 00:05): 1440 frames** (e4db841 1449, faff098 1366). Picture correct, gradients included (Control Centre, Spotlight). Ramps (f16.copyn) 9.0 → 7.6 ns/px. scaled.copy 8.6 ns/px, still above e4db841's 7.3: the kept rows do not pay for shrunk photos.
+
+### Frame work, step 11 (llvmpipe a557923, run 45075891428)
+
+- Row cache only when the picture is drawn taller than its texture part (scy < 1); shrunk pictures use sweet_resample_row as in e4db841. Ramp rows kept.
+- Payload 0ac8d983..., dylib 0042f01c... (51411008 bytes); `notes/scripts/install-sweetgl-llvmpipe-a557923.sh` (OLD = 71db0e0 payload 2caef7b5...).
