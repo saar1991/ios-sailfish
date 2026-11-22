@@ -3031,6 +3031,8 @@ frame_timeline(uint64_t t0, uint64_t t1)
 {
 	static mach_timebase_info_data_t tb;
 	static uint64_t last_end, last_cpu, win_start;
+	static pthread_t last_thr;
+	static uint32_t ncpu_skip;
 	static uint32_t nb[7], nlong;
 	static double sum[2][5];
 	static uint32_t cnt[2];
@@ -3042,9 +3044,18 @@ frame_timeline(uint64_t t0, uint64_t t1)
 		on = !(e != NULL && e[0] == '0');
 	}
 	const uint64_t cpu = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID);
+	const pthread_t thr = pthread_self();
+	/* the thread's CPU time only means something when the last frame was flushed from the same thread */
+	const int same = pthread_equal(thr, last_thr) && cpu >= last_cpu;
 	if (on && last_end != 0) {
 		const double wall = (double)(t1 - last_end) * tb.numer / tb.denom / 1e6;
-		const double c = (double)(cpu - last_cpu) / 1e6;
+		double c = same ? (double)(cpu - last_cpu) / 1e6 : 0.0;
+		if (!same) {
+			ncpu_skip++;
+		}
+		if (c > wall) {
+			c = wall;
+		}
 		const double dr = (double)fs.draw_abs * tb.numer / tb.denom / 1e6;
 		const double fin = (double)(t1 - t0) * tb.numer / tb.denom / 1e6;
 		double off = wall - c - fin;
@@ -3084,7 +3095,7 @@ frame_timeline(uint64_t t0, uint64_t t1)
 			}
 		}
 	}
-	last_end = t1, last_cpu = cpu;
+	last_end = t1, last_cpu = cpu, last_thr = thr;
 	if (win_start == 0) {
 		win_start = t1;
 	}
@@ -3097,14 +3108,14 @@ frame_timeline(uint64_t t0, uint64_t t1)
 				    sum[g][1] / n, sum[g][2] / n, sum[g][3] / n, sum[g][4] / n);
 			}
 			sweet_drm_log("sweetgl: frames %llu: %u under 100 ms (<18 %u <20 %u <34 %u <37 %u <50 %u <100 %u), %u longer; "
-			    "avg ms wall/cpu/draws/finish/off: fast (<20) %s; slow (20-100) %s",
+			    "avg ms wall/cpu/draws/finish/off: fast (<20) %s; slow (20-100) %s; %u frames from another thread (cpu 0)",
 			    (unsigned long long)(t1 * tb.numer / tb.denom / 1000000), cnt[0] + cnt[1], nb[0], nb[1], nb[2], nb[3],
-			    nb[4], nb[5], nlong, avg[0], avg[1]);
+			    nb[4], nb[5], nlong, avg[0], avg[1], ncpu_skip);
 		}
 		memset(nb, 0, sizeof(nb));
 		memset(sum, 0, sizeof(sum));
 		memset(cnt, 0, sizeof(cnt));
-		nlong = 0;
+		nlong = 0, ncpu_skip = 0;
 		win_start = t1;
 	}
 }

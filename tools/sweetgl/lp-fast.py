@@ -103,6 +103,7 @@ struct sweet_fast_rect {
    float cmv[20];
    /* TRI: one triangle over x0..y1 (its box, clipped), sampled per pixel (lp-fast.py TRI) */
    int tri, tkind;
+   int pk;                    /* the draw's SWEET_LPF_ kind (the profile's routes) */
    int64_t ea[3], eb[3], ec[3];  /* pixel (X, Y) covered when ea * X + eb * Y + ec >= 0 for all three (1/256 units) */
    float pl[4][3];            /* u, v, u2, v2 at pixel centre (x0, y0), per pixel along x, along y */
    struct sweet_tsrc {
@@ -928,11 +929,12 @@ sweet_tri_row(const struct sweet_fast_rect *r, const uint8_t *drow, int xs, int 
    }
 }
 
-/* the triangle's pixels in this tile */
-static void
+/* the triangle's pixels in this tile; returns how many */
+static uint64_t
 sweet_tri_tile(const struct sweet_fast_rect *r, uint8_t *d, unsigned stride, int x0, int y0, int x1, int y1)
 {
    uint8_t tmp[TILE_SIZE * 4] __attribute__((aligned(16)));
+   uint64_t npx = 0;
    for (int y = y0; y < y1; y++, d += stride) {
       const int64_t Py = (int64_t)y * 256 + 128;
       int xs = -1, xe = -1;
@@ -953,7 +955,9 @@ sweet_tri_tile(const struct sweet_fast_rect *r, uint8_t *d, unsigned stride, int
       uint8_t *dr = d + (size_t)(xs - x0) * 4;
       sweet_tri_row(r, dr, xs, xe, y, tmp);
       sweet_fast_row(r, dr, tmp, xe - xs, NULL, NULL, 1);
+      npx += (uint64_t)(xe - xs);
    }
+   return npx;
 }
 
 static void
@@ -971,9 +975,12 @@ lp_rast_sweet_fast(struct lp_rasterizer_task *task,
    const unsigned stride = scene->cbufs[0].stride;
    uint8_t *d = scene->cbufs[0].map + (size_t)y0 * stride + (size_t)x0 * 4;
    if (r->tri) {
-      sweet_tri_tile(r, d, stride, x0, y0, x1, y1);
+      sweet_fk_px = sweet_tri_tile(r, d, stride, x0, y0, x1, y1);
+      sweet_fk_key = 5 * 32 + (r->tkind & 31);
       return;
    }
+   sweet_fk_px = (uint64_t)(x1 - x0) * (uint64_t)(y1 - y0);
+   sweet_fk_key = (r->fx ? 4 * 32 + (r->fx & 31) : (r->a8 ? 3 : r->f16 || r->swap1 ? 2 : r->scaled ? 1 : 0) * 32 + (r->pk & 31));
    const int32_t *ncx = r->noise ? r->ncx + (x0 - r->x0) : NULL;
 #define SWEET_NROW(y) (r->noise ? r->nbase + (ptrdiff_t)r->nry[(y) - r->y0] * r->nstride : NULL)
    if (r->fx) {
@@ -1462,6 +1469,7 @@ sweet_lp_tri_draw(struct llvmpipe_context *lp)
       }
       r->tri = 1;
       r->tkind = kd;
+      r->pk = kd;
       r->blend = p->blend;
       r->dx = dx;
       r->tclamp = p->tclamp;
@@ -1719,6 +1727,7 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
       r->blend = p->blend;
       r->dx = dx;
       r->fx = fxk;
+      r->pk = kd;
       for (int ch = 0; ch < 4; ch++)
          r->col[ch] = j->color[ch] * (1.0f / 255);
       if (kd == SWEET_LPF_CMB || kd == SWEET_LPF_VCM)

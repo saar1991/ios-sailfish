@@ -61,11 +61,17 @@ struct swp_var {
    unsigned sh, no, instrs, samplers, blend, src, dst, fmt, flags, skind;
    uint64_t sdraws, squal;   /* copied from the shader while the variant is in use */
 };
+/* fast-path commands by route (lp-fast.py: 0 rgba 1:1, 1 rgba scaled, 2 half-float, 3 A8/L8A8, 4 float fx,
+ * 5 triangles) * 32 + kind; set by lp_rast_sweet_fast for the profile below */
+#define SWEET_FK_N 192
 struct swp_thr {
    uint64_t busy, wait, scenes, bins, tile, blit, vdrop, scene_busy;
    uint64_t op_ticks[LP_RAST_OP_MAX], op_n[LP_RAST_OP_MAX];
+   uint64_t fk_ticks[SWEET_FK_N], fk_px[SWEET_FK_N];
    struct swp_var var[SWP_V];
 };
+static __thread unsigned sweet_fk_key = SWEET_FK_N;
+static __thread uint64_t sweet_fk_px;
 static struct swp_thr swp_thr[SWP_T];
 #define SWP_S 24
 static struct { unsigned w, h; uint64_t n, wall, busy; } swp_size[SWP_S];
@@ -148,6 +154,11 @@ RAST_EDITS = [
             swt0 = swt1;
             swt->op_ticks[op] += d;
             swt->op_n[op]++;
+            if (sweet_fk_key < SWEET_FK_N) {
+               swt->fk_ticks[sweet_fk_key] += d;
+               swt->fk_px[sweet_fk_key] += sweet_fk_px;
+               sweet_fk_key = SWEET_FK_N;
+            }
             if (op == LP_RAST_OP_SET_STATE)
                swst = task->state;
             else
@@ -282,6 +293,7 @@ sweet_lp_report(void (*lg)(const char *, ...))
    double ms = (double)tb.numer / tb.denom / 1e6;
    uint64_t busy = 0, wait = 0, bins = 0, tile = 0, blit = 0, vdrop = 0;
    uint64_t op_t[LP_RAST_OP_MAX] = {0}, op_n[LP_RAST_OP_MAX] = {0};
+   uint64_t fk_t[SWEET_FK_N] = {0}, fk_p[SWEET_FK_N] = {0};
    unsigned nall = 0;
    char busyl[160];
    int bo = snprintf(busyl, sizeof(busyl), "by thread");
@@ -299,6 +311,10 @@ sweet_lp_report(void (*lg)(const char *, ...))
       for (unsigned o = 0; o < LP_RAST_OP_MAX; o++) {
          op_t[o] += c->op_ticks[o] - p->op_ticks[o];
          op_n[o] += c->op_n[o] - p->op_n[o];
+      }
+      for (unsigned o = 0; o < SWEET_FK_N; o++) {
+         fk_t[o] += c->fk_ticks[o] - p->fk_ticks[o];
+         fk_p[o] += c->fk_px[o] - p->fk_px[o];
       }
       for (unsigned v = 0; v < SWP_V; v++) {
          struct swp_var e = c->var[v];
@@ -385,12 +401,38 @@ sweet_lp_report(void (*lg)(const char *, ...))
       }
       lg("%s", l);
    }
-   /* shader variants */
-   qsort(all, nall, sizeof(all[0]), swp_cmp_var);
    static const char *const fpk[] = {
       "?", "fill", "copy", "tint", "atint", "opaque", "alpha", "copyn", "tintn", "atintdk", "copydkn",
       "mask", "lumc", "cm4", "cm3", "super", "circle", "masksup", "mixbd", "blur", "cfb", "cmb", "vcm", "omask", "otint",
    };
+   /* fast-path commands by route and kind, costliest first: ms / Mpx / ns a pixel (thread time) */
+   {
+      static const char *const route[6] = {"rgba", "scaled", "f16", "a8", "fx", "tri"};
+      char l[480];
+      uint64_t tt = 0, tp = 0;
+      for (unsigned i = 0; i < SWEET_FK_N; i++)
+         tt += fk_t[i], tp += fk_p[i];
+      int o = snprintf(l, sizeof(l), "sweetgl: lp fast by route (ms/Mpx/ns a px): all %.0f/%.1f", tt * ms, tp / 1e6);
+      bool used[SWEET_FK_N] = {0};
+      for (int r = 0; r < 14 && o < (int)sizeof(l) - 48; r++) {
+         int best = -1;
+         for (unsigned i = 0; i < SWEET_FK_N; i++) {
+            if (!used[i] && fk_t[i] && (best < 0 || fk_t[i] > fk_t[best]))
+               best = (int)i;
+         }
+         if (best < 0)
+            break;
+         used[best] = true;
+         const unsigned k = (unsigned)best & 31;
+         o += snprintf(l + o, sizeof(l) - o, " %s.%s %.0f/%.1f/%.1f", route[best / 32],
+                       k < sizeof(fpk) / sizeof(fpk[0]) ? fpk[k] : "?", fk_t[best] * ms, fk_p[best] / 1e6,
+                       fk_p[best] ? fk_t[best] * ms * 1e6 / fk_p[best] : 0.0);
+      }
+      if (tt)
+         lg("%s", l);
+   }
+   /* shader variants */
+   qsort(all, nall, sizeof(all[0]), swp_cmp_var);
    for (unsigned j = 0; j < nall && j < 14; j++) {
       struct swp_var *e = &all[j];
       if (e->key == NULL) {
