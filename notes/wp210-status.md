@@ -1380,3 +1380,10 @@ The changes come from the iOS boot in the trace image, not from our install.
   So since 8b4cdd0 work moved from JIT to the fast path at about the same cost; the fast path itself is now ~92% of rasterizer time (~1 Gpx of rectangles per busy 10 s, ~8 ns a pixel a thread).
 - **Frame timeline:** swipes run at 16-18 ms a frame (render-thread CPU ~8 ms + finish ~8-10 ms: at the vsync limit). Control Centre and Spotlight opening: 50-70 ms a frame, finish (rasterizing the frame) 30-50 ms, CPU ~15 ms: rasterizer-bound. Idle/settled screens: 33 or 100 ms pacing with ~2 ms work. The thread-CPU column is wrong now and then (huge values): frames flushed from another thread; fix next build.
 - Next: profile fast-path time by path/kind (8-bit row, float fx row, f16, triangles; per kind), then speed up the hottest (the float rows are scalar).
+
+### Frame work, step 7: fast-path profile by route (llvmpipe e6fa8ba, run 45067473273)
+
+- Measurement build. `sweetgl: lp fast by route (ms/Mpx/ns a px): all T/P route.kind ms/Mpx/ns ...` every 10 s, costliest 14: routes rgba (8-bit 1:1), scaled (8-bit bilinear), f16 (half-float / ramps), a8 (A8 / L8A8), fx (float row from the framebuffer / taps), tri (triangles); time is rasterizer-thread time per command, pixels are the tile-clipped area (triangles: pixels drawn).
+- Timeline: CPU column only when the previous frame was flushed from the same thread (else 0, counted as "frames from another thread").
+- No NEON emulator in the sandbox, so speed-ups for the scalar float rows wait for this data and get host-tested scalar references first.
+- Payload 90c12d66..., dylib daeabb47... (51377568 bytes); `notes/scripts/install-sweetgl-llvmpipe-e6fa8ba.sh` (OLD = a3ba805 payload 9e3a37d5...).
