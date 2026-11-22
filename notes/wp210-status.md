@@ -1397,3 +1397,10 @@ The changes come from the iOS boot in the trace image, not from our install.
 - Payload dc593fff..., dylib 3fc3853e... (51394368 bytes); `notes/scripts/install-sweetgl-llvmpipe-e4db841.sh` (OLD = e6fa8ba payload 90c12d66...).
 - **e4db841 second boot (log 3f7380ee, video 23:22): 1449 frames**, best yet (e6fa8ba 1399, a3ba805 1426). Picture correct (Control Centre / Spotlight blur, icons, keypad). Fast-path time 49.4 → 47.8 s, threads busy 54.1 → 52.4 s. Per pixel: blur 108 → 77 ns, lumc 18.7 → 10.6, atintdk 20.5 → 15.5, copydkn 30.7 → 26.1, cm3 15.6 → 10.5. **scaled.copy unchanged at 7.3 ns/px (1.58 Gpx, now 24%)**: these are real rescales, not 1:1 at an offset, so the new run path is not taken. Control Centre opening: wall 35.9 / 37.0 / 38.9 → 27.8 / 41.4 / 33.1 ms a frame; Spotlight 42.6 / 40.8 / 42.5 → 37.0 / 32.1 / 38.0.
 - Next: scaled copies (24%) and half-float dithered copies (12%): log a sample of their scales and sizes, and resample in two passes (rows blended over the source span in a vector loop, then the columns).
+
+### Frame work, step 9: row cache for rescaled pictures (llvmpipe faff098, run 45072141582)
+
+- Rescaled 8-bit copies (24%) and half-float dithered copies (12%): each source row is resampled along x once per tile (this tile's column pairs and weights) and kept, three rows a tile; a destination row is the vertical blend of two kept rows (8-bit: a vector loop). Upscales reuse a row for several destination rows; downscales never do more than before.
+- Logs the first 40 rescaled rectangles, then 1 in 3000: `sweetgl: lp scaled #N: kind blend fmt tex WxH -> wxh px (rect) scale sx,sy linear/nearest [ramp] [noise]`.
+- Host test: 4,644,864 bytes against sweet_resample_row / sweet_f16_row (scales 0.25-1.6, offsets, noise, tint, opaque): identical. SGLLPSOA=0: as before.
+- Payload 1973d801..., dylib 36cd54cc... (51410992 bytes); `notes/scripts/install-sweetgl-llvmpipe-faff098.sh` (OLD = e4db841 payload dc593fff...).
