@@ -368,6 +368,49 @@ sweet_f16_row(const struct sweet_fast_rect *r, const uint8_t *s1, int k0, int n,
    const float32x4_t zero = vdupq_n_f32(0.0f), one = vdupq_n_f32(1.0f), c255 = vdupq_n_f32(255.0f);
    const float32x4_t rowv = vld1q_f32(rowc);
    const float nk = r->nk * 255.0f / 255.0f;   /* nscale / 255: (nz - 127.5) * nk = (nz / 255 - .5) * nscale */
+   if (r->swap1 && n > 0) {
+      /* a ramp row is one colour: clamp, opaque and tint once (the loop's own steps), then per pixel only
+       * the dither, a channel at a time, four pixels a step, with the loop's own operations lane by lane */
+      float32x4_t tv = vminnmq_f32(vmaxnmq_f32(rowv, zero), one);
+      if (r->opaque)
+         tv = vsetq_lane_f32(1.0f, tv, 3);
+      if (tint) {
+         if (tint == 2)
+            tv = vdupq_laneq_f32(tv, 3);
+         tv = vmulq_f32(tv, vld1q_f32(r->tcolf));
+      }
+      const uint32x4_t q0 = vcvtnq_u32_f32(vmulq_f32(tv, c255));
+      if (!nrow) {
+         const uint8_t px[4] = {(uint8_t)vgetq_lane_u32(q0, 0), (uint8_t)vgetq_lane_u32(q0, 1),
+                                (uint8_t)vgetq_lane_u32(q0, 2), (uint8_t)vgetq_lane_u32(q0, 3)};
+         for (int i = 0; i < n; i++)
+            memcpy(out + 4 * i, px, 4);
+         return;
+      }
+      const float32x4_t al = vdupq_laneq_f32(tv, 3), half = vdupq_n_f32(127.5f);
+      const uint8_t qa = (uint8_t)vgetq_lane_u32(q0, 3);   /* alpha: + 0 * a, clamped to itself */
+      float tvc[4];
+      vst1q_f32(tvc, tv);
+      for (int ch = 0; ch < 3; ch++) {
+         const float32x4_t base = vdupq_n_f32(tvc[ch]);
+         const int np = r->npos[ch];
+         for (int i = 0; i < n; i += 4) {
+            float nzs[4];
+            for (int k = 0; k < 4; k++)
+               nzs[k] = i + k < n ? (float)nrow[4 * ncx[i + k] + np] : 127.5f;
+            float32x4_t nf = vmulq_n_f32(vsubq_f32(vld1q_f32(nzs), half), nk);
+            float32x4_t c = vmlaq_f32(base, nf, al);
+            c = vminq_f32(vmaxq_f32(c, zero), al);
+            uint32_t q[4];
+            vst1q_u32(q, vcvtnq_u32_f32(vmulq_f32(c, c255)));
+            for (int k = 0; k < 4 && i + k < n; k++)
+               out[4 * (i + k) + ch] = (uint8_t)q[k];
+         }
+      }
+      for (int i = 0; i < n; i++)
+         out[4 * i + 3] = qa;
+      return;
+   }
    for (int i = 0; i < n; i++) {
       float32x4_t tv;
       if (r->swap1) {
@@ -1210,12 +1253,21 @@ sweet_hrow8(const struct sweet_fast_rect *r, struct sweet_hcache *c, int32_t row
    uint16_t *h = c->h8[s];
    for (int i = 0; i < n; i++) {
       const int cc = r->cx[k0 + i];
-      const unsigned w = r->wx[k0 + i], wa = 128 - w;
+      const unsigned w = r->wx[k0 + i];
       const uint8_t *t = src + 4 * cc;
+#if defined(__aarch64__)
+      /* sweet_resample_row's own first step */
+      uint8x8_t a = vld1_u8(t);
+      uint8x8_t wv = vext_u8(vdup_n_u8((uint8_t)(128 - w)), vdup_n_u8((uint8_t)w), 4);
+      uint16x8_t ha = vmull_u8(a, wv);
+      vst1_u16(h + 4 * i, vadd_u16(vget_low_u16(ha), vget_high_u16(ha)));
+#else
+      const unsigned wa = 128 - w;
       h[4 * i] = (uint16_t)(t[0] * wa + t[4] * w);
       h[4 * i + 1] = (uint16_t)(t[1] * wa + t[5] * w);
       h[4 * i + 2] = (uint16_t)(t[2] * wa + t[6] * w);
       h[4 * i + 3] = (uint16_t)(t[3] * wa + t[7] * w);
+#endif
    }
    return h;
 }
