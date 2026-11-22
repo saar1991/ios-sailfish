@@ -1404,3 +1404,10 @@ The changes come from the iOS boot in the trace image, not from our install.
 - Logs the first 40 rescaled rectangles, then 1 in 3000: `sweetgl: lp scaled #N: kind blend fmt tex WxH -> wxh px (rect) scale sx,sy linear/nearest [ramp] [noise]`.
 - Host test: 4,644,864 bytes against sweet_resample_row / sweet_f16_row (scales 0.25-1.6, offsets, noise, tint, opaque): identical. SGLLPSOA=0: as before.
 - Payload 1973d801..., dylib 36cd54cc... (51410992 bytes); `notes/scripts/install-sweetgl-llvmpipe-faff098.sh` (OLD = e4db841 payload dc593fff...).
+- **faff098 (log f55a03e2, video 23:45): 1366 frames, worse** (e4db841 1449). scaled.copy 7.3 → 9.6 ns/px. The sample log: the big rescaled pictures are photos / wallpaper drawn smaller (1326x1160 → 750x602, 1271x1823 → 750x1121, 1326x1326 → 750x907, scale 1.21-1.46) or a little larger (650x683 → 719x712, 0.78); a kept row is rarely reused when shrinking, and the row pass was plain code, slower than the NEON pixel it replaced. The half-float dithered copies are gradient ramps (256x1, format 56, stretched over 750x1334 / 750x200 / 296x296), not rescales.
+
+### Frame work, step 10 (llvmpipe 71db0e0, run 45074097314)
+
+- Row pass for rescaled 8-bit pictures: sweet_resample_row's own NEON first step (vmull_u8 by the weight pair, halves added), so a row costs what it did before and is reused when it can be.
+- Ramp rows (swap1): one colour a row; clamp / opaque / tint once, then only the dither: a channel at a time, four pixels a step, the per-pixel loop's operations lane by lane (vsub, vmul_n, vmla, vmax, vmin, vcvtn); no dither: one colour copied.
+- Host tests (scalar paths) still identical. Payload 2caef7b5..., dylib 7d5fe54e... (51410992 bytes); `notes/scripts/install-sweetgl-llvmpipe-71db0e0.sh` (OLD = faff098 payload 1973d801...).
