@@ -1366,3 +1366,17 @@ The changes come from the iOS boot in the trace image, not from our install.
 - Host tests: the 18-triangle masksup mesh from the log covers its 306x306 box with no gaps or overlaps; a rotated quad and an 8-triangle fan cover their exact area once; SUPER as triangles matches the rectangle path; rotated/scaled TINT matches a GL bilinear reference.
 - **Per-frame timeline (eagl.c `frame_timeline`, SGLTIMELINE=0 off):** a frame = one glFlush end to the next. Every 10 s `sweetgl: frames T: N under 100 ms (<18 a <20 b <34 c <37 d <50 e <100 f), M longer; avg ms wall/cpu/draws/finish/off: fast (<20) ...; slow (20-100) ...`, plus `sweetgl: tl T: wall/cpu/draws/finish` per frame in 0.1 ms, 8 a line, at most 500 lines. off = wall - thread CPU - finish (off-CPU outside the finish: vsync, swap, locks).
 - Payload 9e3a37d5..., dylib 05d11475... (51377392 bytes); `notes/scripts/install-sweetgl-llvmpipe-a3ba805.sh` (OLD = 78d67c3 payload c1730cd5...). `lp fast:` report now adds `as triangles N draws (M of them mipmapped / turned rectangles), K triangles`.
+- **a3ba805 second boot (log 99a39b42, video 22:31): 1426 frames**, the best yet (78d67c3 1371, 8b4cdd0 1400). Picture correct: icons and their corners, clock hands, widgets, Control Centre, Spotlight, App Library, keypad. `lp fast:` 650-2260 draws as triangles per 10 s (about half of them mipmapped / turned rectangles), no refusals left.
+- **Correction:** the "rasterizer time" I quoted for 8b4cdd0..78d67c3 (42 → 15.7 → 11.8 s) was the `lp var` profile, which counts only llvmpipe's JIT shading and not the fast-path commands. The real totals (`lp commands` fast + JIT, `lp N scenes ... busy`):
+
+  | build | JIT var | fast cmds | threads busy | frames |
+  |---|---|---|---|---|
+  | d90336c | 42.3 s | 16.2 s | 66.9 s | 1231 |
+  | 8b4cdd0 | 15.7 s | 41.5 s | 57.5 s | 1400 |
+  | 710f034 | 15.9 s | 42.5 s | 58.2 s | 1368 |
+  | 78d67c3 | 11.8 s | 43.6 s | 55.0 s | 1371 |
+  | a3ba805 | 3.2 s | 51.2 s | 55.8 s | 1426 |
+
+  So since 8b4cdd0 work moved from JIT to the fast path at about the same cost; the fast path itself is now ~92% of rasterizer time (~1 Gpx of rectangles per busy 10 s, ~8 ns a pixel a thread).
+- **Frame timeline:** swipes run at 16-18 ms a frame (render-thread CPU ~8 ms + finish ~8-10 ms: at the vsync limit). Control Centre and Spotlight opening: 50-70 ms a frame, finish (rasterizing the frame) 30-50 ms, CPU ~15 ms: rasterizer-bound. Idle/settled screens: 33 or 100 ms pacing with ~2 ms work. The thread-CPU column is wrong now and then (huge values): frames flushed from another thread; fix next build.
+- Next: profile fast-path time by path/kind (8-bit row, float fx row, f16, triangles; per kind), then speed up the hottest (the float rows are scalar).
