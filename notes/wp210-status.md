@@ -1387,3 +1387,11 @@ The changes come from the iOS boot in the trace image, not from our install.
 - Timeline: CPU column only when the previous frame was flushed from the same thread (else 0, counted as "frames from another thread").
 - No NEON emulator in the sandbox, so speed-ups for the scalar float rows wait for this data and get host-tested scalar references first.
 - Payload 90c12d66..., dylib daeabb47... (51377568 bytes); `notes/scripts/install-sweetgl-llvmpipe-e6fa8ba.sh` (OLD = a3ba805 payload 9e3a37d5...).
+- **e6fa8ba (log 574c6ae2): 1399 frames.** Fast-path time by route, whole run (~49 s, top): scaled.copy 22% (7.3 ns/px), fx.blur 14% (90-190 ns/px), f16.copyn 11% (8.9), fx.lumc 6% (18.7), fx.atintdk 5% (20.5), fx.copydkn 4% (30.7), tri.masksup 4% (97), scaled.opaque 4% (9.2), scaled.copyn 2%, tri.mask 1% (150), rgba.fill 1% (0.7), rgba.copy 1% (2.9).
+
+### Frame work, step 8: row-wise loops (llvmpipe e4db841, run 45069830462)
+
+- Scaled 8-bit copies: the run of columns stepping one texel a pixel with one weight (1:1 at a fractional offset) resampled byte by byte; the rest as before.
+- `sweet_fx_row_soa`: blur (when every tap steps one texel a pixel), LUMC, CM4, CM3, ATINTDK, COPYDKN a channel at a time over the row (load D de-interleaved, per-kind loops, noise, pack). Same expressions as the pixel code.
+- Host test: 475,588 output bytes against the pixel-by-pixel code (8-bit and half-float blur, noise on/off, random taps, uniform and not): identical; resample run identical to the scalar formula. arm64 assembly: fmla.4s / ucvtf.4s / tbl / umlal vector loops. SGLLPSOA=0 restores the pixel rows.
+- Payload dc593fff..., dylib 3fc3853e... (51394368 bytes); `notes/scripts/install-sweetgl-llvmpipe-e4db841.sh` (OLD = e6fa8ba payload 90c12d66...).
