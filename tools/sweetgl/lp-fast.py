@@ -2251,6 +2251,9 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
             r->scaled = 1;
             r->sbase = sbase;
             r->sstride = (ptrdiff_t)sstride;
+            /* the row cache pays only when rows are reused: drawn taller than the texture part */
+            if (!(scy < 1.0 - 1e-6))
+               r->hnocache = 1;
             sweet_lpf_stat[SLPF_SCALED]++;
             {
                /* what the rescaled pictures are: the first 40, then one in 3000 */
