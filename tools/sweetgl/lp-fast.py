@@ -105,6 +105,7 @@ struct sweet_fast_rect {
    int tri, tkind;
    int pk;                    /* the draw's SWEET_LPF_ kind (the profile's routes) */
    int fxpx;                  /* 1: sweet_fx_row pixel by pixel only (tests; SGLLPSOA=0) */
+   int hnocache;              /* 1: rescaled rows without the row cache (tests; SGLLPSOA=0) */
    int64_t ea[3], eb[3], ec[3];  /* pixel (X, Y) covered when ea * X + eb * Y + ec >= 0 for all three (1/256 units) */
    float pl[4][3];            /* u, v, u2, v2 at pixel centre (x0, y0), per pixel along x, along y */
    struct sweet_tsrc {
@@ -435,6 +436,67 @@ sweet_f16_row(const struct sweet_fast_rect *r, const uint8_t *s1, int k0, int n,
       }
       if (nrow) {
          /* CA's dither in float, like the shader */
+         const uint8_t *nz = nrow + 4 * ncx[i];
+         for (int ch = 0; ch < 3; ch++) {
+            float c = t[ch] + ((float)nz[r->npos[ch]] - 127.5f) * r->nk * t[3];
+            t[ch] = c < 0.0f ? 0.0f : c > t[3] ? t[3] : c;
+         }
+      }
+      for (int ch = 0; ch < 4; ch++)
+         out[4 * i + ch] = (uint8_t)(t[ch] * 255.0f + 0.5f);
+   }
+#endif
+}
+
+/* sweet_f16_row for a rescaled half-float source whose rows were resampled along x already (h0, h1) */
+static void
+sweet_f16_rowh(const struct sweet_fast_rect *r, const float *h0, const float *h1, int n, int ky, const uint8_t *nrow,
+               const int32_t *ncx, uint8_t *out)
+{
+   const int tint = r->tint;
+   const float v = r->wy[ky] * (1.0f / 128);
+#if defined(__aarch64__)
+   const float32x4_t zero = vdupq_n_f32(0.0f), one = vdupq_n_f32(1.0f), c255 = vdupq_n_f32(255.0f);
+   const float nk = r->nk * 255.0f / 255.0f;
+   for (int i = 0; i < n; i++) {
+      float32x4_t a = vld1q_f32(h0 + 4 * i), b = vld1q_f32(h1 + 4 * i);
+      float32x4_t tv = vmlaq_n_f32(a, vsubq_f32(b, a), v);
+      tv = vminnmq_f32(vmaxnmq_f32(tv, zero), one);     /* NaN -> 0 */
+      if (r->opaque)
+         tv = vsetq_lane_f32(1.0f, tv, 3);
+      if (tint) {
+         if (tint == 2)
+            tv = vdupq_laneq_f32(tv, 3);
+         tv = vmulq_f32(tv, vld1q_f32(r->tcolf));
+      }
+      if (nrow) {
+         const uint8_t *nz = nrow + 4 * ncx[i];
+         const float nzv[4] = {nz[r->npos[0]], nz[r->npos[1]], nz[r->npos[2]], 127.5f};
+         float32x4_t al = vdupq_laneq_f32(tv, 3);
+         float32x4_t nf = vmulq_n_f32(vsubq_f32(vld1q_f32(nzv), vdupq_n_f32(127.5f)), nk);
+         float32x4_t c = vmlaq_f32(tv, nf, al);
+         tv = vminq_f32(vmaxq_f32(c, zero), al);
+      }
+      uint32x4_t q = vcvtnq_u32_f32(vmulq_f32(tv, c255));
+      uint16x4_t q16 = vmovn_u32(q);
+      uint8x8_t q8 = vmovn_u16(vcombine_u16(q16, q16));
+      vst1_lane_u32((uint32_t *)(void *)(out + 4 * i), vreinterpret_u32_u8(q8), 0);
+   }
+#else
+   for (int i = 0; i < n; i++) {
+      float t[4];
+      for (int ch = 0; ch < 4; ch++)
+         t[ch] = h0[4 * i + ch] + (h1[4 * i + ch] - h0[4 * i + ch]) * v;
+      for (int ch = 0; ch < 4; ch++)
+         t[ch] = t[ch] > 0.0f ? (t[ch] < 1.0f ? t[ch] : 1.0f) : 0.0f;
+      if (r->opaque)
+         t[3] = 1.0f;
+      if (tint) {
+         float a = t[3];
+         for (int ch = 0; ch < 4; ch++)
+            t[ch] = (tint == 2 ? a : t[ch]) * r->tcolf[ch];
+      }
+      if (nrow) {
          const uint8_t *nz = nrow + 4 * ncx[i];
          for (int ch = 0; ch < 3; ch++) {
             float c = t[ch] + ((float)nz[r->npos[ch]] - 127.5f) * r->nk * t[3];
@@ -1109,6 +1171,81 @@ sweet_tri_tile(const struct sweet_fast_rect *r, uint8_t *d, unsigned stride, int
    return npx;
 }
 
+/*
+ * Rescaled pictures: each source row is resampled along x once per tile
+ * (the column pairs and weights of this tile's columns), kept, and reused
+ * by every destination row that blends it; then the two rows' blend, a
+ * plain vector loop. Same integer / float sums as sweet_resample_row and
+ * sweet_f16_row. Three rows kept: a destination row needs two.
+ */
+struct sweet_hcache {
+   int32_t row[3];
+   uint16_t h8[3][TILE_SIZE * 4] __attribute__((aligned(16)));
+   float hf[3][TILE_SIZE * 4] __attribute__((aligned(16)));
+};
+
+static int
+sweet_hslot(struct sweet_hcache *c, int32_t row, int32_t keep)
+{
+   for (int s = 0; s < 3; s++) {
+      if (c->row[s] == row)
+         return -1 - s;          /* there */
+   }
+   for (int s = 0; s < 3; s++) {
+      if (c->row[s] != keep) {
+         c->row[s] = row;
+         return s;              /* fill this one */
+      }
+   }
+   return 0;
+}
+
+static const uint16_t *
+sweet_hrow8(const struct sweet_fast_rect *r, struct sweet_hcache *c, int32_t row, int32_t keep, int k0, int n)
+{
+   int s = sweet_hslot(c, row, keep);
+   if (s < 0)
+      return c->h8[-1 - s];
+   const uint8_t *src = r->sbase + (ptrdiff_t)row * r->sstride;
+   uint16_t *h = c->h8[s];
+   for (int i = 0; i < n; i++) {
+      const int cc = r->cx[k0 + i];
+      const unsigned w = r->wx[k0 + i], wa = 128 - w;
+      const uint8_t *t = src + 4 * cc;
+      h[4 * i] = (uint16_t)(t[0] * wa + t[4] * w);
+      h[4 * i + 1] = (uint16_t)(t[1] * wa + t[5] * w);
+      h[4 * i + 2] = (uint16_t)(t[2] * wa + t[6] * w);
+      h[4 * i + 3] = (uint16_t)(t[3] * wa + t[7] * w);
+   }
+   return h;
+}
+
+static const float *
+sweet_hrowf(const struct sweet_fast_rect *r, struct sweet_hcache *c, int32_t row, int32_t keep, int k0, int n)
+{
+   int s = sweet_hslot(c, row, keep);
+   if (s < 0)
+      return c->hf[-1 - s];
+   const uint8_t *src = r->sbase + (ptrdiff_t)row * r->sstride;
+   float *h = c->hf[s];
+   for (int i = 0; i < n; i++) {
+      const int cc = r->cx[k0 + i];
+      const float w = r->wx[k0 + i] * (1.0f / 128);
+#if defined(__aarch64__)
+      uint16x8_t a = vld1q_u16((const uint16_t *)(const void *)(src + 8 * cc));
+      float32x4_t a0 = vcvt_f32_f16(vreinterpret_f16_u16(vget_low_u16(a)));
+      float32x4_t a1 = vcvt_f32_f16(vreinterpret_f16_u16(vget_high_u16(a)));
+      vst1q_f32(h + 4 * i, vmlaq_n_f32(a0, vsubq_f32(a1, a0), w));
+#else
+      float a0[4], a1[4];
+      sweet_texel_f(r, src, cc, a0), sweet_texel_f(r, src, cc + 1, a1);
+      for (int ch = 0; ch < 4; ch++)
+         h[4 * i + ch] = a0[ch] + (a1[ch] - a0[ch]) * w;
+#endif
+   }
+   return h;
+}
+
 static void
 lp_rast_sweet_fast(struct lp_rasterizer_task *task,
                    const union lp_rast_cmd_arg arg)
@@ -1163,7 +1300,18 @@ lp_rast_sweet_fast(struct lp_rasterizer_task *task,
       /* filtered, dithered and quantized here; the 8-bit row then orders and blends */
       uint8_t tmp[TILE_SIZE * 4] __attribute__((aligned(16)));
       const uint8_t *s1 = r->src ? r->src + (ptrdiff_t)(y0 - r->y0) * r->src_dy + (ptrdiff_t)(x0 - r->x0) * 8 : NULL;
+      struct sweet_hcache *hc = NULL, hcs;
+      if (r->scaled && r->f16 && !r->swap1 && !r->hnocache) {
+         hc = &hcs;
+         hc->row[0] = hc->row[1] = hc->row[2] = -1;
+      }
       for (int y = y0; y < y1; y++) {
+         if (hc) {
+            const int32_t a = r->ry[y - r->y0];
+            const float *h0 = sweet_hrowf(r, hc, a, a + 1, x0 - r->x0, x1 - x0);
+            const float *h1 = sweet_hrowf(r, hc, a + 1, a, x0 - r->x0, x1 - x0);
+            sweet_f16_rowh(r, h0, h1, x1 - x0, y - r->y0, SWEET_NROW(y), ncx, tmp);
+         } else
          sweet_f16_row(r, s1, x0 - r->x0, x1 - x0, y - r->y0, SWEET_NROW(y), ncx, tmp, 0);
          sweet_fast_row(r, d, tmp, x1 - x0, NULL, NULL, 1);
          d += stride;
@@ -1174,9 +1322,21 @@ lp_rast_sweet_fast(struct lp_rasterizer_task *task,
    }
    if (r->scaled) {
       uint8_t tmp[TILE_SIZE * 4] __attribute__((aligned(16)));
+      struct sweet_hcache hcs;
+      hcs.row[0] = hcs.row[1] = hcs.row[2] = -1;
+      const int k0 = x0 - r->x0, n = x1 - x0;
       for (int y = y0; y < y1; y++) {
-         sweet_resample_row(r, x0 - r->x0, x1 - x0, y - r->y0, tmp);
-         sweet_fast_row(r, d, tmp, x1 - x0, SWEET_NROW(y), ncx, 0);
+         if (r->hnocache) {
+            sweet_resample_row(r, k0, n, y - r->y0, tmp);
+         } else {
+            const int32_t a = r->ry[y - r->y0];
+            const uint16_t *h0 = sweet_hrow8(r, &hcs, a, a + 1, k0, n);
+            const uint16_t *h1 = sweet_hrow8(r, &hcs, a + 1, a, k0, n);
+            const unsigned v = r->wy[y - r->y0], va = 128 - v;
+            for (int j = 0; j < 4 * n; j++)
+               tmp[j] = (uint8_t)(((unsigned)h0[j] * va + (unsigned)h1[j] * v + 8192) >> 14);
+         }
+         sweet_fast_row(r, d, tmp, n, SWEET_NROW(y), ncx, 0);
          d += stride;
       }
       return;
@@ -1884,6 +2044,7 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
             soa = !(e != NULL && e[0] == '0');
          }
          r->fxpx = !soa;
+         r->hnocache = !soa;
       }
       for (int ch = 0; ch < 4; ch++)
          r->col[ch] = j->color[ch] * (1.0f / 255);
@@ -2039,6 +2200,16 @@ sweet_lp_fast_draw(struct llvmpipe_context *lp)
             r->sbase = sbase;
             r->sstride = (ptrdiff_t)sstride;
             sweet_lpf_stat[SLPF_SCALED]++;
+            {
+               /* what the rescaled pictures are: the first 40, then one in 3000 */
+               static unsigned nlog;
+               unsigned q = nlog++;
+               if (q < 40 || q % 3000 == 0)
+                  sweet_drm_log("sweetgl: lp scaled #%u: kind %d blend %d fmt %d tex %dx%d -> %dx%d px (rect %dx%d) "
+                                "scale %.3f,%.3f %s%s%s", q, p->kind, p->blend, (int)res->format, W, H, r->x1 - r->x0,
+                                r->y1 - r->y0, j->x1 - j->x0, j->y1 - j->y0, scx, scy, linear ? "linear" : "nearest",
+                                sw1 ? " ramp" : "", noisy ? " noise" : "");
+            }
          }
          if (nres) {
             int nx = r->x1 - r->x0, ny = r->y1 - r->y0;
