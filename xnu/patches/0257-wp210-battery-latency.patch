@@ -1,0 +1,644 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+index 7386d26..dbf4066 100644
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -336,6 +336,9 @@ out:
+ 	return ret;
+ }
+ 
++/* 0257: the latest MT6363 TOPSTATUS (bit 2: USB power present), ~0u until read; for SweetBattery */
++volatile uint32_t wp210_topstatus = ~0u;
++
+ static void
+ wp210_keys_thread(void *arg, wait_result_t result)
+ {
+@@ -351,6 +354,7 @@ wp210_keys_thread(void *arg, wait_result_t result)
+ 		code[1] = KEY_HOME;     /* red side key */
+ 		if (wp210_pmif != 0 && wp210_pmic_rd(4, 0x1e, &top) == 0) {
+ 			pmic_ok = 1;
++			wp210_topstatus = top;
+ 			printf("SWEET KEYS: wp210 PMIC TOPSTATUS %#x: power key on the MT6363\n", top);
+ 		} else {
+ 			printf("SWEET KEYS: wp210 PMIC read failed: no power key\n");
+@@ -378,6 +382,7 @@ wp210_keys_thread(void *arg, wait_result_t result)
+ 				}
+ 			} else if (v != top) {
+ 				int now = !(v & 0x2);
++				wp210_topstatus = v;
+ 				printf("SWEET KEYS: wp210 PMIC TOPSTATUS %#x -> %#x (changed bits %#x)\n", top, v, top ^ v);
+ 				top = v;
+ 				if (now != pwr) {
+@@ -1167,6 +1172,346 @@ wp210_tp_start(void)
+ 	}
+ }
+ 
++
++/*
++ * 0257: battery on the WP210. USB power from the MT6363's TOPSTATUS bit 2
++ * (the keys thread reads it every 20 ms). Voltage and current from the
++ * MT6375 charger's ADC over I2C bus 5 (0x11280000, "mediatek,mt6983-i2c",
++ * register layout v2 of Linux i2c-mt65xx.c), where the MT6375 answers at
++ * six addresses: a register number 0xBBRR is register RR at the address of
++ * bank BB (Linux mfd/mt6375.c: 0x4e TCPC, 0x34 PMU, 0x1a BM, 0x4a HK1,
++ * 0x64 HK2, 0x3f TM). The I2C controller is used as LK left it (timing
++ * registers untouched): FIFO mode, polled, no interrupt. Its clock gate:
++ * imp_iic_wrap_c 0x11282000 + 0xe00 bit 0 (1 = gated; cleared via 0xe04).
++ * ADC (iio/adc/mt6375-adc.c): one-shot channel N by writing N << 4 to
++ * CFG3 0x1a6, ~4.4 ms, wait for CFG3[7:4] = 0, the result big-endian at
++ * 0x1aa + 2 (N - 1); VBAT N = 4 (1.25 mV a step), IBAT N = 6 (2.5 mA a
++ * step); ADCEN = CFG1 0x1a4 bit 7. Percent: the battery's 25 C OCV table
++ * from the device tree (mtk_gauge battery0_profile_t1: capacity used,
++ * OCV in 0.1 mV), voltage averaged over the last 4 samples.
++ * Boot-arg wp210battery=0: none of this (static 100%, external power).
++ */
++#define WP210_I2C5_PA   0x11280000u
++#define WP210_IMPC_PA   0x11282000u
++#define I2C_DATA_PORT   0x00
++#define I2C_INTR_MASK   0x08
++#define I2C_INTR_STAT   0x0c
++#define I2C_CONTROL     0x10
++#define I2C_TRANSFER_LEN 0x14
++#define I2C_TRANSAC_LEN 0x18
++#define I2C_TIMING      0x20
++#define I2C_START       0x24
++#define I2C_EXT_CONF    0x28
++#define I2C_LTIMING     0x2c
++#define I2C_HS          0x30
++#define I2C_IO_CONFIG   0x34
++#define I2C_FIFO_ADDR_CLR 0x38
++#define I2C_TRANSFER_LEN_AUX 0x44
++#define I2C_CLOCK_DIV   0x48
++#define I2C_SLAVE_ADDR1 0x94
++#define I2C_DEBUGSTAT   0xe4
++#define I2C_FIFO_STAT   0xf4
++#define I2C_ST_COMP     0x01
++#define I2C_ST_ACKERR   0x02
++#define I2C_ST_HSNACK   0x04
++#define I2C_ST_ARB      0x08
++#define I2C_ST_RS       0x10
++#define I2C_ST_CONFERR  0x200
++#define I2C_CTL_RS      0x02
++#define I2C_CTL_DMA     0x04
++#define I2C_CTL_CLKEXT  0x08
++#define I2C_CTL_DIRCHG  0x10
++#define I2C_CTL_ACKDET  0x20
++#define I2C_CTL_DMAACK  0x100
++#define I2C_CTL_ASYNC   0x200
++
++static vm_offset_t wp210_i2c, wp210_impc;
++static int wp210_i2c_state;     /* 0 not tried, 1 usable, -1 not */
++static LCK_MTX_DECLARE(wp210_i2c_lock, &sweet_pmic_grp);
++
++static inline uint16_t
++wp210_i2c_rd(uint32_t off)
++{
++	uint16_t v = *(volatile uint16_t *)(wp210_i2c + off);
++	__asm__ volatile ("dmb oshld" ::: "memory");
++	return v;
++}
++
++static inline void
++wp210_i2c_wr(uint32_t off, uint16_t v)
++{
++	*(volatile uint16_t *)(wp210_i2c + off) = v;
++	__asm__ volatile ("dsb sy" ::: "memory");
++}
++
++static int
++wp210_i2c_init(void)
++{
++	if (wp210_i2c_state != 0) {
++		return wp210_i2c_state;
++	}
++	wp210_i2c_state = -1;
++	wp210_impc = ml_io_map(WP210_IMPC_PA, 0x1000);
++	wp210_i2c = ml_io_map(WP210_I2C5_PA, 0x1000);
++	if (wp210_impc == 0 || wp210_i2c == 0) {
++		printf("SWEET BATTERY: wp210 I2C5 mapping failed\n");
++		return -1;
++	}
++	uint32_t cg = *(volatile uint32_t *)(wp210_impc + 0xe00);
++	if (cg & 1u) {
++		*(volatile uint32_t *)(wp210_impc + 0xe04) = 1u;
++		__asm__ volatile ("dsb sy" ::: "memory");
++		delay(10);
++		printf("SWEET BATTERY: wp210 I2C5 clock was gated (%#x), ungated: %#x\n", cg,
++		    *(volatile uint32_t *)(wp210_impc + 0xe00));
++		if (*(volatile uint32_t *)(wp210_impc + 0xe00) & 1u) {
++			return -1;
++		}
++	}
++	uint16_t ctl = wp210_i2c_rd(I2C_CONTROL), tim = wp210_i2c_rd(I2C_TIMING);
++	printf("SWEET BATTERY: wp210 I2C5 cg %#x control %#x timing %#x ltiming %#x clkdiv %#x hs %#x io %#x ext %#x "
++	    "mask %#x stat %#x debug %#x fifo %#x\n", cg, ctl, tim, wp210_i2c_rd(I2C_LTIMING),
++	    wp210_i2c_rd(I2C_CLOCK_DIV), wp210_i2c_rd(I2C_HS), wp210_i2c_rd(I2C_IO_CONFIG),
++	    wp210_i2c_rd(I2C_EXT_CONF), wp210_i2c_rd(I2C_INTR_MASK), wp210_i2c_rd(I2C_INTR_STAT),
++	    wp210_i2c_rd(I2C_DEBUGSTAT), wp210_i2c_rd(I2C_FIFO_STAT));
++	if (tim == 0) {
++		printf("SWEET BATTERY: wp210 I2C5 timing not set up by LK: not used\n");
++		return -1;
++	}
++	wp210_i2c_state = 1;
++	return 1;
++}
++
++/* One transfer: write wn bytes, then (rn > 0) a repeated start and read rn bytes. FIFO: at most 16 each. */
++static int
++wp210_i2c_xfer(uint8_t addr7, const uint8_t *w, int wn, uint8_t *r, int rn)
++{
++	if (wn < 1 || wn > 16 || rn < 0 || rn > 16) {
++		return -1;
++	}
++	lck_mtx_lock(&wp210_i2c_lock);
++	uint16_t ctl = wp210_i2c_rd(I2C_CONTROL) &
++	    (uint16_t)~(I2C_CTL_DIRCHG | I2C_CTL_RS | I2C_CTL_DMA | I2C_CTL_DMAACK | I2C_CTL_ASYNC);
++	ctl |= I2C_CTL_CLKEXT | I2C_CTL_ACKDET;
++	if (rn > 0) {
++		ctl |= I2C_CTL_DIRCHG | I2C_CTL_RS;
++	}
++	const uint16_t all = I2C_ST_RS | I2C_ST_CONFERR | I2C_ST_HSNACK | I2C_ST_ACKERR | I2C_ST_ARB | I2C_ST_COMP;
++	wp210_i2c_wr(I2C_CONTROL, ctl);
++	wp210_i2c_wr(I2C_SLAVE_ADDR1, (uint16_t)(addr7 << 1));
++	wp210_i2c_wr(I2C_INTR_STAT, all);
++	wp210_i2c_wr(I2C_FIFO_ADDR_CLR, 1);
++	wp210_i2c_wr(I2C_INTR_MASK, 0);
++	wp210_i2c_wr(I2C_TRANSFER_LEN, (uint16_t)wn);
++	if (rn > 0) {
++		wp210_i2c_wr(I2C_TRANSFER_LEN_AUX, (uint16_t)rn);
++		wp210_i2c_wr(I2C_TRANSAC_LEN, 2);
++	} else {
++		wp210_i2c_wr(I2C_TRANSAC_LEN, 1);
++	}
++	for (int i = 0; i < wn; i++) {
++		*(volatile uint8_t *)(wp210_i2c + I2C_DATA_PORT) = w[i];
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	wp210_i2c_wr(I2C_START, 0x0001 | 0x4000);       /* TRANSAC_START | RS_MUL_TRIG (auto restart) */
++	uint16_t st = 0;
++	int i;
++	for (i = 0; i < 2000; i++) {
++		st = wp210_i2c_rd(I2C_INTR_STAT);
++		if (st & (I2C_ST_COMP | I2C_ST_ACKERR | I2C_ST_HSNACK | I2C_ST_ARB)) {
++			break;
++		}
++		delay(5);
++	}
++	wp210_i2c_wr(I2C_INTR_STAT, all);
++	int ret = 0;
++	if (i == 2000) {
++		ret = -2;
++	} else if (st & (I2C_ST_ACKERR | I2C_ST_HSNACK | I2C_ST_ARB)) {
++		ret = -3;
++	} else {
++		for (int k = 0; k < rn; k++) {
++			r[k] = *(volatile uint8_t *)(wp210_i2c + I2C_DATA_PORT);
++		}
++	}
++	if (ret != 0) {
++		wp210_i2c_wr(I2C_FIFO_ADDR_CLR, 1);
++	}
++	lck_mtx_unlock(&wp210_i2c_lock);
++	if (ret != 0) {
++		static int logged;
++		if (logged++ < 8) {
++			printf("SWEET BATTERY: wp210 I2C %#x reg %#x: %s (stat %#x, debug %#x)\n", addr7, w[0],
++			    ret == -2 ? "timeout" : "no ack / arbitration", st, wp210_i2c_rd(I2C_DEBUGSTAT));
++		}
++	}
++	return ret;
++}
++
++static const uint8_t mt6375_bank_addr[6] = {0x4e, 0x34, 0x1a, 0x4a, 0x64, 0x3f};
++
++static int
++mt6375_read(uint16_t reg, uint8_t *buf, int n)
++{
++	unsigned bank = reg >> 8;
++	uint8_t r = (uint8_t)reg;
++	return bank < 6 ? wp210_i2c_xfer(mt6375_bank_addr[bank], &r, 1, buf, n) : -1;
++}
++
++static int
++mt6375_write(uint16_t reg, uint8_t v)
++{
++	unsigned bank = reg >> 8;
++	uint8_t b[2] = {(uint8_t)reg, v};
++	return bank < 6 ? wp210_i2c_xfer(mt6375_bank_addr[bank], b, 2, NULL, 0) : -1;
++}
++
++/* One-shot ADC conversion of channel ch (1..15); the raw big-endian result */
++static int
++mt6375_adc(int ch, uint16_t *raw)
++{
++	uint8_t v = 0, b[2];
++	if (mt6375_write(0x1a6, (uint8_t)(ch << 4)) != 0) {
++		return -1;
++	}
++	delay(4400);
++	for (int i = 0; i < 20; i++) {
++		if (mt6375_read(0x1a6, &v, 1) != 0) {
++			return -1;
++		}
++		if ((v & 0xf0u) == 0) {
++			break;
++		}
++		delay(200);
++	}
++	if ((v & 0xf0u) != 0 || mt6375_read((uint16_t)(0x1aa + 2 * (ch - 1)), b, 2) != 0) {
++		return -1;
++	}
++	*raw = (uint16_t)((b[0] << 8) | b[1]);
++	return 0;
++}
++
++/* battery0_profile_t1 (25 C): capacity used (0.1 mAh) and OCV (0.1 mV), 100 points */
++static const uint32_t wp210_ocv_q[] = {
++	0x0, 0x348, 0x691, 0x9d9, 0xd21, 0x106a, 0x13b2, 0x16fb, 0x1a43, 0x1d8b, 0x20d4, 0x241c, 0x2764,
++	0x2aad, 0x2df5, 0x313e, 0x3486, 0x37ce, 0x3b17, 0x3e5f, 0x41a7, 0x44f0, 0x4838, 0x4b81, 0x4ec9,
++	0x5211, 0x555a, 0x58a2, 0x5bea, 0x5f33, 0x627b, 0x65c4, 0x690c, 0x6c54, 0x6f9d, 0x72e5, 0x762d,
++	0x7976, 0x7cbe, 0x8007, 0x834f, 0x8697, 0x89e0, 0x8d28, 0x9070, 0x93b9, 0x9701, 0x9a4a, 0x9d92,
++	0xa0da, 0xa423, 0xa76b, 0xaab3, 0xadfc, 0xb144, 0xb48d, 0xb7d5, 0xbb1d, 0xbe66, 0xc1ae, 0xc4f6,
++	0xc83f, 0xcb87, 0xced0, 0xd218, 0xd560, 0xd8a9, 0xdbf1, 0xdf39, 0xe282, 0xe5ca, 0xe913, 0xec5b,
++	0xefa3, 0xf2ec, 0xf634, 0xf97c, 0xfcc5, 0x1000d, 0x10356, 0x1069e, 0x109e6, 0x10d2f, 0x11077,
++	0x113bf, 0x11708, 0x11a50, 0x11d99, 0x120e1, 0x12429, 0x12772, 0x12aba, 0x12e02, 0x1314b, 0x13493,
++	0x137dc, 0x13b24, 0x13e6c, 0x141b5, 0x144fd,
++};
++static const uint16_t wp210_ocv_v[] = {
++	0xad96, 0xacec, 0xac83, 0xac02, 0xabb0, 0xab4c, 0xaadf, 0xaa73, 0xaa0a, 0xa983, 0xa925, 0xa89b,
++	0xa834, 0xa79d, 0xa72c, 0xa6b0, 0xa63c, 0xa5c3, 0xa529, 0xa4c4, 0xa442, 0xa3bd, 0xa33a, 0xa2b1,
++	0xa23c, 0xa1d8, 0xa15a, 0xa0e9, 0xa063, 0x9ffe, 0x9f8c, 0x9f1a, 0x9ea5, 0x9e3f, 0x9dcb, 0x9d77,
++	0x9d13, 0x9cac, 0x9c4a, 0x9bf2, 0x9b9a, 0x9b2e, 0x9ab7, 0x9a3a, 0x99bf, 0x991e, 0x9898, 0x9844,
++	0x97f6, 0x97aa, 0x976b, 0x972a, 0x9708, 0x96c5, 0x9691, 0x9657, 0x9615, 0x95ed, 0x95d3, 0x9599,
++	0x9567, 0x9530, 0x951b, 0x94fa, 0x94cd, 0x94b3, 0x948e, 0x9477, 0x943d, 0x943a, 0x9405, 0x93d6,
++	0x93a9, 0x937d, 0x933c, 0x9315, 0x92eb, 0x92bd, 0x92a1, 0x9271, 0x924e, 0x9223, 0x91e0, 0x919c,
++	0x9162, 0x911b, 0x90cd, 0x907c, 0x905c, 0x9051, 0x904d, 0x9036, 0x9027, 0x8ff6, 0x8f38, 0x8da0,
++	0x8b68, 0x8856, 0x83c1, 0x83ac,
++};
++
++static unsigned
++wp210_ocv_percent(unsigned mv)
++{
++	const unsigned n = sizeof(wp210_ocv_v) / sizeof(wp210_ocv_v[0]);
++	const uint32_t qmax = wp210_ocv_q[n - 1];
++	uint32_t v = mv * 10u, q;
++	if (v >= wp210_ocv_v[0]) {
++		return 100;
++	}
++	if (v <= wp210_ocv_v[n - 1]) {
++		return 0;
++	}
++	unsigned i = 1;
++	while (i < n - 1 && wp210_ocv_v[i] > v) {
++		i++;
++	}
++	/* between point i - 1 (higher voltage) and i */
++	uint32_t vh = wp210_ocv_v[i - 1], vl = wp210_ocv_v[i];
++	q = wp210_ocv_q[i - 1] + (vh > vl ? (wp210_ocv_q[i] - wp210_ocv_q[i - 1]) * (vh - v) / (vh - vl) : 0);
++	unsigned pct = (unsigned)(100u - (uint64_t)q * 100u / qmax);
++	return pct > 100 ? 100 : pct;
++}
++
++/*
++ * For SweetBattery, every 5 s: 1 measured (mv, ma, percent valid), 0 only
++ * external power known, -1 nothing yet. external: USB power present.
++ */
++int wp210_battery_sample(unsigned *mv, int *ma, unsigned *percent, int *external);
++int
++wp210_battery_sample(unsigned *mv, int *ma, unsigned *percent, int *external)
++{
++	static int on = -1, ok_logged, adc_enabled;
++	static unsigned hist[4], nh;
++	static uint16_t last_raw;
++	uint32_t top = wp210_topstatus;
++	if (on < 0) {
++		on = 1;
++		(void)PE_parse_boot_argn("wp210battery", &on, sizeof(on));
++	}
++	if (!on || top == ~0u) {
++		return -1;
++	}
++	*external = (top & 0x4u) != 0;
++	if (wp210_i2c_init() != 1) {
++		return 0;
++	}
++	uint8_t id = 0, cfg1 = 0, mon[2] = {0, 0};
++	if (!ok_logged) {
++		if (mt6375_read(0x100, &id, 1) != 0) {
++			return 0;
++		}
++		(void)mt6375_read(0x1a4, &cfg1, 1);
++		(void)mt6375_read(0x19c, mon, 2);
++		printf("SWEET BATTERY: wp210 MT6375 dev info %#x (vendor %#x rev %u), ADC CFG1 %#x, VBATMON %#x\n", id,
++		    id & 0xf0u, id & 0x0fu, cfg1, (mon[0] << 8) | mon[1]);
++		ok_logged = 1;
++		if ((id & 0xf0u) != 0x70u) {
++			printf("SWEET BATTERY: wp210 not an MT6375: ADC not used\n");
++			wp210_i2c_state = -1;
++			return 0;
++		}
++		if (!(cfg1 & 0x80u) && !adc_enabled) {
++			adc_enabled = 1;
++			int r = mt6375_write(0x1a4, (uint8_t)(cfg1 | 0x80u));
++			(void)mt6375_read(0x1a4, &cfg1, 1);
++			printf("SWEET BATTERY: wp210 ADC enabled (%d): CFG1 %#x\n", r, cfg1);
++		}
++	}
++	uint16_t vraw = 0, iraw = 0;
++	if (mt6375_adc(4, &vraw) != 0) {
++		return 0;
++	}
++	(void)mt6375_adc(6, &iraw);
++	unsigned v = (unsigned)vraw * 1250u / 1000u;
++	if (v < 2800 || v > 4700) {
++		printf("SWEET BATTERY: wp210 VBAT raw %#x = %u mV: implausible\n", vraw, v);
++		return 0;
++	}
++	hist[nh++ % 4] = v;
++	unsigned cnt = nh < 4 ? nh : 4, sum = 0;
++	for (unsigned k = 0; k < cnt; k++) {
++		sum += hist[k];
++	}
++	*mv = sum / cnt;
++	*ma = (int)((unsigned)iraw * 2500u / 1000u);
++	*percent = wp210_ocv_percent(*mv);
++	if (vraw != last_raw || nh <= 2) {
++		static unsigned n;
++		if (n++ < 400) {
++			printf("SWEET BATTERY: wp210 VBAT raw %#x = %u mV (avg %u), IBAT raw %#x = %d mA, top %#x -> %u%%, "
++			    "external %d\n", vraw, v, *mv, iraw, *ma, top, *percent, *external);
++		}
++		last_raw = vraw;
++	}
++	return 1;
++}
++
+ void
+ sweet_keys_init(void)
+ {
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index bec47e0..cf31a28 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -27,6 +27,8 @@
+ /* bsd/dev/sweet_keys.c */
+ extern "C" bool sweet_pmic_read(uint16_t ppid, uint8_t addr, uint8_t *out);
+ extern "C" bool sweet_pmic_write(uint16_t ppid, uint8_t addr, uint8_t val);
++/* bsd/dev/sweet_keys.c, 0257: the WP210 (MT6363 TOPSTATUS + MT6375 ADC) */
++extern "C" int wp210_battery_sample(unsigned *mv, int *ma, unsigned *percent, int *external);
+ 
+ #define SWEET_BATTERY_MAH       2770    /* Pixel 1 */
+ 
+@@ -40,7 +42,7 @@ public:
+ private:
+ 	IOWorkLoop *fLoop;
+ 	IOTimerEventSource *fTimer;
+-	bool fTimerAdded, fRunning, fReal;
++	bool fTimerAdded, fRunning, fReal, fWP210;
+ 	int fLastMode;
+ 	uint8_t fLastRegs[6];
+ 	bool fWasExternal;
+@@ -69,7 +71,7 @@ SweetBattery::init(OSDictionary *dictionary)
+ 	}
+ 	fLoop = NULL;
+ 	fTimer = NULL;
+-	fTimerAdded = fRunning = fReal = false;
++	fTimerAdded = fRunning = fReal = fWP210 = false;
+ 	if (dictionary) {
+ 		OSCollectionIterator *it = OSCollectionIterator::withCollection(dictionary);
+ 		if (!it) {
+@@ -173,7 +175,7 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+ 	int mode = measured ? 1 : 0;
+ 	if (mode != fLastMode) {
+ 		IOLog("SWEET BATTERY: %s, %u%% %umV external=%d charging=%d\n",
+-		    measured ? "PMI8994 fuel gauge" : "static fallback",
++		    measured ? (fWP210 ? "WP210 MT6375 ADC" : "PMI8994 fuel gauge") : "static fallback",
+ 		    percent, mv, external, charging);
+ 		fLastMode = mode;
+ 	}
+@@ -229,6 +231,21 @@ SweetBattery::setupCharger(void)
+ void
+ SweetBattery::poll(void)
+ {
++	if (fWP210) {
++		/* 0257: USB power from the PMIC, voltage-derived percent from the MT6375 ADC */
++		unsigned mv = 0, percent = 100;
++		int ma = 0, external = 1;
++		int r = fReal ? wp210_battery_sample(&mv, &ma, &percent, &external) : -1;
++		if (r < 0) {
++			publish(100, 4200, 0, true, true, false, true, false, false);
++		} else if (r == 0) {
++			publish(100, 4200, 0, external != 0, external != 0, external != 0, false, false, false);
++		} else {
++			bool full = external && percent >= 100;
++			publish(percent, mv, 0, external != 0, external != 0, external != 0 && !full, full, true, false);
++		}
++		return;
++	}
+ 	uint8_t soc, shadow, usb, input, chgr_rt, chgr;
+ 	bool valid = fReal;
+ 	/* Linux get_monotonic_soc_raw: the two copies must match. */
+@@ -302,6 +319,15 @@ SweetBattery::start(IOService *provider)
+ 	int real = 1;
+ 	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
+ 	fReal = real != 0;
++	int wp210 = 0;
++	(void)PE_parse_boot_argn("wp210keys", &wp210, sizeof(wp210));
++	if (wp210) {
++		/* The WP210 has no PMI8994: sweetbattery does not apply; wp210battery (default 1) does. */
++		fWP210 = true;
++		int wb = 1;
++		(void)PE_parse_boot_argn("wp210battery", &wb, sizeof(wb));
++		fReal = wb != 0;
++	}
+ 	fChargeMA = 1500;
+ 	(void)PE_parse_boot_argn("sweetcharge", &fChargeMA, sizeof(fChargeMA));
+ 	/* Publish a complete source BEFORE registerService wakes powerd. */
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 5c8fa2c..206eb1b 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -114,6 +114,69 @@ extern "C" vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
+ /* Read by bsd/dev/sweet_perf.c. */
+ extern "C" uint64_t sweet_fb_stat_swaps, sweet_fb_stat_presents, sweet_fb_stat_present_abs;
+ uint64_t sweet_fb_stat_swaps, sweet_fb_stat_presents, sweet_fb_stat_present_abs;
++
++/*
++ * 0257 (wp210lat): touch-to-panel latency. SweetHID arms a probe at a touch
++ * going down and at the start of a finger's movement; the first frame
++ * backboardd swaps in after it and the first panel copy that includes it
++ * are timed from the touch:
++ *   WP210 LAT2 down|move at X,Y: frame +S ms, panel +P ms
++ * frame = backboardd submitted a frame (its reaction began), panel = the
++ * presenter finished copying it to the panel's buffer (it shows at the
++ * panel's next refresh, within 16.7 ms more).
++ */
++struct sweet_lat_probe {
++	volatile int armed;     /* 1 waiting for a swap, 2 for the present */
++	uint64_t t_ev, t_swap;
++	int x, y;
++	const char *what;
++};
++static struct sweet_lat_probe sweet_lat[2];
++extern "C" void sweet_lat_arm(int which, const char *what, int x, int y);
++extern "C" void
++sweet_lat_arm(int which, const char *what, int x, int y)
++{
++	if (which < 0 || which > 1) {
++		return;
++	}
++	struct sweet_lat_probe *p = &sweet_lat[which];
++	p->armed = 0;
++	__asm__ volatile ("dmb ish" ::: "memory");
++	p->t_ev = mach_absolute_time();
++	p->t_swap = 0;
++	p->x = x, p->y = y;
++	p->what = what;
++	__asm__ volatile ("dmb ish" ::: "memory");
++	p->armed = 1;
++}
++
++static void
++sweet_lat_swapped(uint64_t now)
++{
++	for (int i = 0; i < 2; i++) {
++		if (sweet_lat[i].armed == 1 && now >= sweet_lat[i].t_ev) {
++			sweet_lat[i].t_swap = now;
++			__asm__ volatile ("dmb ish" ::: "memory");
++			sweet_lat[i].armed = 2;
++		}
++	}
++}
++
++static void
++sweet_lat_presented(uint64_t started, uint64_t now)
++{
++	for (int i = 0; i < 2; i++) {
++		struct sweet_lat_probe *p = &sweet_lat[i];
++		if (p->armed == 2 && p->t_swap <= started) {
++			uint64_t s, q;
++			absolutetime_to_nanoseconds(p->t_swap - p->t_ev, &s);
++			absolutetime_to_nanoseconds(now - p->t_ev, &q);
++			IOLog("WP210 LAT2 %s at %d,%d: frame +%llu.%llu ms, panel +%llu.%llu ms\n", p->what, p->x, p->y,
++			    s / 1000000, (s / 100000) % 10, q / 1000000, (q / 100000) % 10);
++			p->armed = 0;
++		}
++	}
++}
+ /* 0221: swaps that waited for the presenter to finish reading a surface, presents copied first */
+ extern "C" uint64_t sweet_fb_stat_swap_waits, sweet_fb_stat_swap_wait_abs, sweet_fb_stat_swap_wait_max,
+     sweet_fb_stat_swap_wait_timeouts, sweet_fb_stat_staged, sweet_fb_stat_stage_abs, sweet_fb_stat_stage_max,
+@@ -989,6 +1052,7 @@ AppleCLCD::swap(const uint8_t *rec)
+ 	fDirty = true;
+ 	sweet_fb_stat_swaps++;
+ 	uint64_t now = mach_absolute_time(), ns;
++	sweet_lat_swapped(now);
+ 	absolutetime_to_nanoseconds(now - sweet_fb_last_swap, &ns);
+ 	sweet_fb_last_swap = now;
+ 	if (ns < 200 * NSEC_PER_MSEC) {         /* longer: idle, not a frame gap */
+@@ -1041,8 +1105,10 @@ AppleCLCD::presentPending(void)
+ 	present(rec);
+ 	doneReading();
+ 	fLastPresent = t0;
+-	sweet_fb_stat_present_abs += mach_absolute_time() - t0;
++	uint64_t t1 = mach_absolute_time();
++	sweet_fb_stat_present_abs += t1 - t0;
+ 	sweet_fb_stat_presents++;
++	sweet_lat_presented(t0, t1);
+ }
+ 
+ /* 0221: the presenter no longer reads the swapped surface; a waiting swap goes on. */
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+index defe307..1be5a64 100644
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -21,6 +21,7 @@
+ #include <IOKit/IOTimerEventSource.h>
+ #include <libkern/c++/OSArray.h>
+ #include <pexpert/pexpert.h>
++#include <kern/clock.h>
+ 
+ #include "IOHIDEventService.h"
+ #include "IOHIDEventServiceUserClient.h"
+@@ -557,9 +558,68 @@ sweet_hid_key(int key, int down)
+ 	}
+ }
+ 
++/*
++ * 0257 (wp210lat, default on): per gesture (first finger down to last up)
++ * the latency probes of SweetFramebuffer (touch down, start of movement:
++ * 30 touch units from where it went down), and on release
++ *   WP210 GESTURE N ms, frames F (M during movement: R per s), moves K
++ */
++extern "C" void sweet_lat_arm(int which, const char *what, int x, int y);
++extern "C" uint64_t sweet_fb_stat_swaps;
++
++static void
++sweet_lat_touch(int finger, int down, int x, int y)
++{
++	static int on = -1;
++	static uint32_t fingers;
++	static int x0, y0, moved;
++	static uint64_t t_down, t_move, swaps_down, swaps_move, moves;
++	if (on < 0) {
++		on = 1;
++		(void)PE_parse_boot_argn("wp210lat", &on, sizeof(on));
++	}
++	if (!on || finger < 0 || finger > 31) {
++		return;
++	}
++	uint32_t was = fingers;
++	if (down) {
++		fingers |= 1u << finger;
++	} else {
++		fingers &= ~(1u << finger);
++	}
++	uint64_t now = mach_absolute_time(), swaps = *(volatile uint64_t *)&sweet_fb_stat_swaps;
++	if (was == 0 && fingers != 0) {
++		x0 = x, y0 = y, moved = 0, moves = 0;
++		t_down = now, swaps_down = swaps;
++		sweet_lat_arm(0, "down", x, y);
++		return;
++	}
++	if (fingers != 0 && down) {
++		moves++;
++		int d = (x > x0 ? x - x0 : x0 - x) + (y > y0 ? y - y0 : y0 - y);
++		if (!moved && d >= 30) {
++			moved = 1;
++			t_move = now, swaps_move = swaps;
++			sweet_lat_arm(1, "move", x, y);
++		}
++		return;
++	}
++	if (was != 0 && fingers == 0) {
++		uint64_t dur, mv = 0;
++		absolutetime_to_nanoseconds(now - t_down, &dur);
++		if (moved) {
++			absolutetime_to_nanoseconds(now - t_move, &mv);
++		}
++		uint64_t fm = moved ? swaps - swaps_move : 0;
++		IOLog("WP210 GESTURE %llu ms, frames %llu (%llu during movement: %llu per s), moves %llu\n",
++		    dur / 1000000, swaps - swaps_down, fm, mv ? fm * 1000000000ull / mv : 0, moves);
++	}
++}
++
+ extern "C" void
+ sweet_hid_touch(int finger, int down, int x, int y)
+ {
++	sweet_lat_touch(finger, down, x, y);
+ 	if (gSweetTouch) {
+ 		gSweetTouch->touch(finger, down != 0, x, y);
+ 	}
+diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
+index 0bb5871..11d04d6 100644
+--- a/osfmk/kern/exception.c
++++ b/osfmk/kern/exception.c
+@@ -917,7 +917,8 @@ sweet_crash_strings(const char *name)
+ 	char last[96] = "";
+ 
+ 	if (!PE_parse_boot_argn("sweetscan", names, sizeof(names))) {
+-		strlcpy(names, "backboardd,SpringBoard", sizeof(names));
++		/* 0257: assetsd and Photos too (uncaught exceptions: the reason is in the heap) */
++		strlcpy(names, "backboardd,SpringBoard,assetsd,MobileSlideShow", sizeof(names));
+ 	}
+ 	size_t n = strlen(name), found = 0;
+ 	for (const char *t = names; *t;) {
