@@ -1418,3 +1418,10 @@ The changes come from the iOS boot in the trace image, not from our install.
 - Row cache only when the picture is drawn taller than its texture part (scy < 1); shrunk pictures use sweet_resample_row as in e4db841. Ramp rows kept.
 - Payload 0ac8d983..., dylib 0042f01c... (51411008 bytes); `notes/scripts/install-sweetgl-llvmpipe-a557923.sh` (OLD = 71db0e0 payload 2caef7b5...).
 - **a557923 second boot (log 1d56ad45, video 07:11): 1460 frames, best so far** (e4db841 1449, 71db0e0 1440). Picture correct throughout (gradients, Control Centre and Spotlight blur, icons, keypad). scaled.copy back to 7.3 ns/px, ramps 7.4 ns/px (9.0 in e4db841). Fast-path time ~49.9 s, threads busy ~54.7 s. Remaining by cost: scaled.copy 24% (7.3 ns/px, mostly shrunk photos / wallpaper), fx.blur 14% (82 ns/px), f16.copyn ramps 10% (7.4), scaled.opaque 6%, tri.masksup 5% (100 ns/px), fx.atintdk 5%, fx.lumc 4%.
+
+### Frame work, step 12 (llvmpipe 242e54d, run 45116795178)
+
+- Blur: taps that do not step one texel a pixel (rescaled passes) gathered a channel at a time over the row (same sums), instead of pixel by pixel. New 10 s line `sweetgl: lp rows: blur N stepping, M gathered, K pixel by pixel; triangles A with column tables, B without`.
+- Triangles drawn straight: per tile the shape terms of a coordinate that depends on x only, per column; texture0's texel pairs and weights per column when u depends on x only and v on y only (one level, linear, 8-bit), the row's pair and weight once a row. No powf / floor per pixel for CA's icon mesh.
+- Host tests: blur rows identical (stepping and gathered taps, 8-bit and half-float); triangles 78.6 M bytes identical with / without tables (super, circle, masksup, copy, tint, atint, opaque; straight and rotated; clamp). SGLLPSOA=0: old paths.
+- Payload 43bbae66..., dylib 554735ee... (51411280 bytes); `notes/scripts/install-sweetgl-llvmpipe-242e54d.sh` (OLD = a557923 payload 0ac8d983...).
