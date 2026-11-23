@@ -21,12 +21,51 @@ on:
       runner:
         description: runner label; macos-15-intel when no arm64 Mac is free (GitHub capacity), LLVM is then built again for that host
         default: macos-15
+      dyld_a2s:
+        description: 'if set, build nothing; resolve unslid shared-cache addresses of the phone''s iOS ("LABEL addr addr ...; LABEL ...")'
+        default: ""
+      ios_build:
+        description: iOS build of the phone's system (for dyld_a2s)
+        default: 20H392
+      ios_device:
+        description: device whose IPSW holds that build's shared cache (for dyld_a2s)
+        default: iPhone10,1
 
 concurrency:
   group: sweetgl-llvmpipe-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  a2s:
+    if: ${{ inputs.dyld_a2s != '' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      A2S: ${{ inputs.dyld_a2s }}
+      IOS_BUILD: ${{ inputs.ios_build }}
+      IOS_DEVICE: ${{ inputs.ios_device }}
+    steps:
+      - name: ipsw
+        run: |
+          brew install blacktop/tap/ipsw
+          ipsw version
+      - name: shared cache
+        run: |
+          mkdir -p dl && cd dl
+          ipsw download ipsw --device "$IOS_DEVICE" --build "$IOS_BUILD" --dyld --dyld-arch arm64 -y || \
+            ipsw download ipsw --device "$IOS_DEVICE" --build "$IOS_BUILD" --dyld -y
+          find . -name 'dyld_shared_cache_arm64*' | head -40
+      - name: resolve
+        run: |
+          C=$(find dl -name dyld_shared_cache_arm64 -type f | head -1)
+          echo "cache $C"
+          echo "$A2S" | tr ';' '\n' | while read -r label rest; do
+            [ -z "$label" ] && continue
+            for a in $rest; do
+              n=$(ipsw dyld a2s "$C" "$a" 2>&1 | tr '\n' ' ' | sed 's/  */ /g' | cut -c1-300)
+              echo "A2S $label $a $n"
+            done
+          done
   hash:
     if: ${{ inputs.hash_from_run != '' }}
     runs-on: macos-15
@@ -51,7 +90,7 @@ jobs:
           codesign -dv "$D" 2>&1 | head -5 || true
           xcrun nm -n "$U" | awk '$2 ~ /^[tT]$/ {print "SYM", $1, $3}'
   build:
-    if: ${{ !inputs.hash_from_run }}
+    if: ${{ !inputs.hash_from_run && !inputs.dyld_a2s }}
     runs-on: ${{ inputs.runner || 'macos-15' }}
     timeout-minutes: 340
     env:
