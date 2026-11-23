@@ -1434,3 +1434,35 @@ The changes come from the iOS boot in the trace image, not from our install.
 - **Crash reasons:** default sweetscan = backboardd, SpringBoard, assetsd, MobileSlideShow (heap STR scan on SIGABRT). Symbolicated before (workflow `dyld_a2s`, run 45119346524): assetsd = uncaught exception in a dispatch block; MusicWidgets = `strlen(NULL)` in `-[MPMediaLibrary(MediaLibraryCore) _MediaLibrary_coreLibrary]`; driverkitd = `read()` in `-[NSData initWithContentsOfFile:...]`.
 - **USB step 1 (read only):** at 230 s (`wp210usbprobe=SECS`, 0 off) logs pericfg_ao 0x11036000 CG0/CG1 (+0x3c/+0x40; usb_sys bit 10, frmc 8, xhci 11) and, only if usb_sys is on, IPPC (0x11203e00) and MTU3 MAC (0x11201000) registers left by LK.
 - Args unchanged (args-fbbuf1.txt, 599 chars): all new options default on.
+
+### 0257 results (log 522c92d3, `notes/firmware/sweetlog-0257.txt`)
+
+- **Battery:** I2C5 and the MT6375 work (DEV_INFO 0x72: vendor 0x70 rev 2; ADC CFG1 0xc0). Plugged in, VBAT 4370-4410 mV → 94-98%, charging. Unplug and replug seen at once (TOPSTATUS 0x1e → 0x1a → 0x1e, `external 0`). Unplugged, VBAT 4400 mV → 96%: the battery really is nearly full. **IBAT always reads 0.**
+- **Latency, manual swipes:**
+  - touch read ~5 ms (I2C);
+  - first move → frame 3-90 ms (sometimes 130-270);
+  - **frame → panel 20-25 ms almost every time**;
+  - home-page swipes 21-25 frames/s while moving;
+  - bottom-edge swipes 8-10 frames/s, with the first frame 200-420 ms after touch-down.
+- **assetsd:** `'assetsd requires TCCPhotosService access'`. tccd's reply is `auth_error_code 6`, "Failed to issue Sandbox Extension for kTCCServicePhotos". The SWEET Sandbox policy returned ENOENT for op 5 (extension issue).
+- **USB, as LK leaves it:**
+  - pericfg_ao CG1 0 (all USB clocks on);
+  - IPPC: CTRL1 1 (host port down), CTRL2 0 (device on), STS1 0x01003d0f, OTG_STS 0x16c016c0 (VBUS valid), U2_CTRL_0P 0x48, HW_ID 20180724 / sub 0x1006 (gen2cp);
+  - MAC: DEVICE_CONF 0x18000000 (the host had given address 24), POWER_MANAGEMENT 0x60a1 (**SOFT_CONN 0**, HS_ENABLE 1), MISC_CTRL 0x80000003 (VBUS forced), CAP EP0 0x200, TX/RX FIFO 0x2000, EPINFO 0x808 (8+8 endpoints).
+  - So LK only dropped the pull-up.
+- **libsystem_sandbox 20H392** (new workflow input `dyld_disass`, run 45125084503):
+  - op 5 arg = {class, type (0 file / 1 mach / 3 generic), data, flags, out (malloc 0x800), pid, pidversion};
+  - op 6 arg = {token, strlen+1, int64 *handle}.
+
+## 0258 (xnu run 45125949680)
+
+- **Sandbox:** op 5 writes a Sandbox.kext-shaped token into the caller's buffer. Op 6 returns a new handle. Both are logged (`SWEET Sandbox: X issues ... / consumes`).
+- **Battery log:** also VIN (ch 1, 6.25 mV), IBUS (ch 5, 2.5 mA) and die temperature (ch 8, −56).
+- **USB step 2:**
+  - `wp210usb=SECS` (default 25; 0 = only the dump, at 230 s);
+  - drops and re-raises the pull-up, then a polled thread (0.25 ms when busy, 2 ms when idle) handles bus reset, speed change and ep0 by PIO, following mtu3_gadget_ep0.c;
+  - the device is CDC NCM with IAD (0525:a4a1, bcdDevice 0258, strings "Sailfish" / "WP210 iOS (CDC NCM)" / MAC 02D0E2100001);
+  - NTB parameters 16 KB in/out, 16-bit;
+  - endpoints PIO, slot 0: TX1 interrupt 16, TX2 bulk 512 (FIFO 512), RX2 bulk 512;
+  - selecting alt 1 queues NETWORK_CONNECTION and CONNECTION_SPEED_CHANGE (480 Mbit/s);
+  - every SETUP is logged (`SWEET USB: wp210 SETUP ...`). No data path yet.
