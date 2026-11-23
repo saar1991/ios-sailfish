@@ -704,6 +704,10 @@ sweet_tap(const struct sweet_fast_rect *r, int t, int k, int ky, float o[4])
    }
 }
 
+/* rows by path, for the 10 s report: blur stepping / gathered / pixel by pixel; triangle rows with column
+ * tables / without */
+uint64_t sweet_lprow_stat[5];
+
 /*
  * The framebuffer kinds that dominate (LUMC, CM4, CM3, ATINTDK, COPYDKN) and
  * BLUR whose taps step one texel a pixel, a channel at a time over the row
@@ -719,14 +723,7 @@ sweet_fx_row_soa(const struct sweet_fast_rect *r, const uint8_t *d, const uint8_
       return false;
    float R[4][TILE_SIZE];
    if (fx == 19) {
-      for (int t = 0; t < r->ntap; t++) {
-         const int32_t c0 = r->bcx[t][k0];
-         const uint8_t w0 = r->bwx[t][k0];
-         for (int i = 1; i < n; i++) {
-            if (r->bcx[t][k0 + i] != c0 + i || r->bwx[t][k0 + i] != w0)
-               return false;
-         }
-      }
+      int stepping = 1;
       for (int ch = 0; ch < 4; ch++) {
          for (int i = 0; i < n; i++)
             R[ch][i] = 0.0f;
@@ -735,6 +732,43 @@ sweet_fx_row_soa(const struct sweet_fast_rect *r, const uint8_t *d, const uint8_
          const uint8_t *row0 = r->sbase + (ptrdiff_t)r->bry[t][ky] * r->sstride, *row1 = row0 + r->sstride;
          const int32_t c0 = r->bcx[t][k0];
          const float w = r->bwx[t][k0] * (1.0f / 128), v = r->bwy[t][ky] * (1.0f / 128), tw = r->tw[t];
+         int step = 1;
+         for (int i = 1; i < n && step; i++)
+            step = r->bcx[t][k0 + i] == c0 + i && r->bwx[t][k0 + i] == r->bwx[t][k0];
+         if (!step) {
+            /* this tap's texel pairs and weights per pixel (rescaled passes): gathered, the same sums */
+            stepping = 0;
+            const int32_t *cxt = r->bcx[t] + k0;
+            const uint8_t *wxt = r->bwx[t] + k0;
+            for (int ch = 0; ch < 4; ch++) {
+               float *acc = R[ch];
+               if (r->f16) {
+                  const uint16_t *h0 = (const uint16_t *)(const void *)row0 + ch;
+                  const uint16_t *h1 = (const uint16_t *)(const void *)row1 + ch;
+                  for (int i = 0; i < n; i++) {
+                     const int c = cxt[i];
+                     const float wi = wxt[i] * (1.0f / 128);
+                     float a = _mesa_half_to_float(h0[4 * c]), b = _mesa_half_to_float(h0[4 * c + 4]);
+                     float e = _mesa_half_to_float(h1[4 * c]), f = _mesa_half_to_float(h1[4 * c + 4]);
+                     float g0 = a + (b - a) * wi, g1 = e + (f - e) * wi;
+                     float q = g0 + (g1 - g0) * v;
+                     acc[i] = q * tw + acc[i];
+                  }
+               } else {
+                  const uint8_t *p0 = row0 + r->spos[ch], *p1 = row1 + r->spos[ch];
+                  for (int i = 0; i < n; i++) {
+                     const int c = cxt[i];
+                     const float wi = wxt[i] * (1.0f / 128);
+                     float a = p0[4 * c] * (1.0f / 255), b = p0[4 * c + 4] * (1.0f / 255);
+                     float e = p1[4 * c] * (1.0f / 255), f = p1[4 * c + 4] * (1.0f / 255);
+                     float g0 = a + (b - a) * wi, g1 = e + (f - e) * wi;
+                     float q = g0 + (g1 - g0) * v;
+                     acc[i] = q * tw + acc[i];
+                  }
+               }
+            }
+            continue;
+         }
          for (int ch = 0; ch < 4; ch++) {
             float *acc = R[ch];
             if (r->f16) {
@@ -759,6 +793,7 @@ sweet_fx_row_soa(const struct sweet_fast_rect *r, const uint8_t *d, const uint8_
             }
          }
       }
+      __atomic_fetch_add(&sweet_lprow_stat[stepping ? 0 : 1], 1, __ATOMIC_RELAXED);
       if (r->bdiv) {
          for (int i = 0; i < n; i++) {
             float m = R[3][i] > 0.001f ? R[3][i] : 0.001f;
@@ -844,6 +879,8 @@ sweet_fx_row(const struct sweet_fast_rect *r, const uint8_t *d, const uint8_t *s
 {
    if (!r->fxpx && sweet_fx_row_soa(r, d, s1, k0, n, ky, nrow, ncx, out))
       return;
+   if (r->fx == 19)
+      __atomic_fetch_add(&sweet_lprow_stat[2], 1, __ATOMIC_RELAXED);
    uint8_t tex[TILE_SIZE * 4] __attribute__((aligned(16)));
    const int textured = r->fx == 9 || r->fx == 10 || r->fx == 11 || r->fx == 17 || r->fx == 18 || r->fx == 22 ||
                         r->fx == 23;
@@ -1065,11 +1102,90 @@ sweet_shape_dd(int k, float sum)
 }
 
 /*
+ * Per tile, what does not change down the rows (a triangle drawn straight:
+ * a coordinate that depends on x only): the shape terms of such coordinates
+ * per column, and texture0's texel pairs and weights per column when u
+ * depends on x only and v on y only (one mip level, 8-bit). The same
+ * expressions as the pixel loop, evaluated once.
+ */
+struct sweet_tricols {
+   int cx0;                       /* first column (even) */
+   const float *su, *sv;          /* shape term of the shape's u / v per column, or NULL */
+   float su_[TILE_SIZE + 2], sv_[TILE_SIZE + 2];
+   int tex;                       /* texture0 columns below */
+   int32_t i0[TILE_SIZE], i1[TILE_SIZE];
+   float a[TILE_SIZE];
+};
+
+static void
+sweet_tricols_make(const struct sweet_fast_rect *r, int x0, int x1, int y0, struct sweet_tricols *c)
+{
+   const int k = r->tkind;
+   c->cx0 = x0 & ~1;
+   c->su = c->sv = NULL;
+   c->tex = 0;
+   const float fy = (float)(y0 - r->y0);
+   if (k == SWEET_LPF_SUPER || k == SWEET_LPF_CIRCLE || k == SWEET_LPF_MASKSUP) {
+      const int sk = k == SWEET_LPF_CIRCLE ? 16 : 15, cu = k == SWEET_LPF_MASKSUP ? 2 : 0;
+      const float *pu = r->pl[cu], *pv = r->pl[cu + 1];
+      const int sx1 = (x1 - 1) | 1;
+      if (pu[1] != 0.0f && pu[2] == 0.0f) {
+         for (int X = c->cx0; X <= sx1; X++)
+            c->su_[X - c->cx0] = sweet_shape_term(sk, pu[0] + pu[1] * (float)(X - r->x0) + pu[2] * fy);
+         c->su = c->su_;
+      }
+      if (pv[1] != 0.0f && pv[2] == 0.0f) {
+         for (int X = c->cx0; X <= sx1; X++)
+            c->sv_[X - c->cx0] = sweet_shape_term(sk, pv[0] + pv[1] * (float)(X - r->x0) + pv[2] * fy);
+         c->sv = c->sv_;
+      }
+   }
+   const struct sweet_tsrc *t = &r->ts[0];
+   if (t->base[0] && t->frac == 0.0f && t->linear && (t->fmt == 1 || t->fmt == 2 || t->fmt == 4) &&
+       r->pl[0][2] == 0.0f && r->pl[1][1] == 0.0f) {
+      const int w = t->w[0];
+      for (int X = x0; X < x1; X++) {
+         float u = r->pl[0][0] + r->pl[0][1] * (float)(X - r->x0) + r->pl[0][2] * fy;
+         if (r->tclamp)
+            u = u < r->tcl[0] ? r->tcl[0] : u > r->tcl[2] ? r->tcl[2] : u;
+         float xx = u * w - 0.5f, fx0 = floorf(xx);
+         int i0 = (int)fx0, i1 = i0 + 1;
+         i0 = i0 < 0 ? 0 : i0 >= w ? w - 1 : i0, i1 = i1 < 0 ? 0 : i1 >= w ? w - 1 : i1;
+         c->i0[X - x0] = i0, c->i1[X - x0] = i1, c->a[X - x0] = xx - fx0;
+      }
+      c->tex = 1;
+   }
+}
+
+static inline void
+sweet_tsrc_texel0(const struct sweet_tsrc *t, const uint8_t *row, int x, float o[4])
+{
+   switch (t->fmt) {
+   case 2:
+      o[0] = o[1] = o[2] = 0.0f;
+      o[3] = row[x] * (1.0f / 255);
+      break;
+   case 4:
+      o[0] = o[1] = o[2] = row[2 * x] * (1.0f / 255);
+      o[3] = row[2 * x + 1] * (1.0f / 255);
+      break;
+   default:
+      for (int ch = 0; ch < 4; ch++)
+         o[ch] = row[4 * x + t->pos[ch]] * (1.0f / 255);
+      break;
+   }
+   if (t->xa)
+      o[3] = 1.0f;
+}
+
+/*
  * One row of a triangle: the covered pixels from X = xs to xe - 1 (row Y),
- * RGBA8 into out. D: the destination row (pixel xs first).
+ * RGBA8 into out. D: the destination row (pixel xs first). tc: the tile's
+ * column tables (or NULL), tcx0 the tile's first column.
  */
 static void
-sweet_tri_row(const struct sweet_fast_rect *r, const uint8_t *drow, int xs, int xe, int Y, uint8_t *out)
+sweet_tri_row(const struct sweet_fast_rect *r, const uint8_t *drow, int xs, int xe, int Y, uint8_t *out,
+              const struct sweet_tricols *tc, int tcx0)
 {
    const int k = r->tkind, n = xe - xs;
    const float fy = (float)(Y - r->y0);
@@ -1090,20 +1206,48 @@ sweet_tri_row(const struct sweet_fast_rect *r, const uint8_t *drow, int xs, int 
          tu0 = sweet_shape_term(sk, pu[0] + pu[2] * fy), tu1 = sweet_shape_term(sk, pu[0] + pu[2] * fyp);
       if (!vx)
          tv0 = sweet_shape_term(sk, pv[0] + pv[2] * fy), tv1 = sweet_shape_term(sk, pv[0] + pv[2] * fyp);
+      const float *csu = tc && tc->su ? tc->su - tc->cx0 : NULL, *csv = tc && tc->sv ? tc->sv - tc->cx0 : NULL;
       for (int X = sx0; X <= sx1; X++) {
          const float fx = (float)(X - r->x0);
          float a0 = tu0, b0 = tv0, a1 = tu1, b1 = tv1;
          if (ux) {
-            a0 = sweet_shape_term(sk, pu[0] + pu[1] * fx + pu[2] * fy);
-            a1 = pu[2] != 0.0f ? sweet_shape_term(sk, pu[0] + pu[1] * fx + pu[2] * fyp) : a0;
+            if (csu) {
+               a0 = a1 = csu[X];
+            } else {
+               a0 = sweet_shape_term(sk, pu[0] + pu[1] * fx + pu[2] * fy);
+               a1 = pu[2] != 0.0f ? sweet_shape_term(sk, pu[0] + pu[1] * fx + pu[2] * fyp) : a0;
+            }
          }
          if (vx) {
-            b0 = sweet_shape_term(sk, pv[0] + pv[1] * fx + pv[2] * fy);
-            b1 = pv[2] != 0.0f ? sweet_shape_term(sk, pv[0] + pv[1] * fx + pv[2] * fyp) : b0;
+            if (csv) {
+               b0 = b1 = csv[X];
+            } else {
+               b0 = sweet_shape_term(sk, pv[0] + pv[1] * fx + pv[2] * fy);
+               b1 = pv[2] != 0.0f ? sweet_shape_term(sk, pv[0] + pv[1] * fx + pv[2] * fyp) : b0;
+            }
          }
          d0[X - sx0] = sweet_shape_dd(sk, a0 + b0);
          d1[X - sx0] = sweet_shape_dd(sk, a1 + b1);
       }
+   }
+   /* texture0 from the column tables: this row's texel pair and weight */
+   const uint8_t *trow0 = NULL, *trow1 = NULL;
+   float tb = 0.0f;
+   if (tc && tc->tex) {
+      const struct sweet_tsrc *ts0 = &r->ts[0];
+      const int h = ts0->h[0];
+      float v = r->pl[1][0] + r->pl[1][1] * (float)(xs - r->x0) + r->pl[1][2] * fy;
+      if (r->tclamp)
+         v = v < r->tcl[1] ? r->tcl[1] : v > r->tcl[3] ? r->tcl[3] : v;
+      float yy = v * h - 0.5f, fy0 = floorf(yy);
+      int j0 = (int)fy0, j1 = j0 + 1;
+      j0 = j0 < 0 ? 0 : j0 >= h ? h - 1 : j0, j1 = j1 < 0 ? 0 : j1 >= h ? h - 1 : j1;
+      trow0 = ts0->base[0] + (ptrdiff_t)j0 * ts0->stride[0];
+      trow1 = ts0->base[0] + (ptrdiff_t)j1 * ts0->stride[0];
+      tb = yy - fy0;
+      __atomic_fetch_add(&sweet_lprow_stat[3], 1, __ATOMIC_RELAXED);
+   } else {
+      __atomic_fetch_add(&sweet_lprow_stat[4], 1, __ATOMIC_RELAXED);
    }
    for (int i = 0; i < n; i++) {
       const int X = xs + i;
@@ -1113,7 +1257,17 @@ sweet_tri_row(const struct sweet_fast_rect *r, const uint8_t *drow, int xs, int 
          D[ch] = drow[4 * i + r->dpos[ch]] * (1.0f / 255);
       if (r->dx)
          D[3] = 1.0f;
-      if (r->ts[0].base[0]) {
+      if (trow0) {
+         const int q = X - tcx0;
+         float p[4], qq[4], r2[4], s2[4];
+         sweet_tsrc_texel0(&r->ts[0], trow0, tc->i0[q], p), sweet_tsrc_texel0(&r->ts[0], trow0, tc->i1[q], qq);
+         sweet_tsrc_texel0(&r->ts[0], trow1, tc->i0[q], r2), sweet_tsrc_texel0(&r->ts[0], trow1, tc->i1[q], s2);
+         const float a = tc->a[q];
+         for (int ch = 0; ch < 4; ch++) {
+            float t0 = p[ch] + (qq[ch] - p[ch]) * a, t1 = r2[ch] + (s2[ch] - r2[ch]) * a;
+            t[ch] = t0 + (t1 - t0) * tb;
+         }
+      } else if (r->ts[0].base[0]) {
          float u = r->pl[0][0] + r->pl[0][1] * fx + r->pl[0][2] * fy;
          float v = r->pl[1][0] + r->pl[1][1] * fx + r->pl[1][2] * fy;
          if (r->tclamp) {
@@ -1189,6 +1343,11 @@ sweet_tri_tile(const struct sweet_fast_rect *r, uint8_t *d, unsigned stride, int
 {
    uint8_t tmp[TILE_SIZE * 4] __attribute__((aligned(16)));
    uint64_t npx = 0;
+   struct sweet_tricols tcs, *tc = NULL;
+   if (!r->fxpx) {
+      sweet_tricols_make(r, x0, x1, y0, &tcs);
+      tc = &tcs;
+   }
    for (int y = y0; y < y1; y++, d += stride) {
       const int64_t Py = (int64_t)y * 256 + 128;
       int xs = -1, xe = -1;
@@ -1207,7 +1366,7 @@ sweet_tri_tile(const struct sweet_fast_rect *r, uint8_t *d, unsigned stride, int
       if (xs < 0)
          continue;
       uint8_t *dr = d + (size_t)(xs - x0) * 4;
-      sweet_tri_row(r, dr, xs, xe, y, tmp);
+      sweet_tri_row(r, dr, xs, xe, y, tmp, tc, x0);
       sweet_fast_row(r, dr, tmp, xe - xs, NULL, NULL, 1);
       npx += (uint64_t)(xe - xs);
    }
@@ -1831,6 +1990,10 @@ sweet_lp_tri_draw(struct llvmpipe_context *lp)
       r->tri = 1;
       r->tkind = kd;
       r->pk = kd;
+      {
+         const char *e = getenv("SGLLPSOA");
+         r->fxpx = e != NULL && e[0] == '0';
+      }
       r->blend = p->blend;
       r->dx = dx;
       r->tclamp = p->tclamp;
@@ -2484,6 +2647,19 @@ bool sweet_lp_fast_draw(struct llvmpipe_context *lp);   /* lp_setup.c */'''),
       for (int i = 0; i < 16; i++) {
          d[i] = sweet_lpf_stat[i] - pl[i];
          pl[i] = sweet_lpf_stat[i];
+      }
+      {
+         extern uint64_t sweet_lprow_stat[];
+         static uint64_t rl[5];
+         uint64_t rd[5];
+         for (int i = 0; i < 5; i++) {
+            rd[i] = sweet_lprow_stat[i] - rl[i];
+            rl[i] = sweet_lprow_stat[i];
+         }
+         if (rd[0] + rd[1] + rd[2] + rd[3] + rd[4])
+            lg("sweetgl: lp rows: blur %llu stepping, %llu gathered, %llu pixel by pixel; triangles %llu with column "
+               "tables, %llu without", (unsigned long long)rd[0], (unsigned long long)rd[1], (unsigned long long)rd[2],
+               (unsigned long long)rd[3], (unsigned long long)rd[4]);
       }
       lg("sweetgl: lp fast: %llu draws, %llu rects (%llu scaled), %llu kpx; not taken: kind %llu fb %llu src %llu scale %llu "
          "offset %llu bounds %llu turned %llu clamp %llu; out of scene memory %llu; as triangles %llu draws "
