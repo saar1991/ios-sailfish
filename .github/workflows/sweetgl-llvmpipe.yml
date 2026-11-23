@@ -78,7 +78,7 @@ jobs:
             [ -z "$img" ] && continue
             for s in $syms; do
               echo "=== DIS $img $s"
-              ipsw dyld disass "$C" --image "$img" --symbol "$s" --count 400 2>&1 | head -400 || true
+              ipsw dyld disass "$C" --symbol "$s" --count 300 2>&1 | head -400 || true
             done
           done
   hash:
