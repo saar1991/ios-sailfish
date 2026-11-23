@@ -1,0 +1,677 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+index 6c303ab..e361508 100644
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -1504,8 +1504,14 @@ wp210_battery_sample(unsigned *mv, int *ma, unsigned *percent, int *external)
+ 	if (vraw != last_raw || nh <= 2) {
+ 		static unsigned n;
+ 		if (n++ < 400) {
++			/* 0258: also the charger input voltage, input current and die temperature (IBAT reads 0) */
++			uint16_t vin = 0, ibus = 0, tj = 0;
++			(void)mt6375_adc(1, &vin);
++			(void)mt6375_adc(5, &ibus);
++			(void)mt6375_adc(8, &tj);
+ 			printf("SWEET BATTERY: wp210 VBAT raw %#x = %u mV (avg %u), IBAT raw %#x = %d mA, top %#x -> %u%%, "
+-			    "external %d\n", vraw, v, *mv, iraw, *ma, top, *percent, *external);
++			    "external %d; VIN %u mV, IBUS %u mA, die %d C\n", vraw, v, *mv, iraw, *ma, top, *percent,
++			    *external, (unsigned)vin * 6250u / 1000u, (unsigned)ibus * 2500u / 1000u, (int)tj - 56);
+ 		}
+ 		last_raw = vraw;
+ 	}
+@@ -1513,72 +1519,513 @@ wp210_battery_sample(unsigned *mv, int *ma, unsigned *percent, int *external)
+ }
+ 
+ /*
+- * 0257: USB, step 1 for the WP210 (MTU3, Linux drivers/usb/mtu3), read only:
+- * the state LK's fastboot leaves the controller in, wp210usbprobe=SECS after
+- * the keys start (default 230, after the scripted test; 0 = off). The MAC
+- * (0x11201000) and IPPC (0x11203e00) are read only when pericfg_ao
+- * (0x11036000) + 0x40 bit 10 (peraop_1_usb_sys, 1 = gated) says the clock is
+- * on: a gated block may hang the read.
++ * WP210 USB (MTU3 device controller, Linux drivers/usb/mtu3).
++ * 0257 (log 522c92d3) showed LK leaves it in device mode: clocks on, host
++ * port powered down, device powered (IPPC PW_CTRL1 1 / CTRL2 0), VBUS valid
++ * (OTG_STS bit 9), host-given address 24 in DEVICE_CONF, but the D+ pull-up
++ * off (POWER_MANAGEMENT SOFT_CONN 0). So the gadget below needs no clock,
++ * PHY or reset work: it reconnects and answers the host itself.
++ *
++ * 0258, step 2: enumeration as a CDC NCM device (VID 0525 PID a4a1, the
++ * Linux NCM gadget's IDs; IAD so Windows' usbccgp gives the function to
++ * UsbNcm.sys), ep0 by PIO polled from a thread, every SETUP logged. Bulk
++ * endpoints are configured (PIO, nothing queued, so they NAK); when the host
++ * selects data alt 1 the interrupt endpoint reports "connected" at 480
++ * Mbit/s. No packets yet (step 3). wp210usb=SECS after the keys start
++ * (default 25; 0 = off: the controller is then only read, as in 0257).
+  */
++static vm_offset_t wp210_umac, wp210_uippc;
++#define UMR(o) (*(volatile uint32_t *)(wp210_umac + (o)))
++#define UIR(o) (*(volatile uint32_t *)(wp210_uippc + 0xe00 + (o)))
++
++static void
++wp210_usb_dump(const char *when)
++{
++	static const uint16_t ip[] = {0x00, 0x04, 0x08, 0x0c, 0x10, 0x14, 0x18, 0x24, 0x28, 0x2c, 0x30, 0x40, 0x50,
++	    0x8c, 0x98, 0xa0, 0xa4};
++	static const uint16_t mr[] = {0x000, 0x004, 0x080, 0x084, 0x100, 0x108, 0x400, 0x404, 0xc04, 0xc08, 0xc0c,
++	    0xc10, 0xc84, 0x800, 0x804, 0x850, 0x854, 0x1410, 0x1534, 0x2404, 0x240c, 0x2418, 0x241c, 0x2424, 0x243c,
++	    0x244c, 0x2460};
++	char line[400];
++	int n = snprintf(line, sizeof(line), "SWEET USB: wp210 %s IPPC", when);
++	for (unsigned i = 0; i < sizeof(ip) / sizeof(ip[0]); i++) {
++		n += snprintf(line + n, sizeof(line) - (size_t)n, " %02x=%08x", ip[i], UIR(ip[i]));
++	}
++	printf("%s\n", line);
++	n = snprintf(line, sizeof(line), "SWEET USB: wp210 %s MAC", when);
++	for (unsigned i = 0; i < sizeof(mr) / sizeof(mr[0]); i++) {
++		n += snprintf(line + n, sizeof(line) - (size_t)n, " %x=%x", mr[i], UMR(mr[i]));
++		if (n > 340) {
++			printf("%s\n", line);
++			n = snprintf(line, sizeof(line), "SWEET USB: wp210 %s MAC", when);
++		}
++	}
++	printf("%s\n", line);
++}
++
++/* MTU3 registers (mtu3_hw_regs.h) */
++#define U_LV1ISR        0x000
++#define U_EPISR         0x080
++#define U_EPIESR        0x088
++#define U_EP0CSR        0x100
++#define U_RXCOUNT0      0x108
++#define U_TXCSR0(n)     (0x110 + ((n) - 1) * 0x10)
++#define U_TXCSR1(n)     (0x114 + ((n) - 1) * 0x10)
++#define U_TXCSR2(n)     (0x118 + ((n) - 1) * 0x10)
++#define U_RXCSR0(n)     (0x210 + ((n) - 1) * 0x10)
++#define U_RXCSR1(n)     (0x214 + ((n) - 1) * 0x10)
++#define U_RXCSR2(n)     (0x218 + ((n) - 1) * 0x10)
++#define U_FIFO(n)       (0x300 + (n) * 0x10)
++#define U_DEVICE_CONF   0x800
++#define U_EP_RST        0x804
++#define U_LINK_INTR_EN  0x850
++#define U_LINK_INTR     0x854
++#define U_USB3_CONFIG   0x141c
++#define U_POWER_MGMT    0x2404
++#define U_COMMON_INTR_EN 0x2418
++#define U_COMMON_INTR   0x241c
++#define U_LINK_RESET_INFO 0x2424
++
++#define EP0_SENDSTALL   (1u << 25)
++#define EP0_FIFOFULL    (1u << 23)
++#define EP0_SENTSTALL   (1u << 22)
++#define EP0_DPHTX       (1u << 20)
++#define EP0_DATAEND     (1u << 19)
++#define EP0_TXPKTRDY    (1u << 18)
++#define EP0_SETUPPKTRDY (1u << 17)
++#define EP0_RXPKTRDY    (1u << 16)
++#define EP0_W1C         (~(EP0_RXPKTRDY | EP0_SETUPPKTRDY | EP0_SENTSTALL))
++#define SOFT_CONN       (1u << 6)
++#define HS_ENABLE       (1u << 5)
++#define SUSPENDM_ENABLE (1u << 0)
++
++static const uint8_t wp210_ud_dev[18] = {
++	18, 1, 0x00, 0x02, 0xef, 0x02, 0x01, 64, 0x25, 0x05, 0xa1, 0xa4, 0x58, 0x02, 1, 2, 3, 1,
++};
++static const uint8_t wp210_ud_qual[10] = {10, 6, 0x00, 0x02, 0xef, 0x02, 0x01, 64, 1, 0};
++static const uint8_t wp210_ud_cfg[94] = {
++	9, 2, 94, 0, 2, 1, 0, 0xc0, 50,
++	8, 0x0b, 0, 2, 0x02, 0x0d, 0, 0,                  /* IAD: interfaces 0-1, CDC NCM */
++	9, 4, 0, 0, 1, 0x02, 0x0d, 0, 4,                  /* communication interface */
++	5, 0x24, 0x00, 0x10, 0x01,                        /* CDC header 1.10 */
++	5, 0x24, 0x06, 0, 1,                              /* union: master 0, slave 1 */
++	13, 0x24, 0x0f, 5, 0, 0, 0, 0, 0xea, 0x05, 0, 0, 0, /* Ethernet: MAC string 5, 1514 */
++	6, 0x24, 0x1a, 0x00, 0x01, 0x00,                  /* NCM 1.0 */
++	7, 5, 0x81, 3, 16, 0, 9,                          /* notifications, 32 ms */
++	9, 4, 1, 0, 0, 0x0a, 0, 1, 0,                     /* data, alt 0: no endpoints */
++	9, 4, 1, 1, 2, 0x0a, 0, 1, 0,                     /* data, alt 1 */
++	7, 5, 0x82, 2, 0x00, 0x02, 0,                     /* bulk IN 512 */
++	7, 5, 0x02, 2, 0x00, 0x02, 0,                     /* bulk OUT 512 */
++};
++static const uint8_t wp210_ud_ntb[28] = {
++	28, 0, 1, 0, 0x00, 0x40, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0, 0x00, 0x40, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0,
++};
++static const char *const wp210_ud_str[] = {
++	NULL, "Sailfish", "WP210 iOS (CDC NCM)", "WP210-0258", "CDC NCM", "02D0E2100001",
++};
++
++static struct {
++	int state;              /* 0 setup, 1 data IN, 2 data OUT, 3 IN done */
++	uint8_t buf[256];
++	unsigned len, off, zlp;
++	unsigned rxlen;
++	uint8_t config, alt, addr, speed, notify;
++	unsigned setups, resets, logged;
++} wp210_ud;
++
++static void
++wp210_ud_fifo_write(unsigned ep, const uint8_t *src, unsigned len)
++{
++	volatile uint8_t *f = (volatile uint8_t *)(wp210_umac + U_FIFO(ep));
++	unsigned i = 0;
++	for (; i + 4 <= len; i += 4) {
++		uint32_t w;
++		memcpy(&w, src + i, 4);
++		*(volatile uint32_t *)f = w;
++	}
++	if (len - i >= 2) {
++		uint16_t h;
++		memcpy(&h, src + i, 2);
++		*(volatile uint16_t *)f = h;
++		i += 2;
++	}
++	if (i < len) {
++		*f = src[i];
++	}
++}
++
++static void
++wp210_ud_fifo_read(uint8_t *dst, unsigned len)
++{
++	unsigned i = 0;
++	for (; i < len; i += 4) {
++		uint32_t w = UMR(U_FIFO(0));
++		memcpy(dst + i, &w, len - i < 4 ? len - i : 4);
++	}
++}
++
++static void
++wp210_ud_tx(void)
++{
++	unsigned cnt = wp210_ud.len - wp210_ud.off;
++	if (cnt > 64) {
++		cnt = 64;
++	}
++	if (cnt) {
++		wp210_ud_fifo_write(0, wp210_ud.buf + wp210_ud.off, cnt);
++	}
++	wp210_ud.off += cnt;
++	if (cnt < 64 || (wp210_ud.off == wp210_ud.len && !wp210_ud.zlp)) {
++		wp210_ud.state = 3;
++	} else if (wp210_ud.off == wp210_ud.len) {
++		wp210_ud.zlp = 0;       /* a zero-length packet follows */
++	}
++	UMR(U_EP0CSR) = (UMR(U_EP0CSR) & EP0_W1C) | EP0_TXPKTRDY;
++}
++
++static void
++wp210_ud_config_eps(void)
++{
++	/* EP reset, then TX1 interrupt 16 (fifo 0), TX2 bulk 512 (fifo 512), RX2 bulk 512 (fifo 0); PIO, slot 0 */
++	UMR(U_EP_RST) = (1u << 17) | (1u << 18) | (1u << 2);
++	UMR(U_EP_RST) = 0;
++	UMR(U_TXCSR0(1)) = 16;
++	UMR(U_TXCSR1(1)) = 1u << 4;
++	UMR(U_TXCSR2(1)) = (9u << 24) | (9u << 16) | (0u >> 4);
++	UMR(U_TXCSR0(2)) = 512;
++	UMR(U_TXCSR1(2)) = 0;
++	UMR(U_TXCSR2(2)) = (9u << 16) | (512u >> 4);
++	UMR(U_RXCSR0(2)) = 512;
++	UMR(U_RXCSR1(2)) = 0;
++	UMR(U_RXCSR2(2)) = (9u << 16) | 0;
++	printf("SWEET USB: wp210 endpoints: TX1 %#x/%#x/%#x TX2 %#x/%#x/%#x RX2 %#x/%#x/%#x\n",
++	    UMR(U_TXCSR0(1)), UMR(U_TXCSR1(1)), UMR(U_TXCSR2(1)), UMR(U_TXCSR0(2)), UMR(U_TXCSR1(2)),
++	    UMR(U_TXCSR2(2)), UMR(U_RXCSR0(2)), UMR(U_RXCSR1(2)), UMR(U_RXCSR2(2)));
++}
++
++/* returns 1 = handled with data IN prepared, 2 = OUT data expected, 0 = no data, -1 = stall */
++static int
++wp210_ud_request(const uint8_t *st)
++{
++	unsigned type = st[0], req = st[1], val = st[2] | (st[3] << 8), idx = st[4] | (st[5] << 8);
++	unsigned wlen = st[6] | (st[7] << 8);
++	const uint8_t *d = NULL;
++	unsigned dl = 0;
++	uint8_t tmp[64];
++
++	if ((type & 0x60) == 0x00) {
++		switch (req) {
++		case 6:                 /* GET_DESCRIPTOR */
++			switch (val >> 8) {
++			case 1: d = wp210_ud_dev; dl = sizeof(wp210_ud_dev); break;
++			case 2: d = wp210_ud_cfg; dl = sizeof(wp210_ud_cfg); break;
++			case 6: d = wp210_ud_qual; dl = sizeof(wp210_ud_qual); break;
++			case 3:
++				if ((val & 0xff) == 0) {
++					tmp[0] = 4; tmp[1] = 3; tmp[2] = 0x09; tmp[3] = 0x04;
++					d = tmp; dl = 4;
++				} else if ((val & 0xff) < sizeof(wp210_ud_str) / sizeof(wp210_ud_str[0])) {
++					const char *s = wp210_ud_str[val & 0xff];
++					unsigned n = 0;
++					for (; s[n] && n < 30; n++) {
++						tmp[2 + 2 * n] = (uint8_t)s[n];
++						tmp[3 + 2 * n] = 0;
++					}
++					tmp[0] = (uint8_t)(2 + 2 * n); tmp[1] = 3;
++					d = tmp; dl = 2 + 2 * n;
++				}
++				break;
++			}
++			if (d == NULL) {
++				return -1;
++			}
++			break;
++		case 5:                 /* SET_ADDRESS: the MAC applies it after the status stage */
++			wp210_ud.addr = (uint8_t)(val & 0x7f);
++			UMR(U_DEVICE_CONF) = (UMR(U_DEVICE_CONF) & ~(0x7fu << 24)) | ((uint32_t)wp210_ud.addr << 24);
++			return 0;
++		case 9:                 /* SET_CONFIGURATION */
++			if (val > 1) {
++				return -1;
++			}
++			wp210_ud.config = (uint8_t)val;
++			wp210_ud.alt = 0;
++			if (val == 1) {
++				wp210_ud_config_eps();
++			}
++			return 0;
++		case 8:                 /* GET_CONFIGURATION */
++			tmp[0] = wp210_ud.config; d = tmp; dl = 1;
++			break;
++		case 0:                 /* GET_STATUS */
++			tmp[0] = (type & 0x1f) == 0 ? 1 : 0; tmp[1] = 0; d = tmp; dl = 2;
++			break;
++		case 1: case 3:         /* CLEAR/SET_FEATURE */
++			return 0;
++		case 11:                /* SET_INTERFACE */
++			if (idx == 1 && val <= 1) {
++				wp210_ud.alt = (uint8_t)val;
++				wp210_ud.notify = val == 1 ? 1 : 0;
++				return 0;
++			}
++			return idx == 0 && val == 0 ? 0 : -1;
++		case 10:                /* GET_INTERFACE */
++			tmp[0] = idx == 1 ? wp210_ud.alt : 0; d = tmp; dl = 1;
++			break;
++		default:
++			return -1;
++		}
++	} else if ((type & 0x60) == 0x20) {
++		switch (req) {
++		case 0x80: d = wp210_ud_ntb; dl = sizeof(wp210_ud_ntb); break;     /* GET_NTB_PARAMETERS */
++		case 0x83: tmp[0] = 0; tmp[1] = 0; d = tmp; dl = 2; break;         /* GET_NTB_FORMAT: 16-bit */
++		case 0x85:                                                          /* GET_NTB_INPUT_SIZE */
++			tmp[0] = 0; tmp[1] = 0x40; tmp[2] = 0; tmp[3] = 0; d = tmp; dl = 4;
++			break;
++		case 0x87: tmp[0] = 0xea; tmp[1] = 0x05; d = tmp; dl = 2; break;   /* GET_MAX_DATAGRAM_SIZE */
++		case 0x84: case 0x88: case 0x43: case 0x40: case 0x41: case 0x42:  /* SET_NTB_FORMAT etc. */
++			return wlen ? 2 : 0;
++		case 0x86:                                                          /* SET_NTB_INPUT_SIZE */
++			return wlen ? 2 : 0;
++		default:
++			return -1;
++		}
++	} else {
++		return -1;
++	}
++	if (dl > wlen) {
++		dl = wlen;
++	}
++	memcpy(wp210_ud.buf, d, dl);
++	wp210_ud.len = dl;
++	wp210_ud.off = 0;
++	wp210_ud.zlp = dl < wlen && dl % 64 == 0;
++	return 1;
++}
++
++static void
++wp210_ud_ep0(void)
++{
++	uint32_t isr = UMR(U_EPISR) & 0x00010001u;
++	UMR(U_EPISR) = isr;
++	if (isr == 0) {
++		return;                 /* like mtu3_ep0_isr: act only on EP0ISR / SETUPENDISR */
++	}
++	if (isr & (1u << 16)) {
++		wp210_ud.state = 0;     /* SETUPEND: abort, take the new SETUP */
++	}
++	uint32_t csr = UMR(U_EP0CSR);
++	if (csr & EP0_SENTSTALL) {
++		UMR(U_EP0CSR) = ((csr & EP0_W1C) & ~EP0_SENDSTALL) | EP0_SENTSTALL;
++		wp210_ud.state = 0;
++		csr = UMR(U_EP0CSR);
++	}
++	switch (wp210_ud.state) {
++	case 1:
++		if (!(csr & EP0_FIFOFULL)) {
++			wp210_ud_tx();
++		}
++		break;
++	case 2:
++		if (csr & EP0_RXPKTRDY) {
++			uint8_t tmp[64];
++			unsigned cnt = UMR(U_RXCOUNT0) & 0xffff;
++			if (cnt > 64) {
++				cnt = 64;
++			}
++			wp210_ud_fifo_read(tmp, cnt);
++			wp210_ud.rxlen += cnt;
++			uint32_t w = (csr & EP0_W1C) | EP0_RXPKTRDY;
++			if (cnt < 64 || wp210_ud.rxlen >= wp210_ud.len) {
++				w |= EP0_DATAEND;
++				wp210_ud.state = 0;
++			}
++			UMR(U_EP0CSR) = w;
++		}
++		break;
++	case 3:
++		UMR(U_EP0CSR) = (csr & EP0_W1C) | EP0_DATAEND;
++		wp210_ud.state = 0;
++		break;
++	default:
++		if (csr & EP0_SETUPPKTRDY) {
++			uint8_t st[8];
++			unsigned cnt = UMR(U_RXCOUNT0) & 0xffff;
++			if (cnt != 8) {
++				printf("SWEET USB: wp210 SETUP length %u\n", cnt);
++				break;
++			}
++			wp210_ud_fifo_read(st, 8);
++			unsigned wlen = st[6] | (st[7] << 8);
++			int r = wp210_ud_request(st);
++			wp210_ud.setups++;
++			if (wp210_ud.logged++ < 160) {
++				printf("SWEET USB: wp210 SETUP %02x %02x %04x %04x %04x -> %s%s\n", st[0], st[1],
++				    st[2] | (st[3] << 8), st[4] | (st[5] << 8), wlen,
++				    r < 0 ? "STALL" : r == 1 ? "data IN " : r == 2 ? "data OUT" : "ok",
++				    r == 1 ? (wp210_ud.len == 0 ? "0" : "") : "");
++			}
++			csr = UMR(U_EP0CSR) & EP0_W1C;
++			if (r < 0) {
++				UMR(U_EP0CSR) = csr | EP0_SENDSTALL | (wlen ? 0 : EP0_SETUPPKTRDY);
++				wp210_ud.state = 0;
++			} else if (wlen == 0) {
++				UMR(U_EP0CSR) = csr | EP0_SETUPPKTRDY | EP0_DATAEND;
++				wp210_ud.state = 0;
++			} else if (st[0] & 0x80) {
++				UMR(U_EP0CSR) = csr | EP0_SETUPPKTRDY | EP0_DPHTX;
++				wp210_ud.state = 1;
++				if (r != 1) {
++					wp210_ud.len = wp210_ud.off = 0;
++					wp210_ud.zlp = 0;
++				}
++				wp210_ud_tx();
++			} else {
++				UMR(U_EP0CSR) = (csr | EP0_SETUPPKTRDY) & ~EP0_DPHTX;
++				wp210_ud.state = 2;
++				wp210_ud.len = wlen;
++				wp210_ud.rxlen = 0;
++			}
++		}
++		break;
++	}
++}
++
+ static int wp210_usb_chan;
+ 
+ static void
+-wp210_usb_probe_thread(void *arg, wait_result_t result)
++wp210_usb_thread(void *arg, wait_result_t result)
+ {
+ 	(void)result;
++	int secs = (int)(intptr_t)arg, run = secs > 0;
+ 	uint64_t deadline;
+-	clock_interval_to_deadline((uint32_t)(uintptr_t)arg, NSEC_PER_SEC, &deadline);
++	clock_interval_to_deadline((uint32_t)(run ? secs : -secs), NSEC_PER_SEC, &deadline);
+ 	(void)assert_wait_deadline(&wp210_usb_chan, THREAD_UNINT, deadline);
+ 	thread_block(THREAD_CONTINUE_NULL);
+ 	vm_offset_t peri = ml_io_map(0x11036000u, 0x1000);
+ 	if (peri == 0) {
+ 		return;
+ 	}
+-	uint32_t cg0 = *(volatile uint32_t *)(peri + 0x3c), cg1 = *(volatile uint32_t *)(peri + 0x40);
+-	printf("SWEET USB: wp210 pericfg_ao CG0 %#x CG1 %#x: usb_sys %s, usb_frmc %s, usb_xhci %s; TOPSTATUS %#x\n",
+-	    cg0, cg1, (cg1 >> 10) & 1 ? "gated" : "on", (cg1 >> 8) & 1 ? "gated" : "on",
+-	    (cg1 >> 11) & 1 ? "gated" : "on", wp210_topstatus);
++	uint32_t cg1 = *(volatile uint32_t *)(peri + 0x40);
++	printf("SWEET USB: wp210 pericfg_ao CG1 %#x: usb_sys %s, usb_frmc %s; TOPSTATUS %#x\n", cg1,
++	    (cg1 >> 10) & 1 ? "gated" : "on", (cg1 >> 8) & 1 ? "gated" : "on", wp210_topstatus);
+ 	if ((cg1 >> 10) & 1) {
+-		printf("SWEET USB: wp210 controller clock gated: registers not read\n");
++		printf("SWEET USB: wp210 controller clock gated: not touched\n");
+ 		return;
+ 	}
+-	vm_offset_t mac = ml_io_map(0x11201000u, 0x3000), ippc = ml_io_map(0x11203000u, 0x1000);
+-	if (mac == 0 || ippc == 0) {
++	wp210_umac = ml_io_map(0x11201000u, 0x3000);
++	wp210_uippc = ml_io_map(0x11203000u, 0x1000);
++	if (wp210_umac == 0 || wp210_uippc == 0) {
+ 		return;
+ 	}
+-	static const uint16_t ip[] = {0x00, 0x04, 0x08, 0x0c, 0x10, 0x14, 0x18, 0x24, 0x28, 0x2c, 0x30, 0x40, 0x50,
+-	    0x8c, 0x98, 0xa0, 0xa4};
+-	static const uint16_t mr[] = {0x000, 0x004, 0x080, 0x084, 0x100, 0x108, 0x400, 0x404, 0xc04, 0xc08, 0xc0c,
+-	    0xc10, 0xc84, 0x800, 0x804, 0x850, 0x854, 0x1410, 0x1534, 0x2404, 0x240c, 0x2418, 0x241c, 0x2424, 0x243c,
+-	    0x244c, 0x2460};
+-	char line[400];
+-	int n = snprintf(line, sizeof(line), "SWEET USB: wp210 IPPC");
+-	for (unsigned i = 0; i < sizeof(ip) / sizeof(ip[0]); i++) {
+-		n += snprintf(line + n, sizeof(line) - (size_t)n, " %02x=%08x", ip[i],
+-		    *(volatile uint32_t *)(ippc + 0xe00 + ip[i]));
++	wp210_usb_dump("as LK left it:");
++	if (!run) {
++		return;
+ 	}
+-	printf("%s\n", line);
+-	n = snprintf(line, sizeof(line), "SWEET USB: wp210 MAC");
+-	for (unsigned i = 0; i < sizeof(mr) / sizeof(mr[0]); i++) {
+-		n += snprintf(line + n, sizeof(line) - (size_t)n, " %x=%x", mr[i], *(volatile uint32_t *)(mac + mr[i]));
+-		if (n > 340) {
+-			printf("%s\n", line);
+-			n = snprintf(line, sizeof(line), "SWEET USB: wp210 MAC");
++	if (UIR(0x08) & 1u) {
++		printf("SWEET USB: wp210 device side powered down (IPPC CTRL2 %#x): not started\n", UIR(0x08));
++		return;
++	}
++	/* disconnect, reset our state, then connect again (Linux mtu3_start + mtu3_dev_on_off) */
++	UMR(U_POWER_MGMT) &= ~(SOFT_CONN | SUSPENDM_ENABLE);
++	delay(200000);
++	UMR(U_COMMON_INTR) = UMR(U_COMMON_INTR);
++	UMR(U_LINK_INTR) = UMR(U_LINK_INTR);
++	UMR(U_EPISR) = UMR(U_EPISR);
++	UMR(U_DEVICE_CONF) = 0;
++	UMR(U_USB3_CONFIG) &= ~1u;
++	UMR(U_LINK_RESET_INFO) &= ~(0xfu << 16);
++	UMR(U_EP0CSR) = (UMR(U_EP0CSR) & EP0_W1C & ~0x3ffu) | 64;
++	UMR(U_EPIESR) = 0x00010001u;
++	UMR(U_COMMON_INTR_EN) = 0x7u | (1u << 9);
++	UMR(U_LINK_INTR_EN) = 1;
++	UMR(U_POWER_MGMT) |= HS_ENABLE | SOFT_CONN | SUSPENDM_ENABLE;
++	printf("SWEET USB: wp210 gadget: D+ pull-up on (POWER_MANAGEMENT %#x, EP0CSR %#x)\n", UMR(U_POWER_MGMT),
++	    UMR(U_EP0CSR));
++
++	uint64_t last_event = mach_absolute_time(), quiet, last_report = 0, rep;
++	nanoseconds_to_absolutetime(500ull * NSEC_PER_MSEC, &quiet);
++	nanoseconds_to_absolutetime(10ull * NSEC_PER_SEC, &rep);
++	unsigned notify_step = 0;
++	for (;;) {
++		uint32_t comm = UMR(U_COMMON_INTR);
++		uint32_t link = UMR(U_LINK_INTR);
++		int ev = 0;
++		if (comm) {
++			UMR(U_COMMON_INTR) = comm;
++			ev = 1;
++			if (comm & (1u << 2)) {     /* bus reset */
++				wp210_ud.resets++;
++				wp210_ud.state = 0;
++				wp210_ud.config = wp210_ud.alt = wp210_ud.addr = 0;
++				wp210_ud.notify = 0;
++				notify_step = 0;
++				UMR(U_DEVICE_CONF) &= ~(0x7fu << 24);
++			}
++			if (wp210_ud.logged++ < 160) {
++				printf("SWEET USB: wp210 bus event %#x%s%s%s\n", comm, comm & 4 ? " reset" : "",
++				    comm & 1 ? " suspend" : "", comm & 2 ? " resume" : "");
++			}
++		}
++		if (link) {
++			UMR(U_LINK_INTR) = link;
++			ev = 1;
++			wp210_ud.speed = (uint8_t)(UMR(U_DEVICE_CONF) & 7);
++			UMR(U_EP0CSR) = (UMR(U_EP0CSR) & EP0_W1C & ~0x3ffu) | 64;
++			UMR(U_EPIESR) = 0x00010001u;
++			wp210_ud.state = 0;
++			printf("SWEET USB: wp210 link speed %u (%s)\n", wp210_ud.speed,
++			    wp210_ud.speed == 3 ? "high" : wp210_ud.speed == 1 ? "full" : wp210_ud.speed == 0 ? "none" : "?");
++		}
++		unsigned before = wp210_ud.setups;
++		wp210_ud_ep0();
++		if (wp210_ud.setups != before || wp210_ud.state != 0) {
++			ev = 1;
++		}
++		/* NCM notifications once the host picks data alt 1: NETWORK_CONNECTION, then CONNECTION_SPEED_CHANGE */
++		if (wp210_ud.notify && notify_step < 2 && !(UMR(U_TXCSR0(1)) & (1u << 16))) {
++			static const uint8_t conn[8] = {0xa1, 0x00, 1, 0, 0, 0, 0, 0};
++			static const uint8_t spd[16] = {0xa1, 0x2a, 0, 0, 0, 0, 8, 0, 0x00, 0x08, 0x9b, 0x1c,
++				                        0x00, 0x08, 0x9b, 0x1c};
++			if (notify_step == 0) {
++				wp210_ud_fifo_write(1, conn, sizeof(conn));
++			} else {
++				wp210_ud_fifo_write(1, spd, sizeof(spd));
++			}
++			UMR(U_TXCSR0(1)) = (UMR(U_TXCSR0(1)) & ~(1u << 22)) | (1u << 16);
++			printf("SWEET USB: wp210 notification %s queued (TX1 %#x)\n", notify_step ? "speed" : "connected",
++			    UMR(U_TXCSR0(1)));
++			notify_step++;
++		}
++		uint64_t now = mach_absolute_time();
++		if (ev) {
++			last_event = now;
++		}
++		if (now - last_report > rep) {
++			last_report = now;
++			if (wp210_ud.setups || wp210_ud.resets) {
++				printf("SWEET USB: wp210 state: address %u config %u alt %u speed %u, %u setups, %u resets, "
++				    "POWER %#x DEVCONF %#x RX2 %#x\n", wp210_ud.addr, wp210_ud.config, wp210_ud.alt,
++				    wp210_ud.speed, wp210_ud.setups, wp210_ud.resets, UMR(U_POWER_MGMT), UMR(U_DEVICE_CONF),
++				    UMR(U_RXCSR0(2)));
++			}
+ 		}
++		/* 0.25 ms after activity, 2 ms when quiet */
++		(void)assert_wait_timeout(&wp210_usb_chan, THREAD_UNINT, now - last_event < quiet ? 250 : 2000,
++		    NSEC_PER_USEC);
++		thread_block(THREAD_CONTINUE_NULL);
+ 	}
+-	printf("%s\n", line);
+ }
+ 
+ static void
+ wp210_usb_probe_start(void)
+ {
+-	int secs = 230;
++	int secs = 25;
+ 	thread_t thread;
+-	(void)PE_parse_boot_argn("wp210usbprobe", &secs, sizeof(secs));
+-	if (secs <= 0) {
+-		return;
+-	}
+-	if (kernel_thread_start(wp210_usb_probe_thread, (void *)(uintptr_t)secs, &thread) == KERN_SUCCESS) {
++	(void)PE_parse_boot_argn("wp210usb", &secs, sizeof(secs));
++	/* wp210usb=0: only the read-only dump, at 230 s as in 0257 */
++	if (kernel_thread_start(wp210_usb_thread, (void *)(intptr_t)(secs > 0 ? secs : -230), &thread) ==
++	    KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
+ }
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index bd919bc..742b844 100644
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -24,6 +24,8 @@
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <kern/debug.h>
++#include <kern/kalloc.h>
++#include <libkern/OSAtomic.h>
+ #include <kern/startup.h>
+ #include <libkern/amfi/amfi.h>
+ #include <mach/kern_return.h>
+@@ -328,6 +330,80 @@ sweet_sandbox_container_path(user_addr_t arg)
+ 	return err;
+ }
+ 
++/*
++ * 0258: extension tokens. With ENOENT here tccd could not issue the
++ * kTCCServicePhotos extension, answered assetsd "Failed to issue Sandbox
++ * Extension" (auth_error_code 6), and assetsd aborted: "assetsd requires
++ * TCCPhotosService access" (log 522c92d3). Nothing is enforced, so a token
++ * only has to look like one and consume has to hand back a handle.
++ *
++ * libsystem_sandbox 20H392 __sandbox_extension_issue (disassembled): op 5,
++ * arg -> {char *class; u64 type (0 file, 1 mach, 3 generic); char *data;
++ * u64 flags; char *out (malloc 0x800); i64 pid; u64 pidversion}; on 0 the
++ * caller returns out as the token. sandbox_extension_consume: op 6, arg ->
++ * {char *token; u64 strlen + 1; i64 *handle}; returns *handle.
++ */
++static int
++sweet_sandbox_extension_issue(struct proc *p, user_addr_t arg)
++{
++	uint64_t a[7];
++	char cls[96];
++	size_t n;
++	int err;
++	static unsigned logged;
++
++	if (copyin(arg, a, sizeof(a)) != 0 || a[4] == 0) {
++		return EINVAL;
++	}
++	char *data = kalloc_data(MAXPATHLEN + 0x800, Z_WAITOK | Z_ZERO);
++	if (data == NULL) {
++		return ENOMEM;
++	}
++	char *tok = data + MAXPATHLEN;
++	cls[0] = 0;
++	if ((a[0] != 0 && copyinstr((user_addr_t)a[0], cls, sizeof(cls), &n) != 0) ||
++	    (a[2] != 0 && copyinstr((user_addr_t)a[2], data, MAXPATHLEN, &n) != 0)) {
++		kfree_data(data, MAXPATHLEN + 0x800);
++		return EINVAL;
++	}
++	/* Sandbox.kext's layout: hmac;flags;type;storage;length-of-class;class;...;length;data */
++	int len = snprintf(tok, 0x800, "%040x;%02x;%08x;%08x;%08x;%016llx;%s;%02x;%08x;%016llx;%s",
++	    0, (unsigned)(a[3] & 0xff), (unsigned)a[1], 0, 0, (unsigned long long)strlen(cls), cls, 1,
++	    0, (unsigned long long)strlen(data), data);
++	if (len < 0 || len >= 0x800) {
++		kfree_data(data, MAXPATHLEN + 0x800);
++		return ENAMETOOLONG;
++	}
++	if (logged++ < 40) {
++		char name[32];
++		proc_name(proc_pid(p), name, sizeof(name));
++		printf("SWEET Sandbox: %s issues %s extension type %llu for %s\n", name, cls,
++		    (unsigned long long)a[1], data[0] ? data : "-");
++	}
++	err = copyout(tok, (user_addr_t)a[4], (size_t)len + 1);
++	kfree_data(data, MAXPATHLEN + 0x800);
++	return err;
++}
++
++static int
++sweet_sandbox_extension_consume(struct proc *p, user_addr_t arg)
++{
++	uint64_t a[3];
++	static int64_t next_handle = 1;
++	static unsigned logged;
++
++	if (copyin(arg, a, sizeof(a)) != 0 || a[2] == 0) {
++		return EINVAL;
++	}
++	int64_t h = OSIncrementAtomic64((volatile SInt64 *)&next_handle);
++	if (logged++ < 40) {
++		char name[32];
++		proc_name(proc_pid(p), name, sizeof(name));
++		printf("SWEET Sandbox: %s consumes an extension (handle %lld)\n", name, (long long)h);
++	}
++	return copyout(&h, (user_addr_t)a[2], sizeof(h));
++}
++
+ static int
+ sweet_sandbox_syscall(struct proc *p, int call, user_addr_t arg)
+ {
+@@ -341,7 +417,9 @@ sweet_sandbox_syscall(struct proc *p, int call, user_addr_t arg)
+ 	case 4:         /* container path (pid) */
+ 		return sweet_sandbox_container_path(arg);
+ 	case 5:         /* extension issue */
++		return sweet_sandbox_extension_issue(p, arg);
+ 	case 6:         /* extension consume */
++		return sweet_sandbox_extension_consume(p, arg);
+ 	case 0x43:      /* container expected */
+ 		return ENOENT;
+ 	default:
