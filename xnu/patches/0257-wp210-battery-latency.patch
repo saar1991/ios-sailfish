@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
-index 7386d26..dbf4066 100644
+index 7386d26..6c303ab 100644
 --- a/bsd/dev/sweet_keys.c
 +++ b/bsd/dev/sweet_keys.c
 @@ -336,6 +336,9 @@ out:
@@ -28,7 +28,7 @@ index 7386d26..dbf4066 100644
  				printf("SWEET KEYS: wp210 PMIC TOPSTATUS %#x -> %#x (changed bits %#x)\n", top, v, top ^ v);
  				top = v;
  				if (now != pwr) {
-@@ -1167,6 +1172,346 @@ wp210_tp_start(void)
+@@ -1167,6 +1172,417 @@ wp210_tp_start(void)
  	}
  }
  
@@ -372,9 +372,88 @@ index 7386d26..dbf4066 100644
 +	return 1;
 +}
 +
++/*
++ * 0257: USB, step 1 for the WP210 (MTU3, Linux drivers/usb/mtu3), read only:
++ * the state LK's fastboot leaves the controller in, wp210usbprobe=SECS after
++ * the keys start (default 230, after the scripted test; 0 = off). The MAC
++ * (0x11201000) and IPPC (0x11203e00) are read only when pericfg_ao
++ * (0x11036000) + 0x40 bit 10 (peraop_1_usb_sys, 1 = gated) says the clock is
++ * on: a gated block may hang the read.
++ */
++static int wp210_usb_chan;
++
++static void
++wp210_usb_probe_thread(void *arg, wait_result_t result)
++{
++	(void)result;
++	uint64_t deadline;
++	clock_interval_to_deadline((uint32_t)(uintptr_t)arg, NSEC_PER_SEC, &deadline);
++	(void)assert_wait_deadline(&wp210_usb_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++	vm_offset_t peri = ml_io_map(0x11036000u, 0x1000);
++	if (peri == 0) {
++		return;
++	}
++	uint32_t cg0 = *(volatile uint32_t *)(peri + 0x3c), cg1 = *(volatile uint32_t *)(peri + 0x40);
++	printf("SWEET USB: wp210 pericfg_ao CG0 %#x CG1 %#x: usb_sys %s, usb_frmc %s, usb_xhci %s; TOPSTATUS %#x\n",
++	    cg0, cg1, (cg1 >> 10) & 1 ? "gated" : "on", (cg1 >> 8) & 1 ? "gated" : "on",
++	    (cg1 >> 11) & 1 ? "gated" : "on", wp210_topstatus);
++	if ((cg1 >> 10) & 1) {
++		printf("SWEET USB: wp210 controller clock gated: registers not read\n");
++		return;
++	}
++	vm_offset_t mac = ml_io_map(0x11201000u, 0x3000), ippc = ml_io_map(0x11203000u, 0x1000);
++	if (mac == 0 || ippc == 0) {
++		return;
++	}
++	static const uint16_t ip[] = {0x00, 0x04, 0x08, 0x0c, 0x10, 0x14, 0x18, 0x24, 0x28, 0x2c, 0x30, 0x40, 0x50,
++	    0x8c, 0x98, 0xa0, 0xa4};
++	static const uint16_t mr[] = {0x000, 0x004, 0x080, 0x084, 0x100, 0x108, 0x400, 0x404, 0xc04, 0xc08, 0xc0c,
++	    0xc10, 0xc84, 0x800, 0x804, 0x850, 0x854, 0x1410, 0x1534, 0x2404, 0x240c, 0x2418, 0x241c, 0x2424, 0x243c,
++	    0x244c, 0x2460};
++	char line[400];
++	int n = snprintf(line, sizeof(line), "SWEET USB: wp210 IPPC");
++	for (unsigned i = 0; i < sizeof(ip) / sizeof(ip[0]); i++) {
++		n += snprintf(line + n, sizeof(line) - (size_t)n, " %02x=%08x", ip[i],
++		    *(volatile uint32_t *)(ippc + 0xe00 + ip[i]));
++	}
++	printf("%s\n", line);
++	n = snprintf(line, sizeof(line), "SWEET USB: wp210 MAC");
++	for (unsigned i = 0; i < sizeof(mr) / sizeof(mr[0]); i++) {
++		n += snprintf(line + n, sizeof(line) - (size_t)n, " %x=%x", mr[i], *(volatile uint32_t *)(mac + mr[i]));
++		if (n > 340) {
++			printf("%s\n", line);
++			n = snprintf(line, sizeof(line), "SWEET USB: wp210 MAC");
++		}
++	}
++	printf("%s\n", line);
++}
++
++static void
++wp210_usb_probe_start(void)
++{
++	int secs = 230;
++	thread_t thread;
++	(void)PE_parse_boot_argn("wp210usbprobe", &secs, sizeof(secs));
++	if (secs <= 0) {
++		return;
++	}
++	if (kernel_thread_start(wp210_usb_probe_thread, (void *)(uintptr_t)secs, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++
  void
  sweet_keys_init(void)
  {
+@@ -1181,6 +1597,7 @@ sweet_keys_init(void)
+ 	if (wp210) {
+ 		int tpprobe = 0;
+ 		wp210_keys_init();
++		wp210_usb_probe_start();
+ 		(void)PE_parse_boot_argn("wp210tpprobe", &tpprobe, sizeof(tpprobe));
+ 		if (tpprobe) {
+ 			wp210_tp_probe(tpprobe);
 diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
 index bec47e0..cf31a28 100644
 --- a/iokit/Kernel/arm/SweetBattery.cpp
